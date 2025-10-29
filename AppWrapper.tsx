@@ -1,8 +1,9 @@
-饺
 import React from 'react';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
+import { ScanningProvider } from './contexts/ScanningContext';
 import { LoginScreen } from './auth/AuthScreens';
-import BookshelfScannerAppInner from './App';
+import { NavigationContainer } from '@react-navigation/native';
+import { TabNavigator } from './TabNavigator';
 
 const AppContent: React.FC = () => {
   const { user, loading } = useAuth();
@@ -15,13 +16,19 @@ const AppContent: React.FC = () => {
     return <LoginScreen onAuthSuccess={() => {}} />;
   }
 
-  return <BookshelfScannerAppInner user={user} />;
+  return (
+    <NavigationContainer>
+      <TabNavigator />
+    </NavigationContainer>
+  );
 };
 
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <ScanningProvider>
+        <AppContent />
+      </ScanningProvider>
     </AuthProvider>
   );
 }

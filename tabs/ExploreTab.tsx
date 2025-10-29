@@ -1,16 +1,131 @@
-import React from 'react';
-import { View, Text, StyleSheet, TextInput, SafeAreaView } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAuth } from '../auth/SimpleAuthContext';
+import UserProfileModal from '../components/UserProfileModal';
+
+interface User {
+  uid: string;
+  email: string;
+  username: string;
+  displayName?: string;
+}
 
 export const ExploreTab: React.FC = () => {
+  const { searchUsers, user: currentUser } = useAuth();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+
+  useEffect(() => {
+    const delayedSearch = setTimeout(async () => {
+      if (searchQuery.length >= 2) {
+        setLoading(true);
+        const results = await searchUsers(searchQuery);
+        setSearchResults(results);
+        setLoading(false);
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(delayedSearch);
+  }, [searchQuery, searchUsers]);
+
+  const handleUserPress = (user: User) => {
+    setSelectedUser(user);
+    setShowProfileModal(true);
+  };
+
+  const renderUserItem = ({ item }: { item: User }) => (
+    <TouchableOpacity
+      style={styles.userCard}
+      onPress={() => handleUserPress(item)}
+    >
+      <View style={styles.avatarContainer}>
+        <Text style={styles.avatarText}>
+          {item.displayName?.charAt(0).toUpperCase() || item.username.charAt(0).toUpperCase()}
+        </Text>
+      </View>
+      <View style={styles.userInfo}>
+        <Text style={styles.username}>@{item.username}</Text>
+        {item.displayName && (
+          <Text style={styles.displayName}>{item.displayName}</Text>
+        )}
+      </View>
+      <Text style={styles.arrow}>›</Text>
+    </TouchableOpacity>
+  );
+
   return (
     <SafeAreaView style={styles.safeContainer}>
       <View style={styles.container}>
-        <Text style={styles.title}>Explore</Text>
-        <TextInput 
-          style={styles.searchInput}
-          placeholder="Search users..."
-        />
+        <View style={styles.header}>
+          <Text style={styles.title}>Explore</Text>
+          <Text style={styles.subtitle}>Search for users by username</Text>
+        </View>
+
+        <View style={styles.searchContainer}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search users..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+
+        {loading && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+          </View>
+        )}
+
+        {!loading && searchQuery.length >= 2 && searchResults.length === 0 && (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No users found</Text>
+          </View>
+        )}
+
+        {!loading && searchResults.length > 0 && (
+          <FlatList
+            data={searchResults}
+            renderItem={renderUserItem}
+            keyExtractor={(item) => item.uid}
+            style={styles.resultsList}
+            contentContainerStyle={styles.resultsContent}
+          />
+        )}
+
+        {searchQuery.length < 2 && (
+          <View style={styles.placeholderContainer}>
+            <Text style={styles.placeholderText}>
+              Start typing to search for users...
+            </Text>
+          </View>
+        )}
       </View>
+
+      <UserProfileModal
+        visible={showProfileModal}
+        user={selectedUser}
+        onClose={() => {
+          setShowProfileModal(false);
+          setSelectedUser(null);
+        }}
+        currentUserId={currentUser?.uid}
+      />
     </SafeAreaView>
   );
 };
@@ -18,22 +133,126 @@ export const ExploreTab: React.FC = () => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f5f7fa',
   },
   container: {
     flex: 1,
-    padding: 20,
+  },
+  header: {
+    backgroundColor: '#1a1a2e',
+    paddingTop: 20,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
   },
   title: {
-    fontSize: 24,
-    marginBottom: 20,
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 15,
+    color: '#cbd5e0',
+    fontWeight: '400',
+  },
+  searchContainer: {
+    padding: 20,
+    marginTop: -15,
   },
   searchInput: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
-    padding: 10,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 18,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#718096',
+    fontWeight: '500',
+  },
+  placeholderContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  placeholderText: {
+    fontSize: 16,
+    color: '#718096',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  resultsList: {
+    flex: 1,
+  },
+  resultsContent: {
+    padding: 20,
+  },
+  userCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  avatarContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 15,
+  },
+  avatarText: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  userInfo: {
+    flex: 1,
+  },
+  username: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 4,
+  },
+  displayName: {
+    fontSize: 14,
+    color: '#718096',
+  },
+  arrow: {
+    fontSize: 24,
+    color: '#cbd5e0',
+    fontWeight: '300',
   },
 });
-

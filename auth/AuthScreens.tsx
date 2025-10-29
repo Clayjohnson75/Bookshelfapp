@@ -106,6 +106,7 @@ interface SignUpScreenProps extends AuthScreenProps {
 
 export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBackToLogin }) => {
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -114,7 +115,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
   const { signUp, loading } = useAuth();
 
   const handleSignUp = async () => {
-    if (!email || !password || !displayName) {
+    if (!email || !password || !username || !displayName) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -129,7 +130,12 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
       return;
     }
 
-    const success = await signUp(email, password, displayName);
+    if (username.length < 3 || username.length > 20) {
+      Alert.alert('Error', 'Username must be between 3 and 20 characters');
+      return;
+    }
+
+    const success = await signUp(email, password, username, displayName);
     if (success) {
       onAuthSuccess();
     }
@@ -150,6 +156,17 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             value={displayName}
             onChangeText={setDisplayName}
             autoCapitalize="words"
+          />
+
+          <TextInput
+            style={styles.input}
+            placeholder="Username (required, 3-20 chars)"
+            value={username}
+            onChangeText={(text) => setUsername(text.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={20}
+            required
           />
 
           <TextInput

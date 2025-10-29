@@ -7,7 +7,9 @@ export interface Book {
   status?: 'pending' | 'approved' | 'rejected' | 'incomplete';
   scannedAt?: number;
   coverUrl?: string;
+  localCoverPath?: string; // Local cached path for offline access
   googleBooksId?: string;
+  description?: string; // Book description from Google Books API
 }
 
 export interface Photo {
@@ -20,6 +22,7 @@ export interface Photo {
 export interface User {
   uid: string;
   email: string;
+  username: string; // Required unique identifier for speculation/search
   displayName?: string;
   photoURL?: string;
 }
