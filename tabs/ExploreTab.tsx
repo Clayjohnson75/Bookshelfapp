@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
 
@@ -20,6 +20,7 @@ interface User {
 }
 
 export const ExploreTab: React.FC = () => {
+  const insets = useSafeAreaInsets();
   const { searchUsers, user: currentUser } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -68,7 +69,8 @@ export const ExploreTab: React.FC = () => {
   );
 
   return (
-    <SafeAreaView style={styles.safeContainer}>
+    <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
+      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Explore</Text>

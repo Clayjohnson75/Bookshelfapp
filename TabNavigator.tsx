@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Image } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { ScansTab } from './tabs/ScansTab';
 import { ExploreTab } from './tabs/ExploreTab';
@@ -37,6 +37,13 @@ export const TabNavigator = () => {
           component={MyLibraryTab}
           options={{
             tabBarLabel: 'My Library',
+            tabBarIcon: ({ color, size }) => (
+              <Image
+                source={require('./assets/logo/logo.png')}
+                style={{ width: size + 2, height: size + 2 }}
+                resizeMode="contain"
+              />
+            ),
           }}
         />
       </Tab.Navigator>

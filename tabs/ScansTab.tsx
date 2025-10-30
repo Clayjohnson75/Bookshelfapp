@@ -12,7 +12,7 @@ import {
   Image,
   TextInput
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -24,6 +24,25 @@ import { Book, Photo } from '../types/BookTypes';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
+// Utility: wait for ms
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Utility: retry a scan function that returns Book[]
+async function withRetries(fn: () => Promise<Book[]>, tries = 2, backoffMs = 1200): Promise<Book[]> {
+  let last: Book[] = [];
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const res = await fn();
+      if (Array.isArray(res) && res.length > 0) return res;
+      last = res;
+    } catch (e) {
+      // ignore and backoff
+    }
+    if (attempt < tries - 1) await delay(backoffMs * (attempt + 1));
+  }
+  return last;
+}
+
 interface ScanQueueItem {
   id: string;
   uri: string;
@@ -31,6 +50,7 @@ interface ScanQueueItem {
 }
 
 export const ScansTab: React.FC = () => {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { scanProgress, setScanProgress, updateProgress } = useScanning();
   
@@ -63,6 +83,33 @@ export const ScansTab: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [manualTitle, setManualTitle] = useState('');
   const [manualAuthor, setManualAuthor] = useState('');
+
+  // Smart search for editing incomplete books: auto-search as user types title/author
+  useEffect(() => {
+    const titleQ = manualTitle.trim();
+    const authorQ = manualAuthor.trim();
+    const q = [titleQ, authorQ].filter(Boolean).join(' ');
+    if (!showEditModal) return; // Only when modal open
+    if (q.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      try {
+        setIsSearching(true);
+        const response = await fetch(
+          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10`
+        );
+        const data = await response.json();
+        setSearchResults(data.items || []);
+      } catch (err) {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [manualTitle, manualAuthor, showEditModal]);
   
   // Selection states
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
@@ -154,12 +201,17 @@ export const ScansTab: React.FC = () => {
     try {
       console.log(`Analyzing book with ChatGPT: "${book.title}" by "${book.author}"`);
       
+      // Hard timeout so OpenAI cannot hang the scan
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s
+
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
         },
+        signal: controller.signal,
         body: JSON.stringify({
           model: 'gpt-4o',
           messages: [
@@ -289,6 +341,31 @@ Remember: Respond with ONLY the JSON object, nothing else.`
       throw new Error('Failed to get base64 from ImageManipulator');
     } catch (error) {
       console.error(' Image conversion failed:', error);
+      throw error;
+    }
+  };
+
+  // Downscale and convert to base64 for fallback attempts
+  const convertImageToBase64Resized = async (uri: string, maxWidth: number, quality: number): Promise<string> => {
+    try {
+      console.log('🔄 Converting resized image to base64...');
+      const manipulatedImage = await ImageManipulator.manipulateAsync(
+        uri,
+        [
+          { resize: { width: maxWidth } },
+        ],
+        {
+          compress: quality,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        }
+      );
+      if (manipulatedImage.base64) {
+        return `data:image/jpeg;base64,${manipulatedImage.base64}`;
+      }
+      throw new Error('Failed to get base64 from resized ImageManipulator');
+    } catch (error) {
+      console.error(' Resized image conversion failed:', error);
       throw error;
     }
   };
@@ -469,12 +546,17 @@ Remember: Respond with ONLY the JSON object, nothing else.`
     try {
       console.log(' OpenAI scanning image...');
       
+      // Prevent long hangs from the API by aborting after 15s
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
         },
+        signal: controller.signal,
         body: JSON.stringify({
           model: 'gpt-4o',
           messages: [
@@ -507,7 +589,7 @@ Return the JSON array now. Do not include any text before or after the array.`
               ]
             }
           ],
-          max_tokens: 4000,
+          max_tokens: 1200,
           temperature: 0.1,
         }),
       });
@@ -517,23 +599,23 @@ Return the JSON array now. Do not include any text before or after the array.`
       }
 
       const data = await response.json();
-      let content = data.choices[0].message.content;
+      clearTimeout(timeoutId);
+      let content = data.choices?.[0]?.message?.content?.trim() || '';
 
-      // Clean up markdown formatting if present
-      if (content.includes('```json')) {
+      if (content.includes('```')) {
         content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
       }
 
-      content = content.trim();
-      
       if (!content.startsWith('[') && !content.startsWith('{')) {
-        console.warn(' OpenAI returned non-JSON content, returning empty array');
         return [];
       }
 
-      const parsedBooks = JSON.parse(content);
-      console.log(' OpenAI scan completed:', parsedBooks);
-      return Array.isArray(parsedBooks) ? parsedBooks : [];
+      try {
+        const parsedBooks = JSON.parse(content);
+        return Array.isArray(parsedBooks) ? parsedBooks : [];
+      } catch (_) {
+        return [];
+      }
       
     } catch (error) {
       console.error(' OpenAI scan failed:', error);
@@ -582,7 +664,10 @@ No explanations, just JSON.`
       });
 
       if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status} - ${await response.text()}`);
+        // If overloaded (503), suggest retry by returning [] to withRetries
+        const bodyText = await response.text();
+        console.warn(`Gemini error ${response.status}: ${bodyText.slice(0, 180)}`);
+        return [];
       }
 
       const data = await response.json();
@@ -732,49 +817,63 @@ No explanations, just JSON.`
 
   const mergeBookResults = (openaiBooks: Book[], geminiBooks: Book[]): Book[] => {
     console.log(` Merging results: ${openaiBooks.length} from OpenAI + ${geminiBooks.length} from Gemini`);
-    
-    const merged = [...openaiBooks];
-    
-    // Add Gemini books that aren't already detected by OpenAI
-    for (const geminiBook of geminiBooks) {
-      const isDuplicate = merged.some(book => 
-        book.title.toLowerCase().includes(geminiBook.title.toLowerCase()) ||
-        geminiBook.title.toLowerCase().includes(book.title.toLowerCase())
-      );
-      
-      if (!isDuplicate) {
-        merged.push(geminiBook);
-      }
+
+    const normalize = (s?: string) => (s || '').trim().toLowerCase();
+    const makeKey = (b: Book) => `${normalize(b.title)}|${normalize(b.author)}`;
+
+    const unique: Record<string, Book> = {};
+    for (const b of openaiBooks) {
+      const k = makeKey(b);
+      if (!unique[k]) unique[k] = b;
     }
-    
+    for (const b of geminiBooks) {
+      const k = makeKey(b);
+      if (!unique[k]) unique[k] = b;
+    }
+    const merged = Object.values(unique);
     console.log(` Merged total: ${merged.length} unique books`);
     return merged;
   };
 
-  const scanImageWithAI = async (imageDataURL: string): Promise<Book[]> => {
+  const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<Book[]> => {
     try {
       console.log(' Starting dual AI scan...');
       
-      // Start OpenAI scan (primary)
-      const openaiPromise = scanImageWithOpenAI(imageDataURL);
-      
-      // Try Gemini scan (optional - don't fail if it errors)
-      const geminiPromise = scanImageWithGemini(imageDataURL).catch(error => {
-        console.warn(' Gemini scan failed, continuing with OpenAI only:', error.message);
-        return []; // Return empty array if Gemini fails
-      });
-      
-      // Wait for both (Gemini won't block if it fails)
-      const [openaiResults, geminiResults] = await Promise.all([
-        openaiPromise,
-        geminiPromise
+      // Run both with retries so transient failures don't yield zero results
+      // First attempt on original image
+      const [openaiPrimary, geminiPrimary] = await Promise.all([
+        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 1000),
+        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 1000),
       ]);
+
+      let openaiResults = openaiPrimary;
+      let geminiResults = geminiPrimary;
+
+      // If both failed or empty, retry with downscaled fallback (up to 2 attempts each)
+      if ((openaiPrimary.length === 0) && (geminiPrimary.length === 0)) {
+        const [openaiFallback, geminiFallback] = await Promise.all([
+          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1500),
+          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1500),
+        ]);
+        openaiResults = openaiFallback;
+        geminiResults = geminiFallback;
+      }
       
       // Merge the results (will just use OpenAI if Gemini failed)
       const mergedResults = mergeBookResults(openaiResults, geminiResults);
+
+      // Defensive final de-duplication
+      const normalize = (s?: string) => (s || '').trim().toLowerCase();
+      const seen = new Set<string>();
+      const deduped = mergedResults.filter(b => {
+        const key = `${normalize(b.title)}|${normalize(b.author)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       
       console.log(' Dual AI scan completed');
-      return mergedResults;
+      return deduped;
       
     } catch (error) {
       console.error(' Dual AI scan failed:', error);
@@ -815,8 +914,12 @@ No explanations, just JSON.`
       updateProgress({ currentStep: 2, totalScans: totalScans });
       setCurrentScan({ id: scanId, uri, progress: { current: 2, total: 10 } });
       
+      // Prepare a downscaled fallback (done in parallel to save time)
+      const fallbackPromise = convertImageToBase64Resized(uri, 1400, 0.5).catch(() => null);
+
       // Step 3: Scanning with AI (40%)
-      const detectedBooks = await scanImageWithAI(imageDataURL);
+      const fallbackDataURL = await fallbackPromise || imageDataURL;
+      const detectedBooks = await scanImageWithAI(imageDataURL, fallbackDataURL);
       updateProgress({ currentStep: 4, totalScans: totalScans });
       setCurrentScan({ id: scanId, uri, progress: { current: 4, total: 10 } });
       
@@ -895,6 +998,8 @@ No explanations, just JSON.`
       
       setPhotos(updatedPhotos);
       setPendingBooks(updatedPending);
+      // Ensure no book appears pre-selected after new results arrive
+      setSelectedBooks(new Set());
       console.log(' Setting pending books:', updatedPending);
       console.log(' Incomplete books stored in photo:', newIncompleteBooks.length);
       await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
@@ -1180,6 +1285,9 @@ No explanations, just JSON.`
       status: 'pending'
     };
     
+    // Clear any lingering selections before a new scan starts
+    setSelectedBooks(new Set());
+
     setScanQueue(prev => {
       const updatedQueue = [...prev, newScanItem];
       
@@ -1302,7 +1410,33 @@ No explanations, just JSON.`
   }
 
   return (
-    <SafeAreaView style={styles.safeContainer}>
+    <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
+      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
+      {/* Sticky bulk action toolbar */}
+      {pendingBooks.length > 0 && (
+        <View style={styles.stickyToolbar}>
+          <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
+          <View style={styles.stickyToolbarRow}>
+            <Text style={styles.stickySelectedCount}>{selectedBooks.size} selected</Text>
+            <TouchableOpacity 
+              style={[styles.stickyButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
+              onPress={approveSelectedBooks}
+              activeOpacity={0.8}
+              disabled={selectedBooks.size === 0}
+            >
+              <Text style={styles.stickyButtonText}>Add Selected</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.stickyDeleteButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
+              onPress={rejectSelectedBooks}
+              activeOpacity={0.8}
+              disabled={selectedBooks.size === 0}
+            >
+              <Text style={styles.stickyDeleteButtonText}>Delete Selected</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
       <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Book Scanner</Text>
@@ -1386,45 +1520,31 @@ No explanations, just JSON.`
                 onPress={() => toggleBookSelection(book.id)}
                 activeOpacity={0.7}
               >
-              <View style={styles.bookHeader}>
-                {/* Selection Indicator */}
-                <View style={styles.selectionIndicator}>
-                  {selectedBooks.has(book.id) ? (
-                    <View style={styles.selectedCheckbox}>
-                      <Text style={styles.checkmark}>✓</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.unselectedCheckbox} />
-                  )}
-                </View>
-              </View>
+              {/* Header removed: no circular selection indicator */}
 
-              {/* Top Half: Cover on left, Text on right */}
+              {/* Cover area: show cover or placeholder with title text; author below */}
               <View style={styles.bookTopSection}>
-                {getBookCoverUri(book) && (
+                {getBookCoverUri(book) ? (
                   <Image 
                     source={{ uri: getBookCoverUri(book) }} 
                     style={styles.bookCover}
                   />
+                ) : (
+                  <View style={[styles.bookCover, styles.placeholderCover]}>
+                    <Text style={styles.placeholderText} numberOfLines={3}>
+                      {book.title}
+                    </Text>
+                  </View>
                 )}
                 <View style={styles.bookInfo}>
-                  <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                  {book.author && <Text style={styles.bookAuthor} numberOfLines={1}>by {book.author}</Text>}
+                  {book.author && (
+                    <Text style={styles.bookAuthor} numberOfLines={2} ellipsizeMode="tail">
+                      {book.author}
+                    </Text>
+                  )}
                 </View>
               </View>
               
-              {/* Bottom Half: Delete Button */}
-              <TouchableOpacity 
-                style={styles.deleteButton}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  rejectBook(book.id);
-                }}
-                activeOpacity={0.8}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Text style={styles.deleteButtonText}>Delete</Text>
-              </TouchableOpacity>
             </TouchableOpacity>
           ))}
           </View>
@@ -1457,27 +1577,7 @@ No explanations, just JSON.`
       )}
 
 
-      {/* Rejected Books - At Bottom */}
-      {rejectedBooks.length > 0 && (
-        <View style={styles.rejectedSection}>
-          <Text style={styles.sectionTitle}>Rejected Books ({rejectedBooks.length})</Text>
-          <Text style={styles.sectionSubtitle}>Books you chose not to add to your library</Text>
-          {rejectedBooks.map((book) => (
-            <View key={book.id} style={styles.rejectedBookCard}>
-              {getBookCoverUri(book) && (
-                <Image 
-                  source={{ uri: getBookCoverUri(book) }} 
-                  style={styles.bookCover}
-                />
-              )}
-              <View style={styles.bookInfo}>
-                <Text style={styles.bookTitle}>{book.title}</Text>
-                {book.author && <Text style={styles.bookAuthor}>by {book.author}</Text>}
-              </View>
-            </View>
-          ))}
-        </View>
-      )}
+      {/* Rejected Books section removed per request */}
 
       {/* Scan Details Modal */}
       <Modal
@@ -1634,7 +1734,7 @@ No explanations, just JSON.`
             <ScrollView style={styles.modalContent}>
               <View style={styles.editSection}>
                 <Text style={styles.editLabel}>Edit Book Title and Author:</Text>
-                <Text style={styles.editSubLabel}>Enter the correct information to move this book to pending</Text>
+                <Text style={styles.editSubLabel}>Enter the correct information to move this book to pending. Results update as you type.</Text>
                 
                 <Text style={styles.editLabel}>Title:</Text>
                 <TextInput
@@ -1760,12 +1860,15 @@ No explanations, just JSON.`
                 <TouchableOpacity
                   style={styles.searchButton}
                   onPress={async () => {
-                    if (!searchQuery.trim()) return;
+                    // Manual trigger remains, but auto-search already runs as you type
+                    const titleQ = manualTitle.trim();
+                    const authorQ = manualAuthor.trim();
+                    const q = [titleQ, authorQ].filter(Boolean).join(' ');
+                    if (!q) return;
                     setIsSearching(true);
                     try {
-                      const query = encodeURIComponent(searchQuery.trim());
                       const response = await fetch(
-                        `https://www.googleapis.com/books/v1/volumes?q=${query}&maxResults=10`
+                        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10`
                       );
                       const data = await response.json();
                       setSearchResults(data.items || []);
@@ -1958,15 +2061,18 @@ const styles = StyleSheet.create({
     paddingBottom: 50,
   },
   captureButton: {
-    backgroundColor: 'white',
-    borderRadius: 35,
-    width: 70,
-    height: 70,
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    width: 120,
+    height: 44,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   captureButtonText: {
-    fontSize: 30,
+    fontSize: 16,
+    fontWeight: '700',
   },
   queueSection: {
     backgroundColor: '#ffffff',
@@ -2023,19 +2129,21 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   pendingBookCard: {
-    backgroundColor: '#f7fafc',
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: 'transparent',
+    borderRadius: 8,
+    padding: 0,
     marginBottom: 12,
+    marginHorizontal: 4,
     flexDirection: 'column',
-    borderWidth: 2,
-    borderColor: '#FFA500',
-    width: '48%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    width: (screenWidth - 94) / 4,
+    alignItems: 'center',
+    shadowColor: 'transparent',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   bookHeader: {
     flexDirection: 'row',
@@ -2049,10 +2157,25 @@ const styles = StyleSheet.create({
   },
   bookCover: {
     width: '100%',
-    height: 140,
+    aspectRatio: 2 / 3,
     borderRadius: 8,
     marginBottom: 6,
     backgroundColor: '#e0e0e0',
+  },
+  placeholderCover: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 8,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  placeholderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4a5568',
+    textAlign: 'center',
+    lineHeight: 14,
   },
   bookInfo: {
     width: '100%',
@@ -2068,11 +2191,12 @@ const styles = StyleSheet.create({
   },
   bookAuthor: {
     fontSize: 11,
-    color: '#718096',
-    fontStyle: 'italic',
+    color: '#4a5568',
     marginBottom: 6,
     textAlign: 'center',
-    fontWeight: '500',
+    fontWeight: '600',
+    lineHeight: 14,
+    paddingHorizontal: 2,
   },
   bookActions: {
     flexDirection: 'row',
@@ -2733,34 +2857,84 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   selectedBookCard: {
-    backgroundColor: '#f0fdf4',
+    backgroundColor: 'transparent',
     borderColor: '#4caf50',
     borderWidth: 2,
   },
-  selectionIndicator: {
-    alignSelf: 'flex-end',
+  stickyToolbar: {
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  selectedCheckbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#4caf50',
-    justifyContent: 'center',
+  stickyToolbarTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 8,
+  },
+  stickyToolbarRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
-  unselectedCheckbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#ccc',
-    backgroundColor: 'white',
+  stickySelectedCount: {
+    fontSize: 13,
+    color: '#4a5568',
+    marginRight: 8,
+    flex: 1,
   },
-  checkmark: {
-    color: 'white',
+  stickyButton: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#005FCC',
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  stickyButtonDisabled: {
+    opacity: 0.5,
+  },
+  stickyButtonText: {
+    color: '#ffffff',
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
+  stickyDeleteButton: {
+    backgroundColor: '#E53935',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#C62828',
+    shadowColor: '#E53935',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  stickyDeleteButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  selectionIndicator: {},
+  selectedCheckbox: {},
+  unselectedCheckbox: {},
+  checkmark: {},
 });
 
 

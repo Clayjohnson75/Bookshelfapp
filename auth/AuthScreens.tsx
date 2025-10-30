@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useAuth } from './SimpleAuthContext';
 
@@ -18,19 +19,19 @@ interface AuthScreenProps {
 }
 
 export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true); // Show by default
   const [showSignUp, setShowSignUp] = useState(false);
   const { signIn, loading } = useAuth();
 
   const handleLogin = async () => {
-    if (!email || !password) {
+    if (!identifier || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
-    const success = await signIn(email, password);
+    const success = await signIn(identifier, password);
     if (success) {
       onAuthSuccess();
     }
@@ -44,24 +45,24 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Text style={styles.title}>📚 Bookshelf Scanner</Text>
+          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>Bookshelf Scanner</Text>
           <Text style={styles.subtitle}>Sign in to access your library</Text>
         </View>
 
         <View style={styles.form}>
           <TextInput
             style={styles.input}
-            placeholder="Email"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
+            placeholder="Email or Username"
+            value={identifier}
+            onChangeText={setIdentifier}
             autoCapitalize="none"
             autoCorrect={false}
           />
 
           <View style={styles.passwordContainer}>
             <TextInput
-              style={[styles.input, styles.passwordInput]}
+              style={[styles.inputField, styles.passwordInput]}
               placeholder="Password"
               value={password}
               onChangeText={setPassword}
@@ -71,8 +72,9 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             <TouchableOpacity 
               style={styles.eyeButton}
               onPress={() => setShowPassword(!showPassword)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonText}>{showPassword ? '👁️' : '🙈'}</Text>
+              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -145,7 +147,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Text style={styles.title}>📚 Bookshelf Scanner</Text>
+          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>Bookshelf Scanner</Text>
           <Text style={styles.subtitle}>Create your account</Text>
         </View>
 
@@ -181,7 +184,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
 
           <View style={styles.passwordContainer}>
             <TextInput
-              style={[styles.input, styles.passwordInput]}
+              style={[styles.inputField, styles.passwordInput]}
               placeholder="Password (min 6 characters)"
               value={password}
               onChangeText={setPassword}
@@ -191,14 +194,15 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TouchableOpacity 
               style={styles.eyeButton}
               onPress={() => setShowPassword(!showPassword)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonText}>{showPassword ? '👁️' : '🙈'}</Text>
+              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.passwordContainer}>
             <TextInput
-              style={[styles.input, styles.passwordInput]}
+              style={[styles.inputField, styles.passwordInput]}
               placeholder="Confirm Password"
               value={confirmPassword}
               onChangeText={setConfirmPassword}
@@ -208,8 +212,9 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TouchableOpacity 
               style={styles.eyeButton}
               onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonText}>{showConfirmPassword ? '👁️' : '🙈'}</Text>
+              <Text style={styles.eyeButtonPlain}>{showConfirmPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -240,26 +245,39 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#ffffff',
   },
   scrollContainer: {
     flexGrow: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     padding: 20,
+    paddingTop: 40,
   },
   header: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 32,
+    backgroundColor: 'transparent',
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderRadius: 0,
+  },
+  logo: {
+    width: 240,
+    height: 240,
+    marginBottom: 12,
+    backgroundColor: 'transparent',
   },
   title: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#333',
+    fontWeight: '800',
+    color: '#1a1a2e',
     marginBottom: 8,
+    letterSpacing: 0.5,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
+    color: '#1a1a2e',
+    fontWeight: '500',
   },
   form: {
     width: '100%',
@@ -268,8 +286,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     paddingHorizontal: 20,
     paddingVertical: 15,
-    borderRadius: 25,
+    borderRadius: 12,
     marginBottom: 15,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  // Input field used inside passwordContainer, matches .input dimensions
+  inputField: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderRadius: 12,
     fontSize: 16,
     borderWidth: 1,
     borderColor: '#e0e0e0',
@@ -279,9 +308,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 15,
     position: 'relative',
+    borderRadius: 12,
   },
   passwordInput: {
-    paddingRight: 50, // Leave space for the eye button
+    paddingRight: 70, // Leave space for the eye button
   },
   eyeButton: {
     position: 'absolute',
@@ -289,12 +319,14 @@ const styles = StyleSheet.create({
     padding: 10,
     zIndex: 1,
   },
-  eyeButtonText: {
-    fontSize: 20,
+  eyeButtonPlain: {
+    fontSize: 13,
+    color: '#007AFF',
+    fontWeight: '600',
   },
   button: {
     paddingVertical: 15,
-    borderRadius: 25,
+    borderRadius: 12,
     alignItems: 'center',
     marginBottom: 15,
   },

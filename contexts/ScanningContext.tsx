@@ -7,6 +7,7 @@ interface ScanProgress {
   totalScans: number;
   completedScans: number;
   failedScans: number;
+  startTimestamp?: number;
 }
 
 interface ScanningContextType {
@@ -34,10 +35,9 @@ export const ScanningProvider: React.FC<ScanningProviderProps> = ({ children }) 
 
   const updateProgress = (update: Partial<ScanProgress>) => {
     setScanProgress(prev => {
-      if (!prev) {
-        return update as ScanProgress;
-      }
-      return { ...prev, ...update };
+      const base = prev || ({} as ScanProgress);
+      const start = base.startTimestamp || update.startTimestamp || Date.now();
+      return { ...base, ...update, startTimestamp: start } as ScanProgress;
     });
   };
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   View, 
   Text, 
@@ -12,7 +12,8 @@ import {
   TextInput,
   Alert
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -24,6 +25,7 @@ import BookDetailModal from '../components/BookDetailModal';
 const { width: screenWidth } = Dimensions.get('window');
 
 export const MyLibraryTab: React.FC = () => {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -37,6 +39,33 @@ export const MyLibraryTab: React.FC = () => {
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
   const [photoCaption, setPhotoCaption] = useState('');
   const [deleteConfirmPhoto, setDeleteConfirmPhoto] = useState<Photo | null>(null);
+  const [deleteGuard, setDeleteGuard] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [bookSearchQuery, setBookSearchQuery] = useState('');
+  const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
+  const [bookSearchLoading, setBookSearchLoading] = useState(false);
+
+  const filteredBooks = useMemo(() => {
+    const q = librarySearch.trim().toLowerCase();
+    if (!q) return books;
+
+    // Prioritize starts-with matches on title or author, then fallback to contains
+    const startsWithMatches = books.filter(b => {
+      const title = (b.title || '').toLowerCase();
+      const author = (b.author || '').toLowerCase();
+      return title.startsWith(q) || author.startsWith(q);
+    });
+
+    const containsMatches = books.filter(b => {
+      const title = (b.title || '').toLowerCase();
+      const author = (b.author || '').toLowerCase();
+      return (title.includes(q) || author.includes(q)) && !(title.startsWith(q) || author.startsWith(q));
+    });
+
+    return [...startsWithMatches, ...containsMatches];
+  }, [books, librarySearch]);
+
+  const displayedBooks = librarySearch.trim() ? filteredBooks : books;
 
   useEffect(() => {
     loadUserData();
@@ -242,7 +271,8 @@ export const MyLibraryTab: React.FC = () => {
   };
 
   return (
-    <SafeAreaView style={styles.safeContainer}>
+    <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
+      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* User Profile Header */}
       <View style={styles.profileHeader}>
@@ -268,7 +298,7 @@ export const MyLibraryTab: React.FC = () => {
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Text style={styles.settingsButtonIcon}>⚙️</Text>
+            <Ionicons name="settings-outline" size={22} color="#ffffff" />
           </TouchableOpacity>
         </View>
       </View>
@@ -329,20 +359,41 @@ export const MyLibraryTab: React.FC = () => {
       <View style={styles.booksSection}>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>My Library</Text>
-          <Text style={styles.sectionSubtitle}>{books.length} {books.length === 1 ? 'book' : 'books'}</Text>
+          <Text style={styles.sectionSubtitle}>{displayedBooks.length} {displayedBooks.length === 1 ? 'book' : 'books'}</Text>
+        </View>
+        {/* Library Search Bar */}
+        <View style={styles.librarySearchContainer}>
+          <TextInput
+            style={styles.librarySearchInput}
+            value={librarySearch}
+            onChangeText={setLibrarySearch}
+            placeholder="Search by title or author..."
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="never"
+          />
+          {librarySearch.length > 0 && (
+            <TouchableOpacity
+              onPress={() => setLibrarySearch('')}
+              style={styles.librarySearchClear}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.librarySearchClearText}>×</Text>
+            </TouchableOpacity>
+          )}
         </View>
         
-        {books.length === 0 ? (
+        {displayedBooks.length === 0 ? (
           <View style={styles.emptyState}>
-            <View style={styles.emptyStateIcon}>
-              <Text style={styles.emptyStateIconText}>📖</Text>
-            </View>
-            <Text style={styles.emptyStateText}>Your Library Awaits</Text>
-            <Text style={styles.emptyStateSubtext}>Start scanning to build your collection</Text>
+            <View style={styles.emptyStateIcon} />
+            <Text style={styles.emptyStateText}>{librarySearch.trim() ? 'No results' : 'Your Library Awaits'}</Text>
+            <Text style={styles.emptyStateSubtext}>
+              {librarySearch.trim() ? 'Try a different search term' : 'Start scanning to build your collection'}
+            </Text>
           </View>
         ) : (
           <FlatList
-            data={books}
+            data={displayedBooks}
             renderItem={renderBook}
             keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
             numColumns={4}
@@ -408,6 +459,7 @@ export const MyLibraryTab: React.FC = () => {
                   <TouchableOpacity
                     style={styles.photoCardContent}
                     onPress={() => {
+                      if (deleteGuard) { setDeleteGuard(false); return; }
                       setEditingPhoto(photo);
                       setPhotoCaption(photo.caption || '');
                       setShowPhotos(false); // Close Photos modal to show Edit modal
@@ -418,6 +470,7 @@ export const MyLibraryTab: React.FC = () => {
                       <Image source={{ uri: photo.uri }} style={styles.photoImage} />
                       <TouchableOpacity
                         style={styles.photoDeleteButton}
+                        onPressIn={() => setDeleteGuard(true)}
                         onPress={() => {
                           setDeleteConfirmPhoto(photo);
                         }}
@@ -449,63 +502,55 @@ export const MyLibraryTab: React.FC = () => {
               ))
             )}
           </ScrollView>
+          {/* Inline Delete Confirmation Overlay (renders over Photos screen) */}
+          {deleteConfirmPhoto && (
+            <View style={styles.confirmModalOverlay}>
+              <View style={styles.confirmModalContent}>
+                <Text style={styles.confirmModalTitle}>Delete Photo</Text>
+                <Text style={styles.confirmModalMessage}>
+                  Are you sure you want to delete this photo? This will not remove the books from your library.
+                </Text>
+                <View style={styles.confirmModalButtons}>
+                  <TouchableOpacity
+                    style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { marginRight: 12 }]}
+                    onPress={() => setDeleteConfirmPhoto(null)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.confirmModalButtonCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.confirmModalButton, styles.confirmModalButtonDelete]}
+                    onPress={async () => {
+                      if (!user || !deleteConfirmPhoto) return;
+                      try {
+                        const updatedPhotos = photos.filter(p => p.id !== deleteConfirmPhoto.id);
+                        setPhotos(updatedPhotos);
+                        // If currently editing the same photo, close editor state
+                        if (editingPhoto && editingPhoto.id === deleteConfirmPhoto.id) {
+                          setEditingPhoto(null);
+                          setPhotoCaption('');
+                        }
+                        const userPhotosKey = `photos_${user.uid}`;
+                        await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                        setDeleteConfirmPhoto(null);
+                        // No reload here; rely on optimistic state for instant UI update
+                      } catch (error) {
+                        console.error('Error deleting photo:', error);
+                        setDeleteConfirmPhoto(null);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.confirmModalButtonDeleteText}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
         </SafeAreaView>
       </Modal>
 
-      {/* Delete Confirmation Modal */}
-      {deleteConfirmPhoto && (
-        <Modal
-          visible={true}
-          animationType="none"
-          transparent={true}
-          onRequestClose={() => setDeleteConfirmPhoto(null)}
-        >
-          <View style={styles.confirmModalOverlay}>
-            <View style={styles.confirmModalContent}>
-            <Text style={styles.confirmModalTitle}>Delete Photo</Text>
-            <Text style={styles.confirmModalMessage}>
-              Are you sure you want to delete this photo? This will not remove the books from your library.
-            </Text>
-            <View style={styles.confirmModalButtons}>
-              <TouchableOpacity
-                style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { marginRight: 12 }]}
-                onPress={() => setDeleteConfirmPhoto(null)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.confirmModalButtonCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.confirmModalButton, styles.confirmModalButtonDelete]}
-                onPress={async () => {
-                  if (!user || !deleteConfirmPhoto) return;
-                  try {
-                    const updatedPhotos = photos.filter(p => p.id !== deleteConfirmPhoto.id);
-                    setPhotos(updatedPhotos);
-                    
-                    const userPhotosKey = `photos_${user.uid}`;
-                    await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
-                    
-                    setDeleteConfirmPhoto(null);
-                    // Reload data to refresh the filtered photos
-                    loadUserData();
-                  } catch (error) {
-                    console.error('Error deleting photo:', error);
-                    setDeleteConfirmPhoto(null);
-                    // Show error in a simple way without Alert
-                    setTimeout(() => {
-                      setDeleteConfirmPhoto(null);
-                    }, 100);
-                  }
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.confirmModalButtonDeleteText}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-        </Modal>
-      )}
+      
 
       {/* Edit Photo Caption Modal */}
       <Modal
@@ -529,8 +574,7 @@ export const MyLibraryTab: React.FC = () => {
               activeOpacity={0.7}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Text style={styles.modalBackButtonText}>←</Text>
-              <Text style={styles.modalBackButtonLabel}>Back</Text>
+            <Text style={styles.modalBackButtonLabel}>Back</Text>
             </TouchableOpacity>
             <Text style={styles.modalHeaderTitle}>Edit Photo</Text>
             <View style={styles.modalHeaderSpacer} />
@@ -584,6 +628,97 @@ export const MyLibraryTab: React.FC = () => {
                 </TouchableOpacity>
               </View>
 
+              {/* Add Books That We Missed */}
+              <View style={styles.addBooksSection}>
+                <Text style={styles.addBooksTitle}>Add Books That We Missed</Text>
+                <View style={styles.addBooksSearchRow}>
+                  <TextInput
+                    style={styles.addBooksSearchInput}
+                    value={bookSearchQuery}
+                    onChangeText={setBookSearchQuery}
+                    placeholder="Search by title or author..."
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity
+                    style={styles.addBooksSearchButton}
+                    onPress={async () => {
+                      const q = bookSearchQuery.trim();
+                      if (!q) return;
+                      try {
+                        setBookSearchLoading(true);
+                        const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=8`);
+                        const data = await response.json();
+                        setBookSearchResults(data.items || []);
+                      } catch (e) {
+                        setBookSearchResults([]);
+                      } finally {
+                        setBookSearchLoading(false);
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.addBooksSearchButtonText}>{bookSearchLoading ? 'Searching…' : 'Search'}</Text>
+                  </TouchableOpacity>
+                </View>
+                {bookSearchResults.length > 0 && (
+                  <View style={styles.addBooksResults}>
+                    {bookSearchResults.map((item, idx) => {
+                      const vi = item.volumeInfo || {};
+                      const title = vi.title || 'Unknown Title';
+                      const author = (vi.authors && vi.authors[0]) || 'Unknown';
+                      const coverUrl = vi.imageLinks?.thumbnail?.replace('http:', 'https:');
+                      return (
+                        <TouchableOpacity
+                          key={item.id || idx}
+                          style={styles.addBooksResultRow}
+                          onPress={async () => {
+                            if (!user || !editingPhoto) return;
+                            try {
+                              const newBook: Book = {
+                                id: `${editingPhoto.id}_added_${Date.now()}`,
+                                title,
+                                author,
+                                status: 'approved',
+                                scannedAt: Date.now(),
+                                coverUrl: coverUrl,
+                                googleBooksId: item.id,
+                              } as any;
+
+                              const updatedPhotos = photos.map(p =>
+                                p.id === editingPhoto.id
+                                  ? { ...p, books: [...p.books, { ...newBook, addedViaSearch: true }] }
+                                  : p
+                              );
+                              setPhotos(updatedPhotos);
+
+                              const newApproved = [...books, newBook];
+                              setBooks(newApproved);
+
+                              const userPhotosKey = `photos_${user.uid}`;
+                              const userApprovedKey = `approved_books_${user.uid}`;
+                              await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                              await AsyncStorage.setItem(userApprovedKey, JSON.stringify(newApproved));
+
+                              setEditingPhoto({ ...editingPhoto, books: [...editingPhoto.books, { ...newBook, addedViaSearch: true }] });
+                              setBookSearchQuery('');
+                              setBookSearchResults([]);
+                            } catch (err) {
+                              // noop
+                            }
+                          }}
+                        >
+                          <View style={styles.addBooksResultInfo}>
+                            <Text style={styles.addBooksResultTitle} numberOfLines={1}>{title}</Text>
+                            <Text style={styles.addBooksResultAuthor} numberOfLines={1}>{author}</Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+
               {/* Books from this photo that are in the library */}
               {editingPhoto.books.filter(photoBook => {
                 // Only show books that are actually in the library (approved)
@@ -622,61 +757,47 @@ export const MyLibraryTab: React.FC = () => {
                   </View>
                 </View>
               )}
+
+              {/* Added Via Search */}
+              {editingPhoto.books.filter(b => (b as any).addedViaSearch).length > 0 && (
+                <View style={styles.addedViaSearchSection}>
+                  <Text style={styles.addedViaSearchTitle}>Added Via Search</Text>
+                  <View style={styles.addedViaSearchChips}>
+                    {editingPhoto.books.filter(b => (b as any).addedViaSearch).map((book, index) => (
+                      <View key={`${book.id || index}`} style={styles.addedChip}>
+                        <Text style={styles.addedChipText} numberOfLines={1}>{book.title}</Text>
+                        <TouchableOpacity
+                          style={styles.addedChipRemove}
+                          onPress={async () => {
+                            if (!user || !editingPhoto) return;
+                            const updatedPhotoBooks = editingPhoto.books.filter(b => b.id !== book.id);
+                            const updatedPhotos = photos.map(p => p.id === editingPhoto.id ? { ...p, books: updatedPhotoBooks } : p);
+                            setPhotos(updatedPhotos);
+                            setEditingPhoto({ ...editingPhoto, books: updatedPhotoBooks });
+
+                            // Remove from library too
+                            const updatedApproved = books.filter(b => !(b.title === book.title && b.author === book.author));
+                            setBooks(updatedApproved);
+                            const userPhotosKey = `photos_${user.uid}`;
+                            const userApprovedKey = `approved_books_${user.uid}`;
+                            await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedApproved));
+                          }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={styles.addedChipRemoveText}>×</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
             </ScrollView>
           )}
         </SafeAreaView>
       </Modal>
 
-      {/* Delete Confirmation Modal - At root level for instant display */}
-      {deleteConfirmPhoto && (
-        <Modal
-          visible={true}
-          animationType="none"
-          transparent={true}
-          onRequestClose={() => setDeleteConfirmPhoto(null)}
-        >
-          <View style={styles.confirmModalOverlay}>
-            <View style={styles.confirmModalContent}>
-              <Text style={styles.confirmModalTitle}>Delete Photo</Text>
-              <Text style={styles.confirmModalMessage}>
-                Are you sure you want to delete this photo? This will not remove the books from your library.
-              </Text>
-              <View style={styles.confirmModalButtons}>
-                <TouchableOpacity
-                  style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { marginRight: 12 }]}
-                  onPress={() => setDeleteConfirmPhoto(null)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.confirmModalButtonCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.confirmModalButton, styles.confirmModalButtonDelete]}
-                  onPress={async () => {
-                    if (!user || !deleteConfirmPhoto) return;
-                    try {
-                      const updatedPhotos = photos.filter(p => p.id !== deleteConfirmPhoto.id);
-                      setPhotos(updatedPhotos);
-                      
-                      const userPhotosKey = `photos_${user.uid}`;
-                      await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
-                      
-                      setDeleteConfirmPhoto(null);
-                      // Reload data to refresh the filtered photos
-                      loadUserData();
-                    } catch (error) {
-                      console.error('Error deleting photo:', error);
-                      setDeleteConfirmPhoto(null);
-                    }
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.confirmModalButtonDeleteText}>Delete</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      )}
+      
     </SafeAreaView>
   );
 };
@@ -886,6 +1007,36 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+  },
+  librarySearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  librarySearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#1a202c',
+  },
+  librarySearchClear: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e2e8f0',
+  },
+  librarySearchClearText: {
+    fontSize: 18,
+    color: '#4a5568',
+    lineHeight: 20,
+    marginTop: -2,
   },
   sectionTitle: {
     fontSize: 22,
@@ -1155,6 +1306,129 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3,
   },
+  addBooksSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    marginHorizontal: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  addBooksTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+    letterSpacing: 0.3,
+  },
+  addBooksSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  addBooksSearchInput: {
+    flex: 1,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#1a202c',
+    marginRight: 8,
+  },
+  addBooksSearchButton: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  addBooksSearchButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  addBooksResults: {
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 8,
+  },
+  addBooksResultRow: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  addBooksResultInfo: {
+    flexDirection: 'column',
+  },
+  addBooksResultTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1a202c',
+  },
+  addBooksResultAuthor: {
+    fontSize: 12,
+    color: '#718096',
+  },
+  addedViaSearchSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 15,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  addedViaSearchTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 10,
+  },
+  addedViaSearchChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  addedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    maxWidth: '48%',
+  },
+  addedChipText: {
+    fontSize: 12,
+    color: '#1a202c',
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  addedChipRemove: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addedChipRemoveText: {
+    fontSize: 14,
+    color: '#4a5568',
+    lineHeight: 18,
+    marginTop: -1,
+  },
   photoBooksSection: {
     marginHorizontal: 15,
     marginBottom: 20,
@@ -1199,10 +1473,16 @@ const styles = StyleSheet.create({
     lineHeight: 11,
   },
   confirmModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 999,
+    paddingHorizontal: 16,
   },
   confirmModalContent: {
     backgroundColor: '#ffffff',

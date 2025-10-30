@@ -63,13 +63,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const signIn = async (email: string, password: string): Promise<boolean> => {
+  const signIn = async (emailOrUsername: string, password: string): Promise<boolean> => {
     try {
       setLoading(true);
       
       // Check if user exists in storage
       const usersData = await AsyncStorage.getItem('users');
       const users = usersData ? JSON.parse(usersData) : {};
+      const usernamesData = await AsyncStorage.getItem('usernames');
+      const usernames = usernamesData ? JSON.parse(usernamesData) : {};
+      
+      // Resolve identifier to email (supports username or email)
+      let email = emailOrUsername;
+      if (!emailOrUsername.includes('@')) {
+        const mappedEmail = usernames[emailOrUsername.toLowerCase()];
+        if (mappedEmail) {
+          email = mappedEmail;
+        }
+      }
       
       if (users[email] && users[email].password === password) {
         const userData: User = {

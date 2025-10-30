@@ -31,8 +31,18 @@ export const ScanningNotification: React.FC = () => {
   };
 
   const percentage = calculatePercentage();
-  const { totalScans, completedScans, failedScans, currentScanId } = scanProgress;
+  const { totalScans, completedScans, failedScans, currentScanId, startTimestamp } = scanProgress as any;
   const isCompleted = (completedScans + failedScans) >= totalScans && !currentScanId;
+
+  // Estimate remaining time (ETA) from startTimestamp and percentage
+  const renderEta = () => {
+    if (!startTimestamp || percentage <= 0 || percentage >= 100) return null;
+    const elapsedMs = Date.now() - startTimestamp;
+    const remainingMs = elapsedMs * (100 / percentage - 1);
+    const secs = Math.max(1, Math.round(remainingMs / 1000));
+    const label = secs > 60 ? `${Math.ceil(secs / 60)} min` : `${secs} sec`;
+    return <Text style={styles.eta}>{`~ ${label} remaining`}</Text>;
+  };
 
   if (isCompleted) {
     // Hide after completion
@@ -49,6 +59,7 @@ export const ScanningNotification: React.FC = () => {
           <Text style={styles.title}>Scanning...</Text>
           <Text style={styles.percentage}>{Math.round(percentage)}%</Text>
         </View>
+        {renderEta()}
         <Text style={styles.subtitle}>
           {currentScanId && totalScans > 0
             ? `Processing scan ${completedScans + failedScans + 1} of ${totalScans}`
@@ -111,6 +122,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#007AFF',
     letterSpacing: 0.3,
+  },
+  eta: {
+    fontSize: 12,
+    color: '#cbd5e0',
+    marginBottom: 6,
+    fontWeight: '500',
   },
   subtitle: {
     fontSize: 12,
