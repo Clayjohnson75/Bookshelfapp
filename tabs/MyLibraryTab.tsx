@@ -626,6 +626,57 @@ export const MyLibraryTab: React.FC = () => {
           )}
         </SafeAreaView>
       </Modal>
+
+      {/* Delete Confirmation Modal - At root level for instant display */}
+      {deleteConfirmPhoto && (
+        <Modal
+          visible={true}
+          animationType="none"
+          transparent={true}
+          onRequestClose={() => setDeleteConfirmPhoto(null)}
+        >
+          <View style={styles.confirmModalOverlay}>
+            <View style={styles.confirmModalContent}>
+              <Text style={styles.confirmModalTitle}>Delete Photo</Text>
+              <Text style={styles.confirmModalMessage}>
+                Are you sure you want to delete this photo? This will not remove the books from your library.
+              </Text>
+              <View style={styles.confirmModalButtons}>
+                <TouchableOpacity
+                  style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { marginRight: 12 }]}
+                  onPress={() => setDeleteConfirmPhoto(null)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.confirmModalButtonCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.confirmModalButton, styles.confirmModalButtonDelete]}
+                  onPress={async () => {
+                    if (!user || !deleteConfirmPhoto) return;
+                    try {
+                      const updatedPhotos = photos.filter(p => p.id !== deleteConfirmPhoto.id);
+                      setPhotos(updatedPhotos);
+                      
+                      const userPhotosKey = `photos_${user.uid}`;
+                      await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                      
+                      setDeleteConfirmPhoto(null);
+                      // Reload data to refresh the filtered photos
+                      loadUserData();
+                    } catch (error) {
+                      console.error('Error deleting photo:', error);
+                      setDeleteConfirmPhoto(null);
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.confirmModalButtonDeleteText}>Delete</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 };
