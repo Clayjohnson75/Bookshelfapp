@@ -19,13 +19,12 @@ A React Native Expo app that scans bookshelves using AI to detect and catalog bo
    npm install
    ```
 
-2. **Configure OpenAI API Key**:
-   - Create a `.env` file in the root directory
-   - Add your OpenAI API key:
+2. **Configure Environment**:
+   - Create a `.env` file in the root directory (not committed)
    ```
-   EXPO_PUBLIC_OPENAI_API_KEY=YOUR_KEY_HERE
+   EXPO_PUBLIC_API_BASE_URL=https://YOUR_VERCEL_DEPLOYMENT_URL
    ```
-   - Or replace with your own API key from https://platform.openai.com/api-keys
+   - Provider keys (OPENAI_API_KEY, GEMINI_API_KEY) must be set on the server (Vercel Project Settings → Environment Variables). Do not place provider keys in the client `.env`.
 
 3. **Run the App**:
    ```bash

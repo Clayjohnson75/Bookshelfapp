@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "functions": {
+    "api/scan.ts": {
+      "runtime": "nodejs18.x",
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  }
+}
