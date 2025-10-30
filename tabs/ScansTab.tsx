@@ -836,47 +836,56 @@ No explanations, just JSON.`
   };
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<Book[]> => {
+    const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+    // Try server first if configured
+    if (baseUrl) {
+      try {
+        const resp = await fetch(`${baseUrl}/api/scan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataURL: primaryDataURL }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const serverBooks = Array.isArray(data.books) ? data.books : [];
+          if (serverBooks.length > 0) return serverBooks;
+        } else {
+          console.warn('Scan API error:', resp.status);
+        }
+      } catch (e) {
+        console.warn('Scan API request failed, falling back to client providers:', e);
+      }
+    }
+
+    // Fallback: run client-side providers (requires local .env keys)
     try {
-      console.log(' Starting dual AI scan...');
-      
-      // Run both with retries so transient failures don't yield zero results
-      // First attempt on original image
       const [openaiPrimary, geminiPrimary] = await Promise.all([
-        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 1000),
-        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 1000),
+        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch(() => []),
+        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch(() => []),
       ]);
 
       let openaiResults = openaiPrimary;
       let geminiResults = geminiPrimary;
-
-      // If both failed or empty, retry with downscaled fallback (up to 2 attempts each)
-      if ((openaiPrimary.length === 0) && (geminiPrimary.length === 0)) {
+      if (openaiResults.length === 0 && geminiResults.length === 0) {
         const [openaiFallback, geminiFallback] = await Promise.all([
-          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1500),
-          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1500),
+          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch(() => []),
+          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch(() => []),
         ]);
         openaiResults = openaiFallback;
         geminiResults = geminiFallback;
       }
-      
-      // Merge the results (will just use OpenAI if Gemini failed)
-      const mergedResults = mergeBookResults(openaiResults, geminiResults);
 
-      // Defensive final de-duplication
-      const normalize = (s?: string) => (s || '').trim().toLowerCase();
+      const mergedResults = mergeBookResults(openaiResults, geminiResults);
+      const normalizeKey = (s?: string) => (s || '').trim().toLowerCase();
       const seen = new Set<string>();
-      const deduped = mergedResults.filter(b => {
-        const key = `${normalize(b.title)}|${normalize(b.author)}`;
+      return mergedResults.filter(b => {
+        const key = `${normalizeKey(b.title)}|${normalizeKey(b.author)}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
-      
-      console.log(' Dual AI scan completed');
-      return deduped;
-      
-    } catch (error) {
-      console.error(' Dual AI scan failed:', error);
+    } catch (err) {
+      console.error('Client-side fallback failed:', err);
       return [];
     }
   };
@@ -1290,20 +1299,19 @@ No explanations, just JSON.`
 
     setScanQueue(prev => {
       const updatedQueue = [...prev, newScanItem];
-      
-      // Initialize or update scanning progress
-      const totalScans = updatedQueue.length;
-      const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
-      
-      setScanProgress({
-        currentScanId: null,
-        currentStep: 0,
-        totalSteps: 10,
-        totalScans: totalScans,
-        completedScans: completedCount,
-        failedScans: updatedQueue.filter(item => item.status === 'failed').length,
-      });
-      
+      // Defer progress update so it does not run during render
+      setTimeout(() => {
+        const totalScans = updatedQueue.length;
+        const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+        setScanProgress({
+          currentScanId: null,
+          currentStep: 0,
+          totalSteps: 10,
+          totalScans: totalScans,
+          completedScans: completedCount,
+          failedScans: updatedQueue.filter(item => item.status === 'failed').length,
+        });
+      }, 0);
       return updatedQueue;
     });
     
