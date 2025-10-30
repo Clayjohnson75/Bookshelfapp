@@ -7,7 +7,10 @@ import {
   TouchableOpacity, 
   Image,
   Dimensions,
-  FlatList
+  FlatList,
+  Modal,
+  TextInput,
+  Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -30,6 +33,10 @@ export const MyLibraryTab: React.FC = () => {
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [showBookDetail, setShowBookDetail] = useState(false);
+  const [showPhotos, setShowPhotos] = useState(false);
+  const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
+  const [photoCaption, setPhotoCaption] = useState('');
+  const [deleteConfirmPhoto, setDeleteConfirmPhoto] = useState<Photo | null>(null);
 
   useEffect(() => {
     loadUserData();
@@ -58,14 +65,40 @@ export const MyLibraryTab: React.FC = () => {
       setBooks(loadedBooks);
       setPhotos(loadedPhotos);
       
+      // Helper to normalize strings for comparison (local to this function)
+      const normalizeString = (str: string | undefined): string => {
+        if (!str) return '';
+        return str.trim().toLowerCase();
+      };
+      
+      const booksMatch = (book1: Book, book2: Book): boolean => {
+        const title1 = normalizeString(book1.title);
+        const title2 = normalizeString(book2.title);
+        const author1 = normalizeString(book1.author);
+        const author2 = normalizeString(book2.author);
+        
+        if (title1 !== title2) return false;
+        
+        if (title1 && title2 && title1 === title2) {
+          if (author1 && author2) {
+            return author1 === author2;
+          }
+          return true;
+        }
+        
+        return false;
+      };
+
       // Count scans that have at least one approved book
       const scansWithApprovedBooks = loadedPhotos.filter(photo => {
+        // Skip photos with no books
+        if (!photo.books || photo.books.length === 0) {
+          return false;
+        }
+        
         // Check if any book from this photo matches an approved book
         return photo.books.some(photoBook => 
-          loadedBooks.some(approvedBook => 
-            approvedBook.title === photoBook.title && 
-            approvedBook.author === photoBook.author
-          )
+          loadedBooks.some(approvedBook => booksMatch(photoBook, approvedBook))
         );
       }).length;
       
@@ -131,7 +164,9 @@ export const MyLibraryTab: React.FC = () => {
         />
       ) : (
         <View style={[styles.bookCover, styles.placeholderCover]}>
-          <Text style={styles.placeholderText}>📖</Text>
+          <Text style={styles.placeholderText} numberOfLines={3}>
+            {item.title}
+          </Text>
         </View>
       )}
       {item.author && (
@@ -142,16 +177,64 @@ export const MyLibraryTab: React.FC = () => {
     </TouchableOpacity>
   );
 
+  // Helper function to normalize strings for comparison
+  const normalizeString = (str: string | undefined): string => {
+    if (!str) return '';
+    return str.trim().toLowerCase();
+  };
+
+  // Helper function to compare if two books match
+  const booksMatch = (book1: Book, book2: Book): boolean => {
+    const title1 = normalizeString(book1.title);
+    const title2 = normalizeString(book2.title);
+    const author1 = normalizeString(book1.author);
+    const author2 = normalizeString(book2.author);
+    
+    // Books match if titles match and either authors match or both are empty
+    if (title1 !== title2) return false;
+    
+    // If titles match, check authors
+    if (title1 && title2 && title1 === title2) {
+      if (author1 && author2) {
+        return author1 === author2;
+      }
+      // If one or both authors are empty but titles match, still consider it a match
+      return true;
+    }
+    
+    return false;
+  };
+
+  // Get photos that have approved books (only these should show in Photos section)
+  // A photo should only appear if at least one book from that photo is in the library
+  const getPhotosWithApprovedBooks = () => {
+    if (!books || books.length === 0) {
+      return []; // No approved books means no photos
+    }
+    
+    return photos.filter(photo => {
+      // Skip photos with no books
+      if (!photo.books || photo.books.length === 0) {
+        return false;
+      }
+      
+      // Check if any book from this photo matches an approved book in the library
+      // The book must actually be in the books array (approved and in library)
+      const hasApprovedBook = photo.books.some(photoBook => {
+        // Check if this photoBook exists in the approved books (library)
+        return books.some(libraryBook => {
+          // Both title and author must match (using normalized comparison)
+          return booksMatch(photoBook, libraryBook);
+        });
+      });
+      
+      return hasApprovedBook;
+    });
+  };
+
   // Count scans that resulted in approved books
   const getScansWithBooks = () => {
-    return photos.filter(photo => {
-      return photo.books.some(photoBook => 
-        books.some(approvedBook => 
-          approvedBook.title === photoBook.title && 
-          approvedBook.author === photoBook.author
-        )
-      );
-    }).length;
+    return getPhotosWithApprovedBooks().length;
   };
 
   const handleStatsClick = () => {
@@ -175,7 +258,6 @@ export const MyLibraryTab: React.FC = () => {
           )}
           <View style={styles.profileInfo}>
             <Text style={styles.profileName}>{userProfile?.displayName || 'User'}</Text>
-            <Text style={styles.profileEmail}>{userProfile?.email}</Text>
             {user?.username && (
               <Text style={styles.profileUsername}>@{user.username}</Text>
             )}
@@ -199,14 +281,22 @@ export const MyLibraryTab: React.FC = () => {
             <Text style={styles.statsToggle}>{showAnalytics ? '▼' : '▶'}</Text>
           </View>
           <View style={styles.statsRow}>
-            <View style={styles.statCard}>
+            <TouchableOpacity 
+              style={styles.statCard}
+              onPress={() => {}}
+              activeOpacity={1}
+            >
               <Text style={styles.statNumber}>{books.length}</Text>
               <Text style={styles.statLabel}>Books</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statNumber}>{getScansWithBooks()}</Text>
-              <Text style={styles.statLabel}>Scans</Text>
-            </View>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.statCard}
+              onPress={() => setShowPhotos(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.statNumber}>{getPhotosWithApprovedBooks().length}</Text>
+              <Text style={styles.statLabel}>Photos</Text>
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
 
@@ -281,7 +371,261 @@ export const MyLibraryTab: React.FC = () => {
           setSelectedBook(null);
           setSelectedPhoto(null);
         }}
+        onRemove={() => {
+          loadUserData(); // Refresh library after removal
+        }}
       />
+
+      {/* Photos Modal */}
+      <Modal
+        visible={showPhotos}
+        animationType="none"
+        transparent={false}
+        onRequestClose={() => setShowPhotos(false)}
+      >
+        <SafeAreaView style={styles.safeContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalHeaderTitle}>My Photos</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowPhotos(false)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.modalCloseButtonText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+            {getPhotosWithApprovedBooks().length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyStateText}>No Photos Yet</Text>
+                <Text style={styles.emptyStateSubtext}>Photos with books in your library will appear here</Text>
+              </View>
+            ) : (
+              getPhotosWithApprovedBooks().map((photo) => (
+                <View key={photo.id} style={styles.photoCard}>
+                  <TouchableOpacity
+                    style={styles.photoCardContent}
+                    onPress={() => {
+                      setEditingPhoto(photo);
+                      setPhotoCaption(photo.caption || '');
+                      setShowPhotos(false); // Close Photos modal to show Edit modal
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.photoImageContainer}>
+                      <Image source={{ uri: photo.uri }} style={styles.photoImage} />
+                      <TouchableOpacity
+                        style={styles.photoDeleteButton}
+                        onPress={() => {
+                          setDeleteConfirmPhoto(photo);
+                        }}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Text style={styles.photoDeleteButtonText}>×</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                  <View style={styles.photoInfo}>
+                    <Text style={styles.photoDate}>
+                      {new Date(photo.timestamp).toLocaleDateString()}
+                    </Text>
+                    {photo.caption ? (
+                      <Text style={styles.photoCaption}>{photo.caption}</Text>
+                    ) : (
+                      <Text style={styles.photoCaptionPlaceholder}>Tap to add caption...</Text>
+                    )}
+                    <Text style={styles.photoBooksCount}>
+                      {photo.books.filter(photoBook => {
+                        return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                      }).length} book{photo.books.filter(photoBook => {
+                        return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                      }).length !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmPhoto && (
+        <Modal
+          visible={true}
+          animationType="none"
+          transparent={true}
+          onRequestClose={() => setDeleteConfirmPhoto(null)}
+        >
+          <View style={styles.confirmModalOverlay}>
+            <View style={styles.confirmModalContent}>
+            <Text style={styles.confirmModalTitle}>Delete Photo</Text>
+            <Text style={styles.confirmModalMessage}>
+              Are you sure you want to delete this photo? This will not remove the books from your library.
+            </Text>
+            <View style={styles.confirmModalButtons}>
+              <TouchableOpacity
+                style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { marginRight: 12 }]}
+                onPress={() => setDeleteConfirmPhoto(null)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.confirmModalButtonCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmModalButton, styles.confirmModalButtonDelete]}
+                onPress={async () => {
+                  if (!user || !deleteConfirmPhoto) return;
+                  try {
+                    const updatedPhotos = photos.filter(p => p.id !== deleteConfirmPhoto.id);
+                    setPhotos(updatedPhotos);
+                    
+                    const userPhotosKey = `photos_${user.uid}`;
+                    await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                    
+                    setDeleteConfirmPhoto(null);
+                    // Reload data to refresh the filtered photos
+                    loadUserData();
+                  } catch (error) {
+                    console.error('Error deleting photo:', error);
+                    setDeleteConfirmPhoto(null);
+                    // Show error in a simple way without Alert
+                    setTimeout(() => {
+                      setDeleteConfirmPhoto(null);
+                    }, 100);
+                  }
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.confirmModalButtonDeleteText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+        </Modal>
+      )}
+
+      {/* Edit Photo Caption Modal */}
+      <Modal
+        visible={editingPhoto !== null}
+        animationType="none"
+        transparent={false}
+        onRequestClose={() => {
+          setEditingPhoto(null);
+          setPhotoCaption('');
+        }}
+      >
+        <SafeAreaView style={styles.safeContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              style={styles.modalBackButton}
+              onPress={() => {
+                setEditingPhoto(null);
+                setPhotoCaption('');
+                setShowPhotos(true); // Reopen Photos modal when going back
+              }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.modalBackButtonText}>←</Text>
+              <Text style={styles.modalBackButtonLabel}>Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalHeaderTitle}>Edit Photo</Text>
+            <View style={styles.modalHeaderSpacer} />
+          </View>
+
+          {editingPhoto && (
+            <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+              <Image source={{ uri: editingPhoto.uri }} style={styles.editPhotoImage} />
+              
+              <View style={styles.captionSection}>
+                <Text style={styles.captionLabel}>Caption / Location</Text>
+                <TextInput
+                  style={styles.captionInput}
+                  value={photoCaption}
+                  onChangeText={setPhotoCaption}
+                  placeholder="e.g., Living Room Bookshelf, Office, Bedroom..."
+                  multiline
+                  numberOfLines={2}
+                />
+                <TouchableOpacity
+                  style={styles.saveCaptionButton}
+                  onPress={async () => {
+                    if (!user || !editingPhoto) return;
+                    
+                    try {
+                      const updatedPhotos = photos.map(p =>
+                        p.id === editingPhoto.id
+                          ? { ...p, caption: photoCaption.trim() || undefined }
+                          : p
+                      );
+                      
+                      setPhotos(updatedPhotos);
+                      
+                      const userPhotosKey = `photos_${user.uid}`;
+                      await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+                      
+                      // Reload data to refresh the filtered photos
+                      loadUserData();
+                      
+                      setEditingPhoto(null);
+                      setPhotoCaption('');
+                      setShowPhotos(true); // Return to Photos modal after saving
+                    } catch (error) {
+                      console.error('Error saving caption:', error);
+                      // Error handling without slow Alert
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.saveCaptionButtonText}>Save Caption</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Books from this photo that are in the library */}
+              {editingPhoto.books.filter(photoBook => {
+                // Only show books that are actually in the library (approved)
+                return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+              }).length > 0 && (
+                <View style={styles.photoBooksSection}>
+                  <Text style={styles.photoBooksTitle}>
+                    Books from this Photo ({editingPhoto.books.filter(photoBook => {
+                      return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                    }).length})
+                  </Text>
+                  <View style={styles.photoBooksGrid}>
+                    {editingPhoto.books.filter(photoBook => {
+                      // Only show books that are actually in the library (approved)
+                      return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                    }).map((book, index) => (
+                      <View key={`${book.id || index}`} style={styles.photoBookCard}>
+                        {getBookCoverUri(book) ? (
+                          <Image 
+                            source={{ uri: getBookCoverUri(book) }} 
+                            style={styles.photoBookCover}
+                          />
+                        ) : (
+                          <View style={[styles.photoBookCover, styles.placeholderCover]}>
+                            <Text style={styles.placeholderTextSmall} numberOfLines={2}>
+                              {book.title}
+                            </Text>
+                          </View>
+                        )}
+                        <Text style={styles.photoBookTitle} numberOfLines={2}>{book.title}</Text>
+                        {book.author && (
+                          <Text style={styles.photoBookAuthor} numberOfLines={1}>{book.author}</Text>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -511,9 +855,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   bookCard: {
-    width: (screenWidth - 70) / 4, // 4 columns with padding
+    width: (screenWidth - 94) / 4, // 4 columns with padding and gaps (8px gap between each)
     alignItems: 'center',
     marginBottom: 12,
+    marginHorizontal: 4,
   },
   bookCover: {
     width: '100%',
@@ -530,9 +875,17 @@ const styles = StyleSheet.create({
   placeholderCover: {
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 8,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   placeholderText: {
-    fontSize: 24,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4a5568',
+    textAlign: 'center',
+    lineHeight: 14,
   },
   bookAuthor: {
     fontSize: 11,
@@ -573,6 +926,291 @@ const styles = StyleSheet.create({
     color: '#718096',
     fontWeight: '500',
     textAlign: 'center',
+  },
+  // Photo Modal Styles
+  modalHeader: {
+    backgroundColor: '#1a1a2e',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    minWidth: 80,
+  },
+  modalBackButtonText: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  modalBackButtonLabel: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  modalHeaderTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+    flex: 1,
+    textAlign: 'center',
+  },
+  modalHeaderSpacer: {
+    minWidth: 80,
+  },
+  modalCloseButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  modalCloseButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  photoCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    marginHorizontal: 15,
+    marginBottom: 15,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  photoCardContent: {
+    width: '100%',
+  },
+  photoImageContainer: {
+    position: 'relative',
+    width: '100%',
+  },
+  photoImage: {
+    width: '100%',
+    height: 250,
+    backgroundColor: '#e2e8f0',
+  },
+  photoDeleteButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  photoDeleteButtonText: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '300',
+    lineHeight: 28,
+  },
+  photoInfo: {
+    padding: 16,
+  },
+  photoDate: {
+    fontSize: 13,
+    color: '#718096',
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  photoCaption: {
+    fontSize: 16,
+    color: '#1a202c',
+    fontWeight: '600',
+    marginBottom: 8,
+    lineHeight: 22,
+  },
+  photoCaptionPlaceholder: {
+    fontSize: 14,
+    color: '#a0aec0',
+    fontStyle: 'italic',
+    marginBottom: 8,
+  },
+  photoBooksCount: {
+    fontSize: 13,
+    color: '#718096',
+    fontWeight: '500',
+  },
+  editPhotoImage: {
+    width: '100%',
+    height: 300,
+    backgroundColor: '#e2e8f0',
+    marginBottom: 20,
+  },
+  captionSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    marginHorizontal: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  captionLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+    letterSpacing: 0.3,
+  },
+  captionInput: {
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 15,
+    color: '#1a202c',
+    marginBottom: 16,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  saveCaptionButton: {
+    backgroundColor: '#4caf50',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    shadowColor: '#4caf50',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  saveCaptionButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  photoBooksSection: {
+    marginHorizontal: 15,
+    marginBottom: 20,
+  },
+  photoBooksTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1a202c',
+    marginBottom: 16,
+    letterSpacing: 0.3,
+  },
+  photoBooksGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  photoBookCard: {
+    width: (screenWidth - 78) / 4,
+    marginBottom: 12,
+    marginHorizontal: 4,
+    alignItems: 'center',
+  },
+  photoBookCover: {
+    width: '100%',
+    aspectRatio: 2 / 3,
+    borderRadius: 8,
+    marginBottom: 6,
+    backgroundColor: '#e2e8f0',
+  },
+  photoBookTitle: {
+    fontSize: 10,
+    color: '#1a202c',
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 2,
+    lineHeight: 12,
+  },
+  photoBookAuthor: {
+    fontSize: 9,
+    color: '#718096',
+    textAlign: 'center',
+    lineHeight: 11,
+  },
+  confirmModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  confirmModalContent: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 24,
+    width: '85%',
+    maxWidth: 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  confirmModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+  },
+  confirmModalMessage: {
+    fontSize: 15,
+    color: '#4a5568',
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  confirmModalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  confirmModalButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  confirmModalButtonCancel: {
+    backgroundColor: '#f7fafc',
+  },
+  confirmModalButtonCancelText: {
+    color: '#4a5568',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  confirmModalButtonDelete: {
+    backgroundColor: '#e53e3e',
+  },
+  confirmModalButtonDeleteText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  placeholderTextSmall: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#4a5568',
+    textAlign: 'center',
+    lineHeight: 11,
+    padding: 4,
   },
 });
 

@@ -61,6 +61,8 @@ export const ScansTab: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [manualTitle, setManualTitle] = useState('');
+  const [manualAuthor, setManualAuthor] = useState('');
   
   // Selection states
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
@@ -1053,22 +1055,24 @@ No explanations, just JSON.`
       const photoToDelete = photos.find(photo => photo.id === photoId);
       if (!photoToDelete) return;
 
+      // Remove the photo completely (including all incomplete books)
       const updatedPhotos = photos.filter(photo => photo.id !== photoId);
       
       // Also remove any pending books that were from this scan
       const bookIdsFromScan = new Set(photoToDelete.books.map(book => book.id));
       const updatedPending = pendingBooks.filter(book => !bookIdsFromScan.has(book.id));
       
+      // Clear selected photo if we're deleting it
+      if (selectedPhoto?.id === photoId) {
+        setSelectedPhoto(null);
+        closeScanModal();
+      }
+      
       setPendingBooks(updatedPending);
       setPhotos(updatedPhotos);
       await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
       
-      // Close modal if we deleted the currently selected scan
-      if (selectedPhoto?.id === photoId) {
-        closeScanModal();
-      }
-      
-      Alert.alert('Scan Deleted', 'The scan and its incomplete books have been deleted.');
+      Alert.alert('Scan Deleted', 'The scan and all its books (including incomplete ones) have been deleted.');
     } catch (error) {
       console.error('Error deleting scan:', error);
       Alert.alert('Error', 'Failed to delete scan. Please try again.');
@@ -1427,77 +1431,6 @@ No explanations, just JSON.`
         </View>
       )}
 
-      {/* Incomplete Books - Grouped by Scan */}
-      {(() => {
-        // Get all incomplete books from all photos
-        const allIncompleteBooks = photos.flatMap(photo => 
-          photo.books.filter(book => book.status === 'incomplete')
-        );
-        
-        // Group by photo/scan
-        const incompleteByScan = photos
-          .filter(photo => photo.books.some(book => book.status === 'incomplete'))
-          .map(photo => ({
-            photo,
-            incompleteBooks: photo.books.filter(book => book.status === 'incomplete')
-          }));
-        
-        if (incompleteByScan.length === 0) return null;
-        
-        return (
-          <View style={styles.incompleteSection}>
-            <Text style={styles.sectionTitle}>Incomplete ({allIncompleteBooks.length})</Text>
-            <Text style={styles.sectionSubtitle}>Books with missing or unclear information - grouped by scan</Text>
-            
-            {incompleteByScan.map(({ photo, incompleteBooks }) => (
-              <View key={photo.id} style={styles.incompleteScanGroup}>
-                <View style={styles.incompleteScanHeader}>
-                  <Text style={styles.incompleteScanDate}>
-                    Scan from {new Date(photo.timestamp).toLocaleDateString()} ({incompleteBooks.length} incomplete)
-                  </Text>
-                </View>
-                <View style={styles.booksGrid}>
-                  {incompleteBooks.map((book) => (
-                    <TouchableOpacity
-                      key={book.id}
-                      style={styles.incompleteBookCard}
-                      onPress={() => {
-                        setEditingBook(book);
-                        setShowEditModal(true);
-                      }}
-                    >
-                      <View style={styles.bookTopSection}>
-                        {getBookCoverUri(book) ? (
-                          <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
-                        ) : (
-                          <View style={[styles.bookCover, styles.noCover]}>
-                            <Text style={styles.noCoverText}></Text>
-                          </View>
-                        )}
-                        <View style={styles.bookInfo}>
-                          <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                          <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
-                        </View>
-                      </View>
-                      <TouchableOpacity
-                        style={styles.editButton}
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          setEditingBook(book);
-                          setShowEditModal(true);
-                        }}
-                      >
-                        <Text style={styles.editButtonText}>Edit</Text>
-                      </TouchableOpacity>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-            ))}
-          </View>
-        );
-      })()}
-
       {/* Recent Scans */}
       {photos.length > 0 && (
         <View style={styles.recentSection}>
@@ -1652,6 +1585,8 @@ No explanations, just JSON.`
                           setEditingBook(book);
                           setShowEditModal(true);
                           setSearchQuery(book.title);
+                          setManualTitle(book.title);
+                          setManualAuthor(book.author || '');
                         }}
                       >
                         <Text style={styles.editButtonText}>Edit</Text>
@@ -1670,11 +1605,13 @@ No explanations, just JSON.`
         visible={showEditModal}
         animationType="none"
         presentationStyle="fullScreen"
-        onRequestClose={() => {
+              onRequestClose={() => {
           setShowEditModal(false);
           setEditingBook(null);
           setSearchQuery('');
           setSearchResults([]);
+          setManualTitle('');
+          setManualAuthor('');
         }}
       >
         <SafeAreaView style={styles.modalContainer}>
@@ -1696,8 +1633,119 @@ No explanations, just JSON.`
           {editingBook && (
             <ScrollView style={styles.modalContent}>
               <View style={styles.editSection}>
-                <Text style={styles.editLabel}>Current Title:</Text>
-                <Text style={styles.editCurrentText}>{editingBook.title}</Text>
+                <Text style={styles.editLabel}>Edit Book Title and Author:</Text>
+                <Text style={styles.editSubLabel}>Enter the correct information to move this book to pending</Text>
+                
+                <Text style={styles.editLabel}>Title:</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={manualTitle}
+                  onChangeText={setManualTitle}
+                  placeholder="Enter book title..."
+                  autoCapitalize="words"
+                />
+                
+                <Text style={styles.editLabel}>Author:</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={manualAuthor}
+                  onChangeText={setManualAuthor}
+                  placeholder="Enter author name..."
+                  autoCapitalize="words"
+                />
+                
+                <TouchableOpacity
+                  style={[styles.saveManualButton, (!manualTitle.trim() || !manualAuthor.trim()) && styles.saveManualButtonDisabled]}
+                  onPress={async () => {
+                    if (!manualTitle.trim() || !manualAuthor.trim() || !selectedPhoto || !editingBook) {
+                      Alert.alert('Error', 'Please enter both title and author');
+                      return;
+                    }
+                    
+                    try {
+                      // Try to fetch cover based on the new title/author
+                      let coverUrl = editingBook.coverUrl;
+                      let googleBooksId = editingBook.googleBooksId;
+                      let localCoverPath = editingBook.localCoverPath;
+                      
+                      try {
+                        const query = `${manualTitle.trim()} ${manualAuthor.trim()}`;
+                        const response = await fetch(
+                          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=1`
+                        );
+                        const data = await response.json();
+                        if (data.items && data.items.length > 0) {
+                          const book = data.items[0];
+                          const volumeInfo = book.volumeInfo;
+                          if (volumeInfo.imageLinks) {
+                            coverUrl = volumeInfo.imageLinks.thumbnail?.replace('http:', 'https:');
+                            googleBooksId = book.id;
+                            if (coverUrl) {
+                              localCoverPath = await downloadAndCacheCover(coverUrl, book.id);
+                            }
+                          }
+                        }
+                      } catch (error) {
+                        console.warn('Failed to fetch cover, using existing or none');
+                      }
+
+                      const updatedBooks = selectedPhoto.books.map(b =>
+                        b.id === editingBook.id
+                          ? {
+                              ...b,
+                              title: manualTitle.trim(),
+                              author: manualAuthor.trim(),
+                              coverUrl: coverUrl || b.coverUrl,
+                              googleBooksId: googleBooksId || b.googleBooksId,
+                              ...(localCoverPath && { localCoverPath }),
+                              status: 'pending' as const, // Change from incomplete to pending
+                            }
+                          : b
+                      );
+
+                      const updatedPhotos = photos.map(photo =>
+                        photo.id === selectedPhoto.id
+                          ? { ...photo, books: updatedBooks }
+                          : photo
+                      );
+
+                      setPhotos(updatedPhotos);
+                      setSelectedPhoto({ ...selectedPhoto, books: updatedBooks });
+                      
+                      // Move to pending books
+                      const updatedBook = updatedBooks.find(b => b.id === editingBook.id);
+                      if (updatedBook && updatedBook.status === 'pending') {
+                        const bookIdsFromScan = new Set(updatedBooks.map(b => b.id));
+                        const wasInPending = pendingBooks.some(b => b.id === updatedBook.id);
+                        if (!wasInPending) {
+                          const newPending = [...pendingBooks, updatedBook];
+                          setPendingBooks(newPending);
+                          await saveUserData(newPending, approvedBooks, rejectedBooks, updatedPhotos);
+                        } else {
+                          await saveUserData(pendingBooks, approvedBooks, rejectedBooks, updatedPhotos);
+                        }
+                      }
+
+                      Alert.alert('Success', 'Book details updated! It can now be added to your library.');
+                      setShowEditModal(false);
+                      setEditingBook(null);
+                      setSearchQuery('');
+                      setSearchResults([]);
+                      setManualTitle('');
+                      setManualAuthor('');
+                    } catch (error) {
+                      console.error('Error updating book:', error);
+                      Alert.alert('Error', 'Failed to update book. Please try again.');
+                    }
+                  }}
+                  disabled={!manualTitle.trim() || !manualAuthor.trim()}
+                >
+                  <Text style={styles.saveManualButtonText}>Save Changes</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.editSection}>
+                <Text style={styles.editDivider}>OR</Text>
               </View>
 
               <View style={styles.editSection}>
@@ -2174,6 +2222,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
+    paddingTop: 60,
     backgroundColor: '#1a1a2e',
     borderBottomWidth: 0,
   },
@@ -2293,6 +2342,51 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 14,
     fontWeight: '600',
+  },
+  editInput: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    marginBottom: 15,
+  },
+  editSubLabel: {
+    fontSize: 13,
+    color: '#718096',
+    marginBottom: 15,
+    fontStyle: 'italic',
+  },
+  editDivider: {
+    textAlign: 'center',
+    fontSize: 14,
+    color: '#718096',
+    fontWeight: '600',
+    marginVertical: 10,
+  },
+  saveManualButton: {
+    backgroundColor: '#4caf50',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  saveManualButtonDisabled: {
+    backgroundColor: '#ccc',
+    opacity: 0.6,
+  },
+  saveManualButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   searchResultsSection: {
     marginTop: 20,

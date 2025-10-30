@@ -8,16 +8,20 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Book, Photo } from '../types/BookTypes';
+import { useAuth } from '../auth/SimpleAuthContext';
 
 interface BookDetailModalProps {
   visible: boolean;
   book: Book | null;
   photo: Photo | null;
   onClose: () => void;
+  onRemove?: () => void; // Callback to refresh library after removal
 }
 
 const BookDetailModal: React.FC<BookDetailModalProps> = ({
@@ -25,9 +29,12 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   book,
   photo,
   onClose,
+  onRemove,
 }) => {
+  const { user } = useAuth();
   const [description, setDescription] = useState<string | null>(null);
   const [loadingDescription, setLoadingDescription] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     if (visible && book) {
@@ -87,6 +94,57 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     return cleaned;
   };
 
+  const handleRemoveFromLibrary = async () => {
+    if (!book || !user) return;
+
+    Alert.alert(
+      'Remove from Library',
+      `Are you sure you want to remove "${book.title}" from your library?`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setRemoving(true);
+            try {
+              const userApprovedKey = `approved_books_${user.uid}`;
+              const approvedData = await AsyncStorage.getItem(userApprovedKey);
+              
+              if (approvedData) {
+                const approvedBooks: Book[] = JSON.parse(approvedData);
+                // Remove book by matching title and author
+                const updatedBooks = approvedBooks.filter(
+                  (b) => !(b.title === book.title && b.author === book.author)
+                );
+                
+                await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+                
+                // Call the refresh callback if provided
+                if (onRemove) {
+                  onRemove();
+                }
+                
+                // Close the modal
+                onClose();
+                
+                Alert.alert('Success', 'Book removed from library');
+              }
+            } catch (error) {
+              console.error('Error removing book:', error);
+              Alert.alert('Error', 'Failed to remove book from library');
+            } finally {
+              setRemoving(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const fetchBookDescription = async (googleBooksId: string) => {
     setLoadingDescription(true);
     try {
@@ -134,15 +192,17 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     >
       <SafeAreaView style={styles.safeContainer}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Book Details</Text>
           <TouchableOpacity
-            style={styles.closeButton}
+            style={styles.backButton}
             onPress={onClose}
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Text style={styles.closeButtonText}>✕</Text>
+            <Text style={styles.backButtonText}>←</Text>
+            <Text style={styles.backButtonLabel}>Back</Text>
           </TouchableOpacity>
+          <Text style={styles.headerTitle}>Book Details</Text>
+          <View style={styles.headerSpacer} />
         </View>
 
         <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -187,6 +247,22 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
               </Text>
             </View>
           )}
+
+          {/* Remove Button */}
+          <View style={styles.section}>
+            <TouchableOpacity
+              style={[styles.removeButton, removing && styles.removeButtonDisabled]}
+              onPress={handleRemoveFromLibrary}
+              disabled={removing}
+              activeOpacity={0.8}
+            >
+              {removing ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Text style={styles.removeButtonText}>Remove from Library</Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </SafeAreaView>
     </Modal>
@@ -206,24 +282,36 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    minWidth: 80,
+  },
+  backButtonText: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  backButtonLabel: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
     color: '#ffffff',
     letterSpacing: 0.3,
+    flex: 1,
+    textAlign: 'center',
   },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeButtonText: {
-    fontSize: 18,
-    color: '#ffffff',
-    fontWeight: '600',
+  headerSpacer: {
+    minWidth: 80,
   },
   container: {
     flex: 1,
@@ -319,6 +407,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#718096',
     fontWeight: '500',
+  },
+  removeButton: {
+    backgroundColor: '#e53e3e',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#e53e3e',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  removeButtonDisabled: {
+    opacity: 0.6,
+  },
+  removeButtonText: {
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });
 

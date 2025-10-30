@@ -17,6 +17,7 @@ export interface Photo {
   uri: string;
   books: Book[];
   timestamp: number;
+  caption?: string; // Optional caption/label for the photo location
 }
 
 export interface User {
