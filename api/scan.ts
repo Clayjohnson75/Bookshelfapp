@@ -140,8 +140,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       withRetries(() => scanWithOpenAI(imageDataURL), 2, 1200).catch(() => []),
       withRetries(() => scanWithGemini(imageDataURL), 2, 1200).catch(() => []),
     ]);
+    const openaiCount = openai?.length || 0;
+    const geminiCount = gemini?.length || 0;
     const merged = dedupeBooks([...(openai || []), ...(gemini || [])]);
-    return res.status(200).json({ books: merged });
+    
+    console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
+    
+    return res.status(200).json({ 
+      books: merged,
+      apiResults: {
+        openai: { count: openaiCount, working: openaiCount > 0 },
+        gemini: { count: geminiCount, working: geminiCount > 0 }
+      }
+    });
   } catch (e: any) {
     return res.status(500).json({ error: 'scan_failed', detail: e?.message || String(e) });
   }
