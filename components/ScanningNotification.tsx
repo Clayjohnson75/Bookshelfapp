@@ -5,15 +5,7 @@ import { useScanning } from '../contexts/ScanningContext';
 
 export const ScanningNotification: React.FC = () => {
   const { scanProgress } = useScanning();
-  
-  // Try to get safe area insets, with fallback
-  let insets;
-  try {
-    insets = useSafeAreaInsets();
-  } catch (e) {
-    // Fallback if SafeAreaProvider is not available
-    insets = { bottom: 0, top: 0, left: 0, right: 0 };
-  }
+  const insets = useSafeAreaInsets();
   
   // Tab bar height: ~49px on iOS, ~56px on Android, plus safe area bottom
   const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
