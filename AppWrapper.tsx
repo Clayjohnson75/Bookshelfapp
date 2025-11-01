@@ -1,6 +1,7 @@
 import React from 'react';
 import { Platform } from 'react-native';
 import { enableScreens } from 'react-native-screens';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { ScanningProvider } from './contexts/ScanningContext';
 import { LoginScreen } from './auth/AuthScreens';
@@ -37,11 +38,13 @@ const AppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ScanningProvider>
-        <AppContent />
-      </ScanningProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <ScanningProvider>
+          <AppContent />
+        </ScanningProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
 
