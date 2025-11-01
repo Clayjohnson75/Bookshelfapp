@@ -159,6 +159,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             value={displayName}
             onChangeText={setDisplayName}
             autoCapitalize="words"
+            autoCorrect={false}
+            keyboardType="default"
           />
 
           <TextInput

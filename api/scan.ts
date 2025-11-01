@@ -4,16 +4,61 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function normalize(s?: string) {
-  return (s || '').trim().toLowerCase();
+  if (!s) return '';
+  return s.trim()
+    .toLowerCase()
+    .replace(/[.,;:!?]/g, '') // Remove punctuation
+    .replace(/\s+/g, ' '); // Normalize whitespace
+}
+
+function normalizeTitle(title?: string) {
+  const normalized = normalize(title);
+  // Remove "the", "a", "an" from the beginning
+  return normalized.replace(/^(the|a|an)\s+/, '').trim();
+}
+
+function normalizeAuthor(author?: string) {
+  const normalized = normalize(author);
+  // Remove common suffixes
+  return normalized.replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
 }
 
 function dedupeBooks(books: any[]) {
   const map: Record<string, any> = {};
   for (const b of books || []) {
-    const k = `${normalize(b.title)}|${normalize(b.author)}`;
+    const k = `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
     if (!map[k]) map[k] = b;
   }
-  return Object.values(map);
+  const deduped = Object.values(map);
+  
+  // Additional pass: check for near-duplicates (similar titles with same author)
+  const final: any[] = [];
+  for (const book of deduped) {
+    const bookTitle = normalizeTitle(book.title);
+    const bookAuthor = normalizeAuthor(book.author);
+    
+    let isDuplicate = false;
+    for (const existing of final) {
+      const existingTitle = normalizeTitle(existing.title);
+      const existingAuthor = normalizeAuthor(existing.author);
+      
+      // If authors match and titles are very similar (one contains the other)
+      if (bookAuthor === existingAuthor && bookAuthor && bookAuthor !== 'unknown' && bookAuthor !== 'unknown author') {
+        if (bookTitle.length > 3 && existingTitle.length > 3) {
+          if (bookTitle.includes(existingTitle) || existingTitle.includes(bookTitle)) {
+            isDuplicate = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (!isDuplicate) {
+      final.push(book);
+    }
+  }
+  
+  return final;
 }
 
 async function withRetries<T>(fn: () => Promise<T>, tries = 2, backoffMs = 800): Promise<T> {

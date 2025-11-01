@@ -1250,7 +1250,7 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
     if (!showSectionSelector || !selectedImageUri) return null;
 
     return (
-      <Modal visible={showSectionSelector} animationType="slide" transparent>
+      <Modal visible={showSectionSelector} animationType="none" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Choose Scan Detail</Text>
@@ -1330,7 +1330,7 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
     if (!showReplaceModal || !currentBookToReplace) return null;
 
     return (
-      <Modal visible={showReplaceModal} animationType="slide" transparent>
+      <Modal visible={showReplaceModal} animationType="none" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Replace Book</Text>
@@ -1390,7 +1390,7 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
     if (!editingBook) return null;
 
     return (
-      <Modal visible={!!editingBook} animationType="slide" transparent>
+      <Modal visible={!!editingBook} animationType="none" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Author</Text>

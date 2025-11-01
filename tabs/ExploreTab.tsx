@@ -7,10 +7,13 @@ import {
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
+import { Ionicons } from '@expo/vector-icons';
 
 interface User {
   uid: string;
@@ -74,19 +77,34 @@ export const ExploreTab: React.FC = () => {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Explore</Text>
-          <Text style={styles.subtitle}>Search for users by username</Text>
+          <Text style={styles.subtitle}>Search for users by username or name</Text>
         </View>
 
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search users..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search users by username or name..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              onSubmitEditing={Keyboard.dismiss}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                style={styles.clearButton}
+                onPress={() => {
+                  setSearchQuery('');
+                  Keyboard.dismiss();
+                }}
+              >
+                <Ionicons name="close-circle" size={24} color="#718096" />
+              </TouchableOpacity>
+            )}
+          </View>
+        </TouchableWithoutFeedback>
 
         {loading && (
           <View style={styles.loadingContainer}>
@@ -94,29 +112,37 @@ export const ExploreTab: React.FC = () => {
           </View>
         )}
 
-        {!loading && searchQuery.length >= 2 && searchResults.length === 0 && (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No users found</Text>
-          </View>
-        )}
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <View style={{ flex: 1 }}>
+            {!loading && searchQuery.length >= 2 && searchResults.length === 0 && (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>No users found</Text>
+              </View>
+            )}
 
-        {!loading && searchResults.length > 0 && (
-          <FlatList
-            data={searchResults}
-            renderItem={renderUserItem}
-            keyExtractor={(item) => item.uid}
-            style={styles.resultsList}
-            contentContainerStyle={styles.resultsContent}
-          />
-        )}
+            {!loading && searchResults.length > 0 && (
+              <FlatList
+                data={searchResults}
+                renderItem={renderUserItem}
+                keyExtractor={(item) => item.uid}
+                style={styles.resultsList}
+                contentContainerStyle={styles.resultsContent}
+                keyboardShouldPersistTaps="handled"
+                onScrollBeginDrag={Keyboard.dismiss}
+              />
+            )}
 
-        {searchQuery.length < 2 && (
-          <View style={styles.placeholderContainer}>
-            <Text style={styles.placeholderText}>
-              Start typing to search for users...
-            </Text>
+            {searchQuery.length < 2 && (
+              <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                <View style={styles.placeholderContainer}>
+                  <Text style={styles.placeholderText}>
+                    Start typing to search for users by username or name...
+                  </Text>
+                </View>
+              </TouchableWithoutFeedback>
+            )}
           </View>
-        )}
+        </TouchableWithoutFeedback>
       </View>
 
       <UserProfileModal
@@ -161,11 +187,13 @@ const styles = StyleSheet.create({
   searchContainer: {
     padding: 20,
     marginTop: -15,
+    position: 'relative',
   },
   searchInput: {
     backgroundColor: '#ffffff',
     borderRadius: 16,
     padding: 18,
+    paddingRight: 50,
     fontSize: 16,
     borderWidth: 1,
     borderColor: '#e2e8f0',
@@ -174,6 +202,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2,
+  },
+  clearButton: {
+    position: 'absolute',
+    right: 30,
+    top: 35,
+    padding: 4,
   },
   loadingContainer: {
     flex: 1,

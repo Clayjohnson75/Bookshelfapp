@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -44,6 +44,9 @@ export const MyLibraryTab: React.FC = () => {
   const [bookSearchQuery, setBookSearchQuery] = useState('');
   const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
   const [bookSearchLoading, setBookSearchLoading] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const booksSectionRef = useRef<View>(null);
+  const [booksSectionY, setBooksSectionY] = useState(0);
 
   const filteredBooks = useMemo(() => {
     const q = librarySearch.trim().toLowerCase();
@@ -66,6 +69,62 @@ export const MyLibraryTab: React.FC = () => {
   }, [books, librarySearch]);
 
   const displayedBooks = librarySearch.trim() ? filteredBooks : books;
+
+  // Calculate top author (author with most books)
+  const topAuthor = useMemo(() => {
+    if (books.length === 0) return null;
+    
+    const authorCounts: { [key: string]: number } = {};
+    
+    books.forEach(book => {
+      if (book.author) {
+        // Normalize author name (handle multiple authors by taking first one)
+        const normalizedAuthor = book.author.split(/,|&| and /i)[0].trim();
+        if (normalizedAuthor) {
+          authorCounts[normalizedAuthor] = (authorCounts[normalizedAuthor] || 0) + 1;
+        }
+      }
+    });
+    
+    if (Object.keys(authorCounts).length === 0) return null;
+    
+    // Find author with highest count
+    const entries = Object.entries(authorCounts);
+    entries.sort((a, b) => b[1] - a[1]); // Sort by count descending
+    
+    const [authorName, count] = entries[0];
+    return { name: authorName, count };
+  }, [books]);
+
+  // Sort by author's last name (fallback to title when author missing)
+  const sortedDisplayedBooks = useMemo(() => {
+    const extractLastName = (author?: string): string => {
+      if (!author) return '';
+      // Handle multiple authors by taking the first one
+      const firstAuthor = author.split(/,|&| and /i)[0].trim();
+      const parts = firstAuthor.split(/\s+/).filter(Boolean);
+      if (parts.length === 0) return '';
+      // Remove trailing commas from last token
+      return parts[parts.length - 1].replace(/,/, '').toLowerCase();
+    };
+    const byLast = [...displayedBooks].sort((a, b) => {
+      const aLast = extractLastName(a.author);
+      const bLast = extractLastName(b.author);
+      if (aLast && bLast) {
+        if (aLast < bLast) return -1;
+        if (aLast > bLast) return 1;
+      } else if (aLast || bLast) {
+        // Authors come before missing-author entries
+        return aLast ? -1 : 1;
+      }
+      const aTitle = (a.title || '').toLowerCase();
+      const bTitle = (b.title || '').toLowerCase();
+      if (aTitle < bTitle) return -1;
+      if (aTitle > bTitle) return 1;
+      return 0;
+    });
+    return byLast;
+  }, [displayedBooks]);
 
   useEffect(() => {
     loadUserData();
@@ -134,7 +193,7 @@ export const MyLibraryTab: React.FC = () => {
       // Create user profile from auth user
       if (user) {
         const profile: UserProfile = {
-          displayName: user.displayName || user.email || 'User',
+          displayName: user.displayName || 'User',
           email: user.email || '',
           photoURL: user.photoURL,
           createdAt: new Date(),
@@ -271,9 +330,8 @@ export const MyLibraryTab: React.FC = () => {
   };
 
   return (
-    <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
-      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={styles.safeContainer} edges={['left','right','top']}>
+      <ScrollView ref={scrollViewRef} style={styles.container} showsVerticalScrollIndicator={false}>
       {/* User Profile Header */}
       <View style={styles.profileHeader}>
         <View style={styles.profileHeaderContent}>
@@ -330,36 +388,38 @@ export const MyLibraryTab: React.FC = () => {
           </View>
         </TouchableOpacity>
 
-        {/* Analytics Breakdown - Expandable */}
+        {/* Top Author - Expandable */}
         {showAnalytics && (
           <View style={styles.analyticsSection}>
-            <Text style={styles.analyticsTitle}>Detailed Analytics</Text>
-            
-            <View style={styles.analyticsItem}>
-              <Text style={styles.analyticsLabel}>Reading Patterns</Text>
-              <Text style={styles.analyticsValue}>
-                Average books per scan: {getScansWithBooks() > 0 ? (books.length / getScansWithBooks()).toFixed(1) : '0'}
-              </Text>
-            </View>
-
-            <View style={styles.analyticsItem}>
-              <Text style={styles.analyticsLabel}>Scanning Activity</Text>
-              <Text style={styles.analyticsValue}>
-                Successful scans: {getScansWithBooks()}
-              </Text>
-              <Text style={styles.analyticsValue}>
-                Books in library: {books.length}
-              </Text>
-            </View>
+            <Text style={styles.analyticsTitle}>Top Author</Text>
+            {topAuthor ? (
+              <View style={styles.analyticsItem}>
+                <Text style={styles.analyticsLabel}>{topAuthor.name}</Text>
+                <Text style={styles.analyticsValue}>
+                  {topAuthor.count} {topAuthor.count === 1 ? 'book' : 'books'} in your library
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.analyticsItem}>
+                <Text style={styles.analyticsValue}>No authors yet</Text>
+              </View>
+            )}
           </View>
         )}
       </View>
 
       {/* Books Collection */}
-      <View style={styles.booksSection}>
+      <View 
+        ref={booksSectionRef} 
+        style={styles.booksSection}
+        onLayout={(event) => {
+          const { y } = event.nativeEvent.layout;
+          setBooksSectionY(y);
+        }}
+      >
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>My Library</Text>
-          <Text style={styles.sectionSubtitle}>{displayedBooks.length} {displayedBooks.length === 1 ? 'book' : 'books'}</Text>
+          <Text style={styles.sectionSubtitle}>{sortedDisplayedBooks.length} {sortedDisplayedBooks.length === 1 ? 'book' : 'books'}</Text>
         </View>
         {/* Library Search Bar */}
         <View style={styles.librarySearchContainer}>
@@ -371,6 +431,25 @@ export const MyLibraryTab: React.FC = () => {
             autoCapitalize="none"
             autoCorrect={false}
             clearButtonMode="never"
+            onFocus={() => {
+              // Scroll to "My Library" section when search input is focused
+              const scrollToSection = () => {
+                if (booksSectionY > 0) {
+                  scrollViewRef.current?.scrollTo({ y: booksSectionY - 20, animated: true });
+                } else {
+                  // Measure and scroll if Y not available
+                  booksSectionRef.current?.measure((x, y, width, height, pageX, pageY) => {
+                    // pageY is relative to window, but we need relative to ScrollView content
+                    // Try using y directly (relative to parent) or calculate offset
+                    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 20), animated: true });
+                  });
+                }
+              };
+              
+              // Try immediately, then with a delay as fallback
+              scrollToSection();
+              setTimeout(scrollToSection, 100);
+            }}
           />
           {librarySearch.length > 0 && (
             <TouchableOpacity
@@ -393,7 +472,7 @@ export const MyLibraryTab: React.FC = () => {
           </View>
         ) : (
           <FlatList
-            data={displayedBooks}
+            data={sortedDisplayedBooks}
             renderItem={renderBook}
             keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
             numColumns={4}
@@ -485,11 +564,21 @@ export const MyLibraryTab: React.FC = () => {
                     <Text style={styles.photoDate}>
                       {new Date(photo.timestamp).toLocaleDateString()}
                     </Text>
-                    {photo.caption ? (
-                      <Text style={styles.photoCaption}>{photo.caption}</Text>
-                    ) : (
-                      <Text style={styles.photoCaptionPlaceholder}>Tap to add caption...</Text>
-                    )}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (deleteGuard) { setDeleteGuard(false); return; }
+                        setEditingPhoto(photo);
+                        setPhotoCaption(photo.caption || '');
+                        setShowPhotos(false); // Close Photos modal to show Edit modal
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      {photo.caption ? (
+                        <Text style={styles.photoCaption}>{photo.caption}</Text>
+                      ) : (
+                        <Text style={styles.photoCaptionPlaceholder}>Tap to add caption...</Text>
+                      )}
+                    </TouchableOpacity>
                     <Text style={styles.photoBooksCount}>
                       {photo.books.filter(photoBook => {
                         return books.some(libraryBook => booksMatch(photoBook, libraryBook));
@@ -684,6 +773,23 @@ export const MyLibraryTab: React.FC = () => {
                                 coverUrl: coverUrl,
                                 googleBooksId: item.id,
                               } as any;
+
+                              // Deduplicate: check if book already exists
+                              const normalize = (s?: string) => {
+                                if (!s) return '';
+                                return s.trim().toLowerCase().replace(/[.,;:!?]/g, '').replace(/\s+/g, ' ');
+                              };
+                              const normalizeTitle = (t?: string) => normalize(t).replace(/^(the|a|an)\s+/, '').trim();
+                              const normalizeAuthor = (a?: string) => normalize(a).replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+                              const makeKey = (b: Book) => `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
+                              
+                              const newBookKey = makeKey(newBook);
+                              const alreadyExists = books.some(b => makeKey(b) === newBookKey);
+                              
+                              if (alreadyExists) {
+                                Alert.alert('Duplicate Book', `"${newBook.title}" is already in your library.`);
+                                return;
+                              }
 
                               const updatedPhotos = photos.map(p =>
                                 p.id === editingPhoto.id
@@ -949,6 +1055,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  statAuthorName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    textAlign: 'center',
+    marginBottom: 8,
+    lineHeight: 24,
   },
   // Analytics Section
   analyticsSection: {

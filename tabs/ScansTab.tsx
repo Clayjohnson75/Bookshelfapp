@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   View, 
   Text, 
@@ -10,7 +10,8 @@ import {
   ActivityIndicator,
   Modal,
   Image,
-  TextInput
+  TextInput,
+  Animated
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
@@ -114,6 +115,62 @@ export const ScansTab: React.FC = () => {
   // Selection states
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
 
+  // Orientation state for camera tip
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
+  
+  // Scroll tracking for sticky toolbar
+  const scrollY = React.useRef(new Animated.Value(0)).current;
+
+  // Sort pending books by author's last name (moved outside conditional render to fix hooks error)
+  const sortedPendingBooks = useMemo(() => {
+    const extractLastName = (author?: string): string => {
+      if (!author) return '';
+      const firstAuthor = author.split(/,|&| and /i)[0].trim();
+      const parts = firstAuthor.split(/\s+/).filter(Boolean);
+      if (parts.length === 0) return '';
+      return parts[parts.length - 1].replace(/,/, '').toLowerCase();
+    };
+    
+    return [...pendingBooks].sort((a, b) => {
+      const aLast = extractLastName(a.author);
+      const bLast = extractLastName(b.author);
+      if (aLast && bLast) {
+        if (aLast < bLast) return -1;
+        if (aLast > bLast) return 1;
+      } else if (aLast || bLast) {
+        return aLast ? -1 : 1;
+      }
+      const aTitle = (a.title || '').toLowerCase();
+      const bTitle = (b.title || '').toLowerCase();
+      if (aTitle < bTitle) return -1;
+      if (aTitle > bTitle) return 1;
+      return 0;
+    });
+  }, [pendingBooks]);
+
+  // Detect orientation changes when camera is active
+  useEffect(() => {
+    if (!isCameraActive) return;
+
+    const updateOrientation = () => {
+      const { width, height } = Dimensions.get('window');
+      const isLandscape = width > height;
+      setOrientation(isLandscape ? 'landscape' : 'portrait');
+    };
+
+    // Set initial orientation
+    updateOrientation();
+
+    // Listen for dimension changes
+    const subscription = Dimensions.addEventListener('change', updateOrientation);
+
+    return () => {
+      if (subscription && typeof subscription.remove === 'function') {
+        subscription.remove();
+      }
+    };
+  }, [isCameraActive]);
+
   useEffect(() => {
     if (user) {
       loadUserData();
@@ -199,7 +256,7 @@ export const ScansTab: React.FC = () => {
   // Copy the ChatGPT validation function from App.tsx
   const analyzeBookWithChatGPT = async (book: any): Promise<any> => {
     try {
-      console.log(`Analyzing book with ChatGPT: "${book.title}" by "${book.author}"`);
+      // Analyzing book with ChatGPT
       
       // Hard timeout so OpenAI cannot hang the scan
       const controller = new AbortController();
@@ -314,14 +371,15 @@ Remember: Respond with ONLY the JSON object, nothing else.`
         };
       }
     } catch (error) {
-      console.error(` ChatGPT analysis failed for "${book.title}":`, error);
+      // Silently handle validation errors - book will be marked incomplete if needed
+      console.log(`Issue with "${book.title}"`);
       return book; // Return original if analysis fails
     }
   };
 
   const convertImageToBase64 = async (uri: string): Promise<string> => {
     try {
-      console.log('🔄 Converting image to base64...');
+      // Converting image to base64
       
       const manipulatedImage = await ImageManipulator.manipulateAsync(
         uri,
@@ -334,7 +392,6 @@ Remember: Respond with ONLY the JSON object, nothing else.`
       );
       
       if (manipulatedImage.base64) {
-        console.log(' Image converted to base64');
         return `data:image/jpeg;base64,${manipulatedImage.base64}`;
       }
       
@@ -348,7 +405,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`
   // Downscale and convert to base64 for fallback attempts
   const convertImageToBase64Resized = async (uri: string, maxWidth: number, quality: number): Promise<string> => {
     try {
-      console.log('🔄 Converting resized image to base64...');
+      // Converting resized image to base64
       const manipulatedImage = await ImageManipulator.manipulateAsync(
         uri,
         [
@@ -406,16 +463,13 @@ Remember: Respond with ONLY the JSON object, nothing else.`
       // Check if already cached
       const existingFile = await FileSystem.getInfoAsync(fullPath);
       if (existingFile.exists) {
-        console.log(` Cover already cached: ${localPath}`);
         return localPath;
       }
 
       // Download the image
-      console.log(` Downloading and caching cover: ${coverUrl}`);
       const downloadResult = await FileSystem.downloadAsync(coverUrl, fullPath);
 
       if (downloadResult.uri) {
-        console.log(` Cover cached to: ${localPath}`);
         return localPath;
       }
 
@@ -428,7 +482,6 @@ Remember: Respond with ONLY the JSON object, nothing else.`
 
   const fetchCoversForBooks = async (books: Book[]) => {
     try {
-      console.log(' Fetching book covers in background...');
       
       for (const book of books) {
         try {
@@ -501,7 +554,6 @@ Remember: Respond with ONLY the JSON object, nothing else.`
 
   const fetchBookCover = async (title: string, author?: string): Promise<{coverUrl?: string, googleBooksId?: string}> => {
     try {
-      console.log(` Fetching cover for: ${title} by ${author || 'Unknown'}`);
       
       // Clean up the title for better search results
       const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
@@ -526,7 +578,6 @@ Remember: Respond with ONLY the JSON object, nothing else.`
           // Convert to HTTPS for better compatibility
           const httpsUrl = coverUrl?.replace('http:', 'https:');
           
-          console.log(` Found cover for: ${title}`);
           return {
             coverUrl: httpsUrl,
             googleBooksId: book.id
@@ -534,7 +585,6 @@ Remember: Respond with ONLY the JSON object, nothing else.`
         }
       }
       
-      console.log(` No cover found for: ${title}`);
       return {};
     } catch (error) {
       console.error('Error fetching book cover:', error);
@@ -544,7 +594,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`
 
   const scanImageWithOpenAI = async (imageDataURL: string): Promise<Book[]> => {
     try {
-      console.log(' OpenAI scanning image...');
+      console.log('🔵 OpenAI scanning image...');
       
       // Prevent long hangs from the API by aborting after 15s
       const controller = new AbortController();
@@ -612,20 +662,22 @@ Return the JSON array now. Do not include any text before or after the array.`
 
       try {
         const parsedBooks = JSON.parse(content);
-        return Array.isArray(parsedBooks) ? parsedBooks : [];
+        const books = Array.isArray(parsedBooks) ? parsedBooks : [];
+        return books;
       } catch (_) {
+        console.warn('❌ OpenAI JSON parse failed');
         return [];
       }
       
     } catch (error) {
-      console.error(' OpenAI scan failed:', error);
+      console.error('❌ OpenAI scan failed:', error);
       return [];
     }
   };
 
   const scanImageWithGemini = async (imageDataURL: string): Promise<Book[]> => {
     try {
-      console.log(' Gemini scanning image...');
+      console.log('🟣 Gemini scanning image...');
       
       // Convert data URL to base64
       const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
@@ -765,7 +817,6 @@ No explanations, just JSON.`
       // Try parsing
       try {
         const parsedBooks = JSON.parse(jsonContent);
-        console.log(`Gemini scan completed: ${parsedBooks.length} books`);
         return Array.isArray(parsedBooks) ? parsedBooks : [];
       } catch (parseError) {
         // If parsing fails and was truncated, try to extract complete entries
@@ -784,7 +835,6 @@ No explanations, just JSON.`
                 const fixed = match.replace(/'/g, '"');
                 return JSON.parse(fixed);
               });
-              console.log(`Gemini scan completed (extracted ${completeBooks.length} complete entries from truncated response)`);
               return completeBooks;
             } catch (extractError) {
               console.warn('Failed to extract complete entries from truncated JSON');
@@ -797,7 +847,6 @@ No explanations, just JSON.`
             try {
               const fixedJson = jsonContent.substring(0, lastCompleteEntry + 2) + ']';
               const parsedBooks = JSON.parse(fixedJson);
-              console.log(`Gemini scan completed (fixed truncated): ${parsedBooks.length} books`);
               return Array.isArray(parsedBooks) ? parsedBooks : [];
             } catch (fixError) {
               // Ignore and continue to final return
@@ -816,29 +865,90 @@ No explanations, just JSON.`
   };
 
   const mergeBookResults = (openaiBooks: Book[], geminiBooks: Book[]): Book[] => {
-    console.log(` Merging results: ${openaiBooks.length} from OpenAI + ${geminiBooks.length} from Gemini`);
+    // Aggressive normalization to catch duplicates with slight variations
+    const normalize = (s?: string) => {
+      if (!s) return '';
+      return s.trim()
+        .toLowerCase()
+        .replace(/[.,;:!?]/g, '') // Remove punctuation
+        .replace(/\s+/g, ' '); // Normalize whitespace
+    };
+    
+    // Remove leading articles from titles for better matching
+    const normalizeTitle = (title?: string) => {
+      const normalized = normalize(title);
+      // Remove "the", "a", "an" from the beginning
+      return normalized.replace(/^(the|a|an)\s+/, '').trim();
+    };
+    
+    // Normalize author names more aggressively
+    const normalizeAuthor = (author?: string) => {
+      const normalized = normalize(author);
+      // Remove common suffixes and normalize
+      return normalized.replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+    };
 
-    const normalize = (s?: string) => (s || '').trim().toLowerCase();
-    const makeKey = (b: Book) => `${normalize(b.title)}|${normalize(b.author)}`;
+    const makeKey = (b: Book) => `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
 
     const unique: Record<string, Book> = {};
-    for (const b of openaiBooks) {
+    
+    // Process all books from both sources
+    const allBooks = [...openaiBooks, ...geminiBooks];
+    
+    for (const b of allBooks) {
       const k = makeKey(b);
-      if (!unique[k]) unique[k] = b;
+      // Only add if we haven't seen this exact key before
+      if (!unique[k]) {
+        unique[k] = b;
+      }
     }
-    for (const b of geminiBooks) {
-      const k = makeKey(b);
-      if (!unique[k]) unique[k] = b;
-    }
+    
     const merged = Object.values(unique);
-    console.log(` Merged total: ${merged.length} unique books`);
-    return merged;
+    
+    // Final pass: check for near-duplicates using similarity
+    const final: Book[] = [];
+    for (const book of merged) {
+      const bookTitle = normalizeTitle(book.title);
+      const bookAuthor = normalizeAuthor(book.author);
+      
+      let isDuplicate = false;
+      for (const existing of final) {
+        const existingTitle = normalizeTitle(existing.title);
+        const existingAuthor = normalizeAuthor(existing.author);
+        
+        // Exact match on normalized title + author
+        if (bookTitle === existingTitle && bookAuthor === existingAuthor) {
+          isDuplicate = true;
+          break;
+        }
+        
+        // If titles are very similar (one contains the other) and authors match
+        if (bookAuthor === existingAuthor && bookAuthor && bookAuthor !== 'unknown' && bookAuthor !== 'unknown author') {
+          if (bookTitle.includes(existingTitle) && existingTitle.length > 3) {
+            isDuplicate = true;
+            break;
+          }
+          if (existingTitle.includes(bookTitle) && bookTitle.length > 3) {
+            isDuplicate = true;
+            break;
+          }
+        }
+      }
+      
+      if (!isDuplicate) {
+        final.push(book);
+      }
+    }
+    
+    return final;
   };
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<Book[]> => {
+    console.log('🚀 Starting AI scan with OpenAI and Gemini...');
     const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
     // Try server first if configured
     if (baseUrl) {
+      console.log(`📡 Attempting Vercel API scan at: ${baseUrl}/api/scan`);
       try {
         const resp = await fetch(`${baseUrl}/api/scan`, {
           method: 'POST',
@@ -848,44 +958,94 @@ No explanations, just JSON.`
         if (resp.ok) {
           const data = await resp.json();
           const serverBooks = Array.isArray(data.books) ? data.books : [];
-          if (serverBooks.length > 0) return serverBooks;
+          
+          // Log API status if available
+          if (data.apiResults) {
+            const { openai, gemini } = data.apiResults;
+            console.log(`✅ Vercel API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
+          } else {
+            console.log(`✅ Vercel API returned ${serverBooks.length} books (API status not available - Vercel may need redeployment)`);
+          }
+          
+          if (serverBooks.length > 0) {
+            console.log(`✅ Using Vercel API results: ${serverBooks.length} books found`);
+            return serverBooks;
+          } else {
+            console.log('⚠️ Vercel API returned 0 books, falling back to client-side APIs...');
+          }
         } else {
-          console.warn('Scan API error:', resp.status);
+          console.warn(`❌ Vercel API error: ${resp.status}`);
         }
       } catch (e) {
-        console.warn('Scan API request failed, falling back to client providers:', e);
+        console.warn('❌ Vercel API request failed, falling back to client providers:', e?.message || e);
       }
+    } else {
+      console.log('⚠️ No Vercel API URL configured, using client-side APIs...');
     }
 
     // Fallback: run client-side providers (requires local .env keys)
     try {
+      console.log('🔄 Using client-side fallback APIs...');
       const [openaiPrimary, geminiPrimary] = await Promise.all([
-        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch(() => []),
-        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch(() => []),
+        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch((e) => {
+          console.warn('❌ OpenAI primary attempt failed:', e?.message || e);
+          return [];
+        }),
+        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch((e) => {
+          console.warn('❌ Gemini primary attempt failed:', e?.message || e);
+          return [];
+        }),
       ]);
 
       let openaiResults = openaiPrimary;
       let geminiResults = geminiPrimary;
+      
+      
       if (openaiResults.length === 0 && geminiResults.length === 0) {
+        console.log('⚠️ Both APIs returned 0 books, trying with downscaled image...');
         const [openaiFallback, geminiFallback] = await Promise.all([
-          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch(() => []),
-          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch(() => []),
+          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch((e) => {
+            console.warn('❌ OpenAI fallback attempt failed:', e?.message || e);
+            return [];
+          }),
+          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch((e) => {
+            console.warn('❌ Gemini fallback attempt failed:', e?.message || e);
+            return [];
+          }),
         ]);
         openaiResults = openaiFallback;
         geminiResults = geminiFallback;
       }
 
       const mergedResults = mergeBookResults(openaiResults, geminiResults);
-      const normalizeKey = (s?: string) => (s || '').trim().toLowerCase();
+      // mergeBookResults already does aggressive deduplication, so this is just a safety pass
+      const normalizeKey = (s?: string) => {
+        if (!s) return '';
+        return s.trim().toLowerCase().replace(/[.,;:!?]/g, '').replace(/\s+/g, ' ');
+      };
+      const normalizeTitle = (title?: string) => {
+        return normalizeKey(title).replace(/^(the|a|an)\s+/, '');
+      };
+      const normalizeAuthor = (author?: string) => {
+        return normalizeKey(author).replace(/\s+(jr|sr|iii?|iv)$/i, '');
+      };
+      
       const seen = new Set<string>();
-      return mergedResults.filter(b => {
-        const key = `${normalizeKey(b.title)}|${normalizeKey(b.author)}`;
-        if (seen.has(key)) return false;
+      const final = mergedResults.filter(b => {
+        const key = `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
+        if (seen.has(key)) {
+          console.log(`🔄 Filtered duplicate: "${b.title}" by ${b.author}`);
+          return false;
+        }
         seen.add(key);
         return true;
       });
+      
+      console.log(`✅ Client-side API Status: OpenAI=${openaiResults.length > 0 ? '✅' : '❌'} (${openaiResults.length} books), Gemini=${geminiResults.length > 0 ? '✅' : '❌'} (${geminiResults.length} books), Merged=${final.length} unique`);
+      
+      return final;
     } catch (err) {
-      console.error('Client-side fallback failed:', err);
+      console.error('❌ Client-side fallback failed:', err);
       return [];
     }
   };
@@ -914,6 +1074,7 @@ No explanations, just JSON.`
         totalScans: totalScans,
         completedScans: completedCount,
         failedScans: scanQueue.filter(item => item.status === 'failed').length,
+        startTimestamp: scanProgress?.startTimestamp || Date.now(), // Preserve or set start timestamp
       });
       
       setCurrentScan({ id: scanId, uri, progress: { current: 1, total: 10 } });
@@ -933,7 +1094,6 @@ No explanations, just JSON.`
       setCurrentScan({ id: scanId, uri, progress: { current: 4, total: 10 } });
       
       // Step 4: Validate each book with ChatGPT (40-90%, with incremental updates)
-      console.log(' Starting ChatGPT validation for all detected books...');
       const analyzedBooks = [];
       const totalBooks = detectedBooks.length;
       for (let i = 0; i < detectedBooks.length; i++) {
@@ -950,7 +1110,6 @@ No explanations, just JSON.`
           // Small delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error) {
-          console.log(`Error analyzing book "${book.title}":`, error);
           analyzedBooks.push(book); // Keep original if analysis fails
           
           // Still update progress even on error
@@ -960,7 +1119,6 @@ No explanations, just JSON.`
         }
       }
       
-      console.log(` ChatGPT validation complete: ${analyzedBooks.length} books analyzed`);
       // Step 5: Finalizing (100%)
       updateProgress({ currentStep: 10, totalScans: totalScans });
       setCurrentScan({ id: scanId, uri, progress: { current: 10, total: 10 } });
@@ -983,9 +1141,8 @@ No explanations, just JSON.`
         status: 'incomplete' as const
       }));
       
-      console.log(` Created ${newPendingBooks.length} pending books and ${newIncompleteBooks.length} incomplete books`);
       if (newIncompleteBooks.length > 0) {
-        console.log(' Incomplete books detected:', newIncompleteBooks.map(b => `${b.title} by ${b.author}`));
+        console.log(`⚠️ Found ${newIncompleteBooks.length} incomplete books`);
       }
       
       // Create combined books array with correct statuses for the photo
@@ -1009,8 +1166,6 @@ No explanations, just JSON.`
       setPendingBooks(updatedPending);
       // Ensure no book appears pre-selected after new results arrive
       setSelectedBooks(new Set());
-      console.log(' Setting pending books:', updatedPending);
-      console.log(' Incomplete books stored in photo:', newIncompleteBooks.length);
       await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
       
       // Fetch covers for books in background (don't wait for this)
@@ -1056,7 +1211,7 @@ No explanations, just JSON.`
         }, 500);
       }
       
-      console.log(` Scan completed: ${detectedBooks.length} books found → ${analyzedBooks.length} after ChatGPT → (${newPendingBooks.length} complete, ${newIncompleteBooks.length} incomplete)`);
+      console.log(`✅ Scan complete: ${newPendingBooks.length} books ready, ${newIncompleteBooks.length} incomplete`);
       
     } catch (error) {
       console.error(' Processing failed:', error);
@@ -1129,7 +1284,7 @@ No explanations, just JSON.`
     };
 
     const updatedPending = pendingBooks.filter(book => book.id !== bookId);
-    const updatedApproved = [...approvedBooks, approvedBook];
+    const updatedApproved = deduplicateBooks(approvedBooks, [approvedBook]);
 
     setPendingBooks(updatedPending);
     setApprovedBooks(updatedApproved);
@@ -1223,15 +1378,16 @@ No explanations, just JSON.`
     }
 
     const approvedBooksData = booksToApprove.map(book => ({ ...book, status: 'approved' as const }));
-    const updatedApproved = [...approvedBooks, ...approvedBooksData];
+    const updatedApproved = deduplicateBooks(approvedBooks, approvedBooksData);
     const remainingPending = pendingBooks.filter(book => book.status === 'incomplete');
     
+    const addedCount = updatedApproved.length - approvedBooks.length;
     setApprovedBooks(updatedApproved);
     setPendingBooks(remainingPending);
     setSelectedBooks(new Set());
     await saveUserData(remainingPending, updatedApproved, rejectedBooks, photos);
     
-    Alert.alert('Success', `Added ${approvedBooksData.length} book${approvedBooksData.length > 1 ? 's' : ''} to your library!`);
+    Alert.alert('Success', `Added ${addedCount} book${addedCount !== 1 ? 's' : ''} to your library!`);
   };
 
   const unselectAllBooks = () => {
@@ -1260,12 +1416,50 @@ No explanations, just JSON.`
     await saveUserData(remainingBooks, approvedBooks, rejectedBooks, photos);
   };
 
+  // Helper to deduplicate books when adding to library
+  const deduplicateBooks = (existingBooks: Book[], newBooks: Book[]): Book[] => {
+    const normalize = (s?: string) => {
+      if (!s) return '';
+      return s.trim()
+        .toLowerCase()
+        .replace(/[.,;:!?]/g, '')
+        .replace(/\s+/g, ' ');
+    };
+    
+    const normalizeTitle = (title?: string) => {
+      return normalize(title).replace(/^(the|a|an)\s+/, '').trim();
+    };
+    
+    const normalizeAuthor = (author?: string) => {
+      return normalize(author).replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+    };
+    
+    const makeKey = (b: Book) => `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
+    
+    // Create a map of existing books by normalized key
+    const existingMap = new Map<string, Book>();
+    for (const book of existingBooks) {
+      const key = makeKey(book);
+      if (!existingMap.has(key)) {
+        existingMap.set(key, book);
+      }
+    }
+    
+    // Filter out new books that already exist
+    const uniqueNewBooks = newBooks.filter(book => {
+      const key = makeKey(book);
+      return !existingMap.has(key);
+    });
+    
+    return [...existingBooks, ...uniqueNewBooks];
+  };
+
   const approveSelectedBooks = async () => {
     const selectedBookObjs = pendingBooks.filter(book => selectedBooks.has(book.id));
     const remainingBooks = pendingBooks.filter(book => !selectedBooks.has(book.id));
     
     const newApprovedBooks = selectedBookObjs.map(book => ({ ...book, status: 'approved' as const }));
-    const updatedApproved = [...approvedBooks, ...newApprovedBooks];
+    const updatedApproved = deduplicateBooks(approvedBooks, newApprovedBooks);
     
     setPendingBooks(remainingBooks);
     setApprovedBooks(updatedApproved);
@@ -1297,34 +1491,43 @@ No explanations, just JSON.`
     // Clear any lingering selections before a new scan starts
     setSelectedBooks(new Set());
 
-    setScanQueue(prev => {
-      const updatedQueue = [...prev, newScanItem];
-      // Defer progress update so it does not run during render
-      setTimeout(() => {
-        const totalScans = updatedQueue.length;
-        const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
-        setScanProgress({
-          currentScanId: null,
-          currentStep: 0,
-          totalSteps: 10,
-          totalScans: totalScans,
-          completedScans: completedCount,
-          failedScans: updatedQueue.filter(item => item.status === 'failed').length,
-        });
-      }, 0);
-      return updatedQueue;
+    // Calculate new queue state BEFORE updating state
+    const updatedQueue = [...scanQueue, newScanItem];
+    const totalScans = updatedQueue.length;
+    const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+    
+    console.log('📸 Adding image to queue, setting scan progress immediately', {
+      totalScans,
+      completedCount,
+      scanId,
+      queueLength: scanQueue.length
+    });
+    
+    // Update queue state
+    setScanQueue(updatedQueue);
+    
+    // Set scan progress IMMEDIATELY (outside of setState to avoid render conflicts)
+    setScanProgress({
+      currentScanId: null,
+      currentStep: 0,
+      totalSteps: 10,
+      totalScans: totalScans,
+      completedScans: completedCount,
+      failedScans: 0, // No failed scans yet when adding new item
+      startTimestamp: Date.now(), // Add start timestamp for ETA calculation
     });
     
     if (!isProcessing) {
       setIsProcessing(true);
+      setScanQueue(prev => 
+        prev.map(item => 
+          item.id === scanId ? { ...item, status: 'processing' } : item
+        )
+      );
+      // Small delay to ensure notification renders before processing starts
       setTimeout(() => {
-        setScanQueue(prev => 
-          prev.map(item => 
-            item.id === scanId ? { ...item, status: 'processing' } : item
-          )
-        );
         processImage(uri, scanId);
-      }, 1000);
+      }, 50);
     }
   };
 
@@ -1337,7 +1540,6 @@ No explanations, just JSON.`
         });
         
         if (photo?.uri) {
-          console.log('Photo taken:', photo.uri);
           addImageToQueue(photo.uri);
           setIsCameraActive(false);
         }
@@ -1350,7 +1552,6 @@ No explanations, just JSON.`
 
   const pickImage = async () => {
     try {
-      console.log(' Starting image picker...');
       
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
@@ -1367,7 +1568,6 @@ No explanations, just JSON.`
       });
 
       if (!result.canceled && result.assets[0]) {
-        console.log(' Selected image URI:', result.assets[0].uri);
         addImageToQueue(result.assets[0].uri);
       }
     } catch (error) {
@@ -1388,64 +1588,61 @@ No explanations, just JSON.`
   };
 
   if (isCameraActive) {
-  return (
-      <SafeAreaView style={styles.cameraContainer}>
+    return (
+      <View style={styles.cameraContainer}>
         <CameraView
           style={styles.camera}
           facing="back"
           ref={(ref) => setCameraRef(ref)}
-        >
-          <View style={styles.cameraOverlay}>
-      <TouchableOpacity 
-              style={styles.closeButton}
-              onPress={() => setIsCameraActive(false)}
-            >
-              <Text style={styles.closeButtonText}>Close</Text>
-            </TouchableOpacity>
-            
-            <View style={styles.cameraControls}>
-              <TouchableOpacity
-                style={styles.captureButton}
-                onPress={takePicture}
-              >
-                <Text style={styles.captureButtonText}>Capture</Text>
-      </TouchableOpacity>
-    </View>
-          </View>
-        </CameraView>
-      </SafeAreaView>
-    );
-  }
+        />
+        {/* Overlay outside CameraView using absolute positioning */}
+        <View style={styles.cameraOverlay}>
+          {/* Close button (X) - Top right corner, at the very top */}
+          <TouchableOpacity 
+            style={[styles.closeButton, { top: insets.top + 10 }]}
+            onPress={() => setIsCameraActive(false)}
+          >
+            <Text style={styles.closeButtonText}>×</Text>
+          </TouchableOpacity>
 
-  return (
-    <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
-      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
-      {/* Sticky bulk action toolbar */}
-      {pendingBooks.length > 0 && (
-        <View style={styles.stickyToolbar}>
-          <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
-          <View style={styles.stickyToolbarRow}>
-            <Text style={styles.stickySelectedCount}>{selectedBooks.size} selected</Text>
-            <TouchableOpacity 
-              style={[styles.stickyButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
-              onPress={approveSelectedBooks}
+          {/* Top tip message - Centered, below the X */}
+          <View style={[styles.cameraTipBanner, { marginTop: insets.top + 55 }]}>
+            <Text style={styles.cameraTipText}>
+              {orientation === 'landscape' 
+                ? 'Better lighting = better accuracy'
+                : 'Better lighting and smaller area = better accuracy'}
+            </Text>
+          </View>
+        
+          {/* Capture button at bottom (iPhone style) */}
+          <View style={styles.cameraControls}>
+            <TouchableOpacity
+              style={styles.captureButton}
+              onPress={takePicture}
               activeOpacity={0.8}
-              disabled={selectedBooks.size === 0}
             >
-              <Text style={styles.stickyButtonText}>Add Selected</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.stickyDeleteButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
-              onPress={rejectSelectedBooks}
-              activeOpacity={0.8}
-              disabled={selectedBooks.size === 0}
-            >
-              <Text style={styles.stickyDeleteButtonText}>Delete Selected</Text>
+              <View style={styles.captureButtonInner} />
             </TouchableOpacity>
           </View>
         </View>
-      )}
-      <ScrollView style={styles.container}>
+      </View>
+    );
+  }
+
+  // Sticky toolbar at bottom - always visible when there are pending books
+  // Position it directly above the React Navigation tab bar with zero gap
+  // React Navigation handles tab bar safe area, so we position at 0 and let it sit below
+  const stickyBottomPosition = 0; // Directly at bottom, no gap
+
+  return (
+    <View style={styles.safeContainer}>
+      <SafeAreaView style={{ flex: 1 }} edges={['left','right','top']}>
+        <ScrollView 
+          style={styles.container}
+          contentContainerStyle={[
+            pendingBooks.length > 0 && { paddingBottom: 100 } // Add padding so content isn't hidden behind sticky toolbar
+          ]}
+        >
       <View style={styles.header}>
         <Text style={styles.title}>Book Scanner</Text>
         <Text style={styles.subtitle}>Scan your bookshelf to build your library</Text>
@@ -1461,8 +1658,6 @@ No explanations, just JSON.`
           <Text style={styles.scanButtonText}>Upload Image</Text>
         </TouchableOpacity>
       </View>
-
-
 
       {/* Pending Books - Need Approval */}
       {pendingBooks.length > 0 && (
@@ -1491,34 +1686,8 @@ No explanations, just JSON.`
             </View>
           </View>
 
-          {/* Bulk Action Buttons - Only show when books are selected */}
-          {selectedBooks.size > 0 && (
-            <View style={styles.bulkActions}>
-              <Text style={styles.selectedCount}>{selectedBooks.size} selected</Text>
-              <View style={styles.bulkButtonsRow}>
-                <TouchableOpacity 
-                  style={styles.addAllButton}
-                  onPress={approveSelectedBooks}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.addAllButtonText}>
-                    Add {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.deleteAllButton}
-                  onPress={rejectSelectedBooks}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.deleteAllButtonText}>
-                    Delete {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
           <View style={styles.booksGrid}>
-            {pendingBooks.map((book) => (
+            {sortedPendingBooks.map((book) => (
               <TouchableOpacity 
                 key={book.id} 
                 style={[
@@ -1584,6 +1753,7 @@ No explanations, just JSON.`
         </View>
       )}
 
+        </ScrollView>
 
       {/* Rejected Books section removed per request */}
 
@@ -1980,8 +2150,43 @@ No explanations, just JSON.`
           )}
         </SafeAreaView>
       </Modal>
-    </ScrollView>
-    </SafeAreaView>
+
+      </SafeAreaView>
+      
+      {/* Sticky toolbar at bottom - positioned at absolute bottom, tab bar will be directly below */}
+      {pendingBooks.length > 0 && (
+        <View 
+          style={[
+            styles.stickyToolbar,
+            styles.stickyToolbarBottom,
+            {
+              bottom: stickyBottomPosition,
+            }
+          ]}
+        >
+          <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
+          <View style={styles.stickyToolbarRow}>
+            <Text style={styles.stickySelectedCount}>{selectedBooks.size} selected</Text>
+            <TouchableOpacity 
+              style={[styles.stickyButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
+              onPress={approveSelectedBooks}
+              activeOpacity={0.8}
+              disabled={selectedBooks.size === 0}
+            >
+              <Text style={styles.stickyButtonText}>Add Selected</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.stickyDeleteButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
+              onPress={rejectSelectedBooks}
+              activeOpacity={0.8}
+              disabled={selectedBooks.size === 0}
+            >
+              <Text style={styles.stickyDeleteButtonText}>Delete Selected</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+    </View>
   );
 };
 
@@ -1989,6 +2194,7 @@ const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
     backgroundColor: '#f5f7fa',
+    position: 'relative',
   },
   container: {
     flex: 1,
@@ -2039,48 +2245,84 @@ const styles = StyleSheet.create({
   },
   cameraContainer: {
     flex: 1,
+    backgroundColor: 'black',
   },
   camera: {
     flex: 1,
   },
   cameraOverlay: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: 'transparent',
     justifyContent: 'space-between',
+    pointerEvents: 'box-none',
+  },
+  cameraTipBanner: {
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginHorizontal: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    alignSelf: 'center',
+    pointerEvents: 'auto',
+  },
+  cameraTipText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '400',
+    textAlign: 'center',
+    letterSpacing: 0.2,
   },
   closeButton: {
     position: 'absolute',
-    top: 50,
     right: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 25,
-    width: 50,
-    height: 50,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 20,
+    width: 40,
+    height: 40,
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 100,
+    pointerEvents: 'auto',
   },
   closeButtonText: {
     color: 'white',
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 32,
+    fontWeight: '300',
+    lineHeight: 36,
   },
   cameraControls: {
     alignItems: 'center',
-    paddingBottom: 50,
+    paddingBottom: 40,
+    paddingTop: 20,
+    pointerEvents: 'auto',
   },
   captureButton: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    width: 120,
-    height: 44,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderWidth: 4,
+    borderColor: 'rgba(255, 255, 255, 0.6)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
-  captureButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
+  captureButtonInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: 'rgba(0, 0, 0, 0.1)',
   },
   queueSection: {
     backgroundColor: '#ffffff',
@@ -2873,13 +3115,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
     shadowRadius: 6,
     elevation: 3,
+  },
+  stickyToolbarBottom: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 1000,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 8,
   },
   stickyToolbarTitle: {
     fontSize: 16,

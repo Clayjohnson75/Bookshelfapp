@@ -20,7 +20,7 @@ interface SettingsModalProps {
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -239,6 +239,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
               <Text style={styles.signOutButtonText}>Sign Out</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Delete Account Section - At the very bottom */}
+          <View style={[styles.section, styles.bottomSection]}>
+            <TouchableOpacity
+              style={styles.deleteAccountButton}
+              onPress={async () => {
+                Alert.alert(
+                  'Delete Account',
+                  'Are you sure you want to delete your account? This will permanently delete your account and all your data. This action cannot be undone.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete',
+                      style: 'destructive',
+                      onPress: async () => {
+                        try {
+                          await deleteAccount();
+                          onClose();
+                        } catch (error) {
+                          console.error('Error deleting account:', error);
+                          Alert.alert('Error', 'Failed to delete account. Please try again.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+            >
+              <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </SafeAreaView>
     </Modal>
@@ -255,6 +286,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
+    paddingTop: 40,
     backgroundColor: '#1a1a2e',
   },
   headerTitle: {
@@ -372,8 +404,24 @@ const styles = StyleSheet.create({
     color: '#718096',
     fontStyle: 'italic',
   },
-  signOutButton: {
+  deleteAccountButton: {
     backgroundColor: '#dc3545',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  deleteAccountButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  signOutButton: {
+    backgroundColor: '#6c757d',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -387,6 +435,9 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '700',
+  },
+  bottomSection: {
+    marginBottom: 30,
   },
 });
 

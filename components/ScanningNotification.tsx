@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { useScanning } from '../contexts/ScanningContext';
 
 export const ScanningNotification: React.FC = () => {
@@ -57,7 +57,6 @@ export const ScanningNotification: React.FC = () => {
         </View>
         <View style={styles.textContainer}>
           <Text style={styles.title}>Scanning...</Text>
-          <Text style={styles.percentage}>{Math.round(percentage)}%</Text>
         </View>
         {renderEta()}
         <Text style={styles.subtitle}>
@@ -75,7 +74,7 @@ export const ScanningNotification: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 85, // Above tab bar with safe area (tab bar ~49px + safe area ~36px)
+    bottom: 90, // Above tab bar with safe area (tab bar ~49px + safe area ~36px + padding)
     left: 0,
     right: 0,
     backgroundColor: '#1a1a2e',
@@ -88,7 +87,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 10,
-    zIndex: 1000,
+    zIndex: 10000,
   },
   content: {
     width: '100%',
@@ -106,21 +105,12 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   textContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: 4,
   },
   title: {
     fontSize: 14,
     fontWeight: '600',
     color: '#ffffff',
-    letterSpacing: 0.3,
-  },
-  percentage: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#007AFF',
     letterSpacing: 0.3,
   },
   eta: {

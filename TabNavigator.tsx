@@ -23,6 +23,7 @@ export const TabNavigator = () => {
           component={ScansTab}
           options={{
             tabBarLabel: 'Scans',
+            headerShown: false,
           }}
         />
         <Tab.Screen 
@@ -30,6 +31,7 @@ export const TabNavigator = () => {
           component={ExploreTab}
           options={{
             tabBarLabel: 'Explore',
+            headerShown: false,
           }}
         />
         <Tab.Screen 
@@ -37,6 +39,7 @@ export const TabNavigator = () => {
           component={MyLibraryTab}
           options={{
             tabBarLabel: 'My Library',
+            headerShown: false,
             tabBarIcon: ({ color, size }) => (
               <Image
                 source={require('./assets/logo/logo.png')}
