@@ -753,17 +753,6 @@ export const MyLibraryTab: React.FC = () => {
                         return books.some(libraryBook => booksMatch(photoBook, libraryBook));
                       }).length !== 1 ? 's' : ''}
                     </Text>
-                    <TouchableOpacity
-                      style={styles.addToFolderButton}
-                      onPress={() => {
-                        setPhotoToAddToFolder(photo);
-                        setShowFolderSelectModal(true);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="folder-outline" size={16} color="#007AFF" />
-                      <Text style={styles.addToFolderButtonText}>Add to Folder</Text>
-                    </TouchableOpacity>
                   </View>
                 </View>
               ))
@@ -892,6 +881,23 @@ export const MyLibraryTab: React.FC = () => {
                   activeOpacity={0.8}
                 >
                   <Text style={styles.saveCaptionButtonText}>Save Caption</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Add to Folder */}
+              <View style={styles.addToFolderSection}>
+                <TouchableOpacity
+                  style={styles.addToFolderButtonLarge}
+                  onPress={() => {
+                    if (editingPhoto) {
+                      setPhotoToAddToFolder(editingPhoto);
+                      setShowFolderSelectModal(true);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="folder-outline" size={20} color="#007AFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.addToFolderButtonTextLarge}>Add to Folder</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1804,23 +1810,34 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 8,
   },
-  addToFolderButton: {
+  addToFolderSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    marginHorizontal: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  addToFolderButtonLarge: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginTop: 8,
-    alignSelf: 'flex-start',
+    borderColor: '#007AFF',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
   },
-  addToFolderButtonText: {
-    fontSize: 13,
+  addToFolderButtonTextLarge: {
+    fontSize: 15,
     color: '#007AFF',
-    fontWeight: '600',
-    marginLeft: 6,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   editPhotoImage: {
     width: '100%',
