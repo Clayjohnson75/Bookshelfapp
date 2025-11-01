@@ -483,8 +483,24 @@ export const MyLibraryTab: React.FC = () => {
           <View style={styles.statsRow}>
             <TouchableOpacity 
               style={styles.statCard}
-              onPress={() => {}}
-              activeOpacity={1}
+              onPress={() => {
+                // Scroll to "My Library" section
+                const scrollToBooksSection = () => {
+                  if (booksSectionY > 0) {
+                    scrollViewRef.current?.scrollTo({ y: booksSectionY - 20, animated: true });
+                  } else {
+                    // Measure and scroll if Y not available
+                    booksSectionRef.current?.measure((x, y, width, height, pageX, pageY) => {
+                      scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 20), animated: true });
+                    });
+                  }
+                };
+                
+                // Try immediately, then with a delay as fallback
+                scrollToBooksSection();
+                setTimeout(scrollToBooksSection, 100);
+              }}
+              activeOpacity={0.8}
             >
               <Text style={styles.statNumber}>{books.length}</Text>
               <Text style={styles.statLabel}>Books</Text>
