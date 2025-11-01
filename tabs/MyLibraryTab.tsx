@@ -338,6 +338,38 @@ export const MyLibraryTab: React.FC = () => {
 
   const [showFolderSelectModal, setShowFolderSelectModal] = useState(false);
   const [photoToAddToFolder, setPhotoToAddToFolder] = useState<Photo | null>(null);
+  const [newFolderName, setNewFolderName] = useState('');
+
+  const createFolder = async () => {
+    if (!newFolderName.trim() || !user) return;
+    
+    try {
+      const folderId = `folder_${Date.now()}`;
+      const newFolder: Folder = {
+        id: folderId,
+        name: newFolderName.trim(),
+        bookIds: [],
+        photoIds: [],
+      };
+      
+      const updatedFolders = [...folders, newFolder];
+      await saveFolders(updatedFolders);
+      
+      // Automatically add the photo to the newly created folder
+      if (photoToAddToFolder) {
+        await addPhotoToFolder(photoToAddToFolder, folderId);
+        setShowFolderSelectModal(false);
+        setPhotoToAddToFolder(null);
+        setNewFolderName('');
+        Alert.alert('Success', `Photo added to "${newFolder.name}"`);
+      } else {
+        setNewFolderName('');
+      }
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      Alert.alert('Error', 'Failed to create folder. Please try again.');
+    }
+  };
 
   const handleBookPress = (book: Book) => {
     const photo = findBookPhoto(book);
@@ -1237,6 +1269,7 @@ export const MyLibraryTab: React.FC = () => {
         onRequestClose={() => {
           setShowFolderSelectModal(false);
           setPhotoToAddToFolder(null);
+          setNewFolderName('');
         }}
       >
         <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
@@ -1252,6 +1285,7 @@ export const MyLibraryTab: React.FC = () => {
               onPress={() => {
                 setShowFolderSelectModal(false);
                 setPhotoToAddToFolder(null);
+                setNewFolderName('');
               }}
               activeOpacity={0.7}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -1263,36 +1297,59 @@ export const MyLibraryTab: React.FC = () => {
           </View>
 
           <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-            {folders.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>No Folders Yet</Text>
-                <Text style={styles.emptyStateSubtext}>Create a folder first from the caption page</Text>
-              </View>
-            ) : (
-              folders.map((folder) => (
+            {/* Create Folder Section - Always visible */}
+            <View style={styles.createFolderSection}>
+              <Text style={styles.createFolderTitle}>Create New Folder</Text>
+              <View style={styles.createFolderRow}>
+                <TextInput
+                  style={styles.createFolderInput}
+                  value={newFolderName}
+                  onChangeText={setNewFolderName}
+                  placeholder="Folder name..."
+                  autoCapitalize="words"
+                  autoFocus={folders.length === 0}
+                />
                 <TouchableOpacity
-                  key={folder.id}
-                  style={styles.folderItem}
-                  onPress={async () => {
-                    if (photoToAddToFolder) {
-                      await addPhotoToFolder(photoToAddToFolder, folder.id);
-                      setShowFolderSelectModal(false);
-                      setPhotoToAddToFolder(null);
-                      Alert.alert('Success', `Photo added to "${folder.name}"`);
-                    }
-                  }}
-                  activeOpacity={0.7}
+                  style={[styles.createFolderButton, !newFolderName.trim() && styles.createFolderButtonDisabled]}
+                  onPress={createFolder}
+                  activeOpacity={0.8}
+                  disabled={!newFolderName.trim()}
                 >
-                  <Ionicons name="folder" size={24} color="#007AFF" style={{ marginRight: 12 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.folderItemName}>{folder.name}</Text>
-                    <Text style={styles.folderItemCount}>
-                      {(folder.photoIds || []).length} {(folder.photoIds || []).length === 1 ? 'photo' : 'photos'} • {folder.bookIds.length} {folder.bookIds.length === 1 ? 'book' : 'books'}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#718096" />
+                  <Text style={styles.createFolderButtonText}>Create</Text>
                 </TouchableOpacity>
-              ))
+              </View>
+            </View>
+
+            {/* Existing Folders */}
+            {folders.length > 0 && (
+              <View style={styles.existingFoldersSection}>
+                <Text style={styles.existingFoldersTitle}>Select Folder</Text>
+                {folders.map((folder) => (
+                  <TouchableOpacity
+                    key={folder.id}
+                    style={styles.folderItem}
+                    onPress={async () => {
+                      if (photoToAddToFolder) {
+                        await addPhotoToFolder(photoToAddToFolder, folder.id);
+                        setShowFolderSelectModal(false);
+                        setPhotoToAddToFolder(null);
+                        setNewFolderName('');
+                        Alert.alert('Success', `Photo added to "${folder.name}"`);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="folder" size={24} color="#007AFF" style={{ marginRight: 12 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.folderItemName}>{folder.name}</Text>
+                      <Text style={styles.folderItemCount}>
+                        {(folder.photoIds || []).length} {(folder.photoIds || []).length === 1 ? 'photo' : 'photos'} • {folder.bookIds.length} {folder.bookIds.length === 1 ? 'book' : 'books'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#718096" />
+                  </TouchableOpacity>
+                ))}
+              </View>
             )}
           </ScrollView>
         </SafeAreaView>
@@ -2155,6 +2212,72 @@ const styles = StyleSheet.create({
   folderItemCount: {
     fontSize: 13,
     color: '#718096',
+  },
+  createFolderSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    marginHorizontal: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  createFolderTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+    letterSpacing: 0.3,
+  },
+  createFolderRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  createFolderInput: {
+    flex: 1,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 16,
+    color: '#1a202c',
+  },
+  createFolderButton: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  createFolderButtonDisabled: {
+    backgroundColor: '#cbd5e0',
+    opacity: 0.6,
+  },
+  createFolderButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  existingFoldersSection: {
+    marginBottom: 24,
+    marginHorizontal: 15,
+  },
+  existingFoldersTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 16,
+    letterSpacing: 0.3,
   },
 });
 
