@@ -273,37 +273,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
       }
       
-      // Generate avatar using first name
-      let avatarUrl: string | undefined = undefined;
-      try {
-        const firstName = displayName?.split(' ')[0] || username.charAt(0).toUpperCase() + username.slice(1);
-        const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-        
-        if (apiBaseUrl) {
-          const avatarResponse = await fetch(`${apiBaseUrl}/api/generate-avatar`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ firstName }),
-          });
-          
-          if (avatarResponse.ok) {
-            const avatarData = await avatarResponse.json();
-            if (avatarData.success && avatarData.imageData) {
-              avatarUrl = avatarData.imageData; // base64 data URL
-              
-              // Store avatar in Supabase profile
-              await supabase
-                .from('profiles')
-                .update({ avatar_url: avatarUrl })
-                .eq('id', uid);
-            }
-          }
-        }
-      } catch (avatarError) {
-        console.error('Error generating avatar:', avatarError);
-        // Don't fail signup if avatar generation fails
-      }
-      
       // Store local mapping for backwards compatibility
       await AsyncStorage.setItem('usernameToEmail:' + username.toLowerCase(), email);
 
@@ -312,7 +281,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         email: email,
         username: username.toLowerCase(),
         displayName,
-        photoURL: avatarUrl,
       };
       setUser(userData);
       await saveUserToStorage(userData);

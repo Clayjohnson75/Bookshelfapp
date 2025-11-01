@@ -13,11 +13,12 @@ import {
   Alert
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Book, Photo, UserProfile } from '../types/BookTypes';
+import { Book, Photo, UserProfile, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
@@ -30,6 +31,7 @@ export const MyLibraryTab: React.FC = () => {
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
@@ -44,6 +46,8 @@ export const MyLibraryTab: React.FC = () => {
   const [bookSearchQuery, setBookSearchQuery] = useState('');
   const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
   const [bookSearchLoading, setBookSearchLoading] = useState(false);
+  const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
+  const [showFolderView, setShowFolderView] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const [booksSectionY, setBooksSectionY] = useState(0);
@@ -130,6 +134,16 @@ export const MyLibraryTab: React.FC = () => {
     loadUserData();
   }, []);
 
+  // Update userProfile when user changes (display name, username)
+  useEffect(() => {
+    if (user && userProfile) {
+      setUserProfile(prev => prev ? {
+        ...prev,
+        displayName: user.displayName || user.username || 'User',
+      } : null);
+    }
+  }, [user?.displayName, user?.username]);
+
   // Reload data when tab is focused
   useFocusEffect(
     React.useCallback(() => {
@@ -143,15 +157,19 @@ export const MyLibraryTab: React.FC = () => {
     try {
       const userApprovedKey = `approved_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
+      const userFoldersKey = `folders_${user.uid}`;
       
       const approvedData = await AsyncStorage.getItem(userApprovedKey);
       const photosData = await AsyncStorage.getItem(userPhotosKey);
+      const foldersData = await AsyncStorage.getItem(userFoldersKey);
       
       const loadedBooks: Book[] = approvedData ? JSON.parse(approvedData) : [];
       const loadedPhotos: Photo[] = photosData ? JSON.parse(photosData) : [];
+      const loadedFolders: Folder[] = foldersData ? JSON.parse(foldersData) : [];
       
       setBooks(loadedBooks);
       setPhotos(loadedPhotos);
+      setFolders(loadedFolders);
       
       // Helper to normalize strings for comparison (local to this function)
       const normalizeString = (str: string | undefined): string => {
@@ -193,9 +211,8 @@ export const MyLibraryTab: React.FC = () => {
       // Create user profile from auth user
       if (user) {
         const profile: UserProfile = {
-          displayName: user.displayName || 'User',
+          displayName: user.displayName || user.username || 'User',
           email: user.email || '',
-          photoURL: user.photoURL,
           createdAt: new Date(),
           lastLogin: new Date(),
           totalBooks: loadedBooks.length,
@@ -230,6 +247,97 @@ export const MyLibraryTab: React.FC = () => {
       )
     ) || null;
   };
+
+  const saveFolders = async (updatedFolders: Folder[]) => {
+    if (!user) return;
+    try {
+      const userFoldersKey = `folders_${user.uid}`;
+      await AsyncStorage.setItem(userFoldersKey, JSON.stringify(updatedFolders));
+      setFolders(updatedFolders);
+    } catch (error) {
+      console.error('Error saving folders:', error);
+    }
+  };
+
+  const deleteFolder = async (folderId: string) => {
+    if (!user) return;
+    
+    Alert.alert(
+      'Delete Folder',
+      'Are you sure you want to delete this folder? This will not delete the books, they will remain in your library.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const updatedFolders = folders.filter(f => f.id !== folderId);
+            await saveFolders(updatedFolders);
+            
+            // Close folder view if this folder was open
+            if (selectedFolder?.id === folderId) {
+              setShowFolderView(false);
+              setSelectedFolder(null);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const addPhotoToFolder = async (photo: Photo, folderId: string) => {
+    if (!user || !photo) return;
+    
+    try {
+      // Get all approved books from this photo
+      const photoApprovedBooks = photo.books.filter(photoBook => {
+        return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+      });
+      
+      // Get their IDs
+      const bookIdsToAdd = photoApprovedBooks
+        .map(book => book.id)
+        .filter((id): id is string => !!id);
+      
+      // Update folder to include this photo and its books
+      const updatedFolders = folders.map(folder => {
+        if (folder.id === folderId) {
+          // Add photo ID if not already present
+          const photoIds = folder.photoIds || [];
+          if (!photoIds.includes(photo.id)) {
+            photoIds.push(photo.id);
+          }
+          
+          // Add book IDs that aren't already in the folder
+          const existingBookIds = new Set(folder.bookIds || []);
+          bookIdsToAdd.forEach(bookId => {
+            if (!existingBookIds.has(bookId)) {
+              folder.bookIds.push(bookId);
+            }
+          });
+          
+          return {
+            ...folder,
+            photoIds,
+            bookIds: folder.bookIds
+          };
+        }
+        return folder;
+      });
+      
+      await saveFolders(updatedFolders);
+      
+      // Update selected folder if it's the one we just updated
+      if (selectedFolder?.id === folderId) {
+        setSelectedFolder(updatedFolders.find(f => f.id === folderId) || null);
+      }
+    } catch (error) {
+      console.error('Error adding photo to folder:', error);
+    }
+  };
+
+  const [showFolderSelectModal, setShowFolderSelectModal] = useState(false);
+  const [photoToAddToFolder, setPhotoToAddToFolder] = useState<Photo | null>(null);
 
   const handleBookPress = (book: Book) => {
     const photo = findBookPhoto(book);
@@ -330,22 +438,26 @@ export const MyLibraryTab: React.FC = () => {
   };
 
   return (
-    <SafeAreaView style={styles.safeContainer} edges={['left','right','top']}>
+    <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
+      <LinearGradient
+        colors={['#f5f7fa', '#1a1a2e']}
+        style={{ height: insets.top }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      />
       <ScrollView ref={scrollViewRef} style={styles.container} showsVerticalScrollIndicator={false}>
       {/* User Profile Header */}
       <View style={styles.profileHeader}>
         <View style={styles.profileHeaderContent}>
-          {userProfile?.photoURL ? (
-            <Image source={{ uri: userProfile.photoURL }} style={styles.profileImage} />
-          ) : (
-            <View style={styles.profileImagePlaceholder}>
-              <Text style={styles.profileInitial}>
-                {(userProfile?.displayName || 'U').charAt(0).toUpperCase()}
-              </Text>
-            </View>
-          )}
+          <View style={styles.profileImagePlaceholder}>
+            <Text style={styles.profileInitial}>
+              {(userProfile?.displayName || user?.username || 'U').charAt(0).toUpperCase()}
+            </Text>
+          </View>
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>{userProfile?.displayName || 'User'}</Text>
+            <Text style={styles.profileName}>
+              {userProfile?.displayName || user?.username || 'User'}
+            </Text>
             {user?.username && (
               <Text style={styles.profileUsername}>@{user.username}</Text>
             )}
@@ -407,6 +519,45 @@ export const MyLibraryTab: React.FC = () => {
           </View>
         )}
       </View>
+
+      {/* Folders Section - Only show if folders exist */}
+      {folders.length > 0 && (
+        <View style={styles.foldersSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Folders</Text>
+          </View>
+          <View style={styles.foldersGrid}>
+            {folders.map((folder) => {
+              // Get books that belong to this folder
+              const folderBooks = books.filter(book => 
+                book.id && folder.bookIds.includes(book.id)
+              );
+              
+              return (
+                <TouchableOpacity
+                  key={folder.id}
+                  style={styles.folderCard}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setSelectedFolder(folder);
+                    setShowFolderView(true);
+                  }}
+                >
+                  <View style={styles.folderIcon}>
+                    <Ionicons name="folder" size={32} color="#007AFF" />
+                  </View>
+                  <Text style={styles.folderName} numberOfLines={1}>
+                    {folder.name}
+                  </Text>
+                  <Text style={styles.folderBookCount}>
+                    {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
 
       {/* Books Collection */}
       <View 
@@ -586,6 +737,17 @@ export const MyLibraryTab: React.FC = () => {
                         return books.some(libraryBook => booksMatch(photoBook, libraryBook));
                       }).length !== 1 ? 's' : ''}
                     </Text>
+                    <TouchableOpacity
+                      style={styles.addToFolderButton}
+                      onPress={() => {
+                        setPhotoToAddToFolder(photo);
+                        setShowFolderSelectModal(true);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="folder-outline" size={16} color="#007AFF" />
+                      <Text style={styles.addToFolderButtonText}>Add to Folder</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
               ))
@@ -903,6 +1065,216 @@ export const MyLibraryTab: React.FC = () => {
         </SafeAreaView>
       </Modal>
 
+      {/* Folder View Modal */}
+      <Modal
+        visible={showFolderView}
+        animationType="none"
+        transparent={false}
+        onRequestClose={() => {
+          setShowFolderView(false);
+          setSelectedFolder(null);
+        }}
+      >
+        <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
+          <LinearGradient
+            colors={['#f5f7fa', '#1a1a2e']}
+            style={{ height: insets.top }}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+          />
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              style={styles.modalBackButton}
+              onPress={() => {
+                setShowFolderView(false);
+                setSelectedFolder(null);
+              }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.modalBackButtonLabel}>Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalHeaderTitle}>
+              {selectedFolder?.name || 'Folder'}
+            </Text>
+            {selectedFolder && (
+              <TouchableOpacity
+                style={styles.modalDeleteButton}
+                onPress={() => deleteFolder(selectedFolder.id)}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="trash-outline" size={22} color="#ffffff" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {selectedFolder && (
+            <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+              {(() => {
+                const folderPhotoIds = selectedFolder.photoIds || [];
+                const folderPhotos = photos.filter(photo => folderPhotoIds.includes(photo.id));
+                const folderBooks = books.filter(book => 
+                  book.id && selectedFolder.bookIds.includes(book.id)
+                );
+                
+                // Show Photos section if there are photos
+                if (folderPhotos.length > 0) {
+                  return (
+                    <>
+                      <View style={styles.booksSection}>
+                        <View style={styles.sectionHeader}>
+                          <Text style={styles.sectionTitle}>Photos</Text>
+                          <Text style={styles.sectionSubtitle}>{folderPhotos.length} {folderPhotos.length === 1 ? 'photo' : 'photos'}</Text>
+                        </View>
+                        {folderPhotos.map((photo) => (
+                          <View key={photo.id} style={styles.photoCard}>
+                            <Image source={{ uri: photo.uri }} style={styles.photoImage} />
+                            <View style={styles.photoInfo}>
+                              <Text style={styles.photoDate}>
+                                {new Date(photo.timestamp).toLocaleDateString()}
+                              </Text>
+                              {photo.caption && (
+                                <Text style={styles.photoCaption}>{photo.caption}</Text>
+                              )}
+                              <Text style={styles.photoBooksCount}>
+                                {photo.books.filter(photoBook => {
+                                  return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                                }).length} {photo.books.filter(photoBook => {
+                                  return books.some(libraryBook => booksMatch(photoBook, libraryBook));
+                                }).length === 1 ? 'book' : 'books'}
+                              </Text>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                      
+                      {folderBooks.length > 0 && (
+                        <View style={styles.booksSection}>
+                          <View style={styles.sectionHeader}>
+                            <Text style={styles.sectionTitle}>
+                              Books ({folderBooks.length})
+                            </Text>
+                          </View>
+                          <FlatList
+                            data={folderBooks}
+                            renderItem={renderBook}
+                            keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
+                            numColumns={4}
+                            scrollEnabled={false}
+                            showsVerticalScrollIndicator={false}
+                            contentContainerStyle={styles.booksGrid}
+                            columnWrapperStyle={styles.bookRow}
+                          />
+                        </View>
+                      )}
+                    </>
+                  );
+                }
+                
+                // No photos, just show books (or empty state)
+                if (folderBooks.length === 0) {
+                  return (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyStateText}>No Books in Folder</Text>
+                      <Text style={styles.emptyStateSubtext}>Books you add to this folder will appear here</Text>
+                    </View>
+                  );
+                }
+                
+                return (
+                  <View style={styles.booksSection}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>
+                        {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
+                      </Text>
+                    </View>
+                    <FlatList
+                      data={folderBooks}
+                      renderItem={renderBook}
+                      keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
+                      numColumns={4}
+                      scrollEnabled={false}
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={styles.booksGrid}
+                      columnWrapperStyle={styles.bookRow}
+                    />
+                  </View>
+                );
+              })()}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* Folder Selection Modal for Photos */}
+      <Modal
+        visible={showFolderSelectModal}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => {
+          setShowFolderSelectModal(false);
+          setPhotoToAddToFolder(null);
+        }}
+      >
+        <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
+          <LinearGradient
+            colors={['#f5f7fa', '#1a1a2e']}
+            style={{ height: insets.top }}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+          />
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              style={styles.modalBackButton}
+              onPress={() => {
+                setShowFolderSelectModal(false);
+                setPhotoToAddToFolder(null);
+              }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.modalBackButtonLabel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalHeaderTitle}>Add Photo to Folder</Text>
+            <View style={styles.modalHeaderSpacer} />
+          </View>
+
+          <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+            {folders.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyStateText}>No Folders Yet</Text>
+                <Text style={styles.emptyStateSubtext}>Create a folder first from the caption page</Text>
+              </View>
+            ) : (
+              folders.map((folder) => (
+                <TouchableOpacity
+                  key={folder.id}
+                  style={styles.folderItem}
+                  onPress={async () => {
+                    if (photoToAddToFolder) {
+                      await addPhotoToFolder(photoToAddToFolder, folder.id);
+                      setShowFolderSelectModal(false);
+                      setPhotoToAddToFolder(null);
+                      Alert.alert('Success', `Photo added to "${folder.name}"`);
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="folder" size={24} color="#007AFF" style={{ marginRight: 12 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.folderItemName}>{folder.name}</Text>
+                    <Text style={styles.folderItemCount}>
+                      {(folder.photoIds || []).length} {(folder.photoIds || []).length === 1 ? 'photo' : 'photos'} • {folder.bookIds.length} {folder.bookIds.length === 1 ? 'book' : 'books'}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#718096" />
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
       
     </SafeAreaView>
   );
@@ -1163,6 +1535,46 @@ const styles = StyleSheet.create({
     color: '#718096',
     fontWeight: '600',
   },
+  foldersSection: {
+    marginHorizontal: 15,
+    marginBottom: 20,
+  },
+  foldersGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  folderCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    width: (screenWidth - 60) / 2,
+    marginBottom: 12,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  folderIcon: {
+    marginBottom: 12,
+  },
+  folderName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 6,
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  folderBookCount: {
+    fontSize: 13,
+    color: '#718096',
+    fontWeight: '500',
+  },
   booksGrid: {
     paddingTop: 4,
   },
@@ -1284,6 +1696,15 @@ const styles = StyleSheet.create({
   modalHeaderSpacer: {
     minWidth: 80,
   },
+  modalDeleteButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   modalCloseButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     paddingHorizontal: 16,
@@ -1365,6 +1786,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#718096',
     fontWeight: '500',
+    marginBottom: 8,
+  },
+  addToFolderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  addToFolderButtonText: {
+    fontSize: 13,
+    color: '#007AFF',
+    fontWeight: '600',
+    marginLeft: 6,
   },
   editPhotoImage: {
     width: '100%',
@@ -1656,6 +2096,32 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 11,
     padding: 4,
+  },
+  folderItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    marginHorizontal: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  folderItemName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a202c',
+    marginBottom: 4,
+  },
+  folderItemCount: {
+    fontSize: 13,
+    color: '#718096',
   },
 });
 

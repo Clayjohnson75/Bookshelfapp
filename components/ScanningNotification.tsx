@@ -1,9 +1,15 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useScanning } from '../contexts/ScanningContext';
 
 export const ScanningNotification: React.FC = () => {
   const { scanProgress } = useScanning();
+  const insets = useSafeAreaInsets();
+  
+  // Tab bar height: ~49px on iOS, ~56px on Android, plus safe area bottom
+  const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
+  const bottomPosition = insets.bottom + tabBarHeight;
 
   if (!scanProgress) {
     return null;
@@ -50,7 +56,7 @@ export const ScanningNotification: React.FC = () => {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { bottom: bottomPosition }]}>
       <View style={styles.content}>
         <View style={styles.progressBarContainer}>
           <View style={[styles.progressBarFill, { width: `${percentage}%` }]} />
@@ -74,7 +80,6 @@ export const ScanningNotification: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 90, // Above tab bar with safe area (tab bar ~49px + safe area ~36px + padding)
     left: 0,
     right: 0,
     backgroundColor: '#1a1a2e',

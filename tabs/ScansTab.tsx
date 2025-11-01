@@ -11,17 +11,22 @@ import {
   Modal,
   Image,
   TextInput,
-  Animated
+  Animated,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/SimpleAuthContext';
 import { useScanning } from '../contexts/ScanningContext';
-import { Book, Photo } from '../types/BookTypes';
+import { Book, Photo, Folder } from '../types/BookTypes';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -86,6 +91,29 @@ export const ScansTab: React.FC = () => {
   const [manualAuthor, setManualAuthor] = useState('');
 
   // Smart search for editing incomplete books: auto-search as user types title/author
+  // Show caption modal when image is ready (either from camera or picker)
+  // Start scanning immediately when image is ready, show caption modal after
+  const handleImageSelected = (uri: string) => {
+    console.log('🖼️ Image selected, starting scan and showing caption modal', uri);
+    
+    // Generate scanId before adding to queue so we can track it
+    const scanId = Date.now().toString();
+    currentScanIdRef.current = scanId;
+    scanCaptionsRef.current.set(scanId, ''); // Initialize with empty caption
+    
+    // Set the URI first so the modal can display it
+    setPendingImageUri(uri);
+    
+    // Start scanning IMMEDIATELY - this will trigger the notification
+    addImageToQueue(uri, undefined, scanId);
+    
+    // Show caption modal after a brief delay to ensure scanning has started
+    setTimeout(() => {
+      console.log('📝 Showing caption modal');
+      setShowCaptionModal(true);
+    }, 100);
+  };
+
   useEffect(() => {
     const titleQ = manualTitle.trim();
     const authorQ = manualAuthor.trim();
@@ -114,6 +142,21 @@ export const ScansTab: React.FC = () => {
   
   // Selection states
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
+
+  // Caption modal state
+  const [pendingImageUri, setPendingImageUri] = useState<string | null>(null);
+  const [captionText, setCaptionText] = useState<string>('');
+  const [showCaptionModal, setShowCaptionModal] = useState(false);
+  // Store the scanId for the current pending image so we can update its caption later
+  const currentScanIdRef = React.useRef<string | null>(null);
+  // Store caption for each scan (keyed by scanId)
+  const scanCaptionsRef = React.useRef<Map<string, string>>(new Map());
+  
+  // Folder management state
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
 
   // Orientation state for camera tip
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
@@ -186,11 +229,13 @@ export const ScansTab: React.FC = () => {
       const userRejectedKey = `rejected_books_${user.uid}`;
       const userIncompleteKey = `incomplete_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
+      const userFoldersKey = `folders_${user.uid}`;
       
       const savedPending = await AsyncStorage.getItem(userPendingKey);
       const savedApproved = await AsyncStorage.getItem(userApprovedKey);
       const savedRejected = await AsyncStorage.getItem(userRejectedKey);
       const savedPhotos = await AsyncStorage.getItem(userPhotosKey);
+      const savedFolders = await AsyncStorage.getItem(userFoldersKey);
       
       if (savedPending) {
         setPendingBooks(JSON.parse(savedPending));
@@ -203,6 +248,9 @@ export const ScansTab: React.FC = () => {
       }
       if (savedPhotos) {
         setPhotos(JSON.parse(savedPhotos));
+      }
+      if (savedFolders) {
+        setFolders(JSON.parse(savedFolders));
       }
     } catch (error) {
       console.error('Error loading user data:', error);
@@ -1050,7 +1098,7 @@ No explanations, just JSON.`
     }
   };
 
-  const processImage = async (uri: string, scanId: string) => {
+  const processImage = async (uri: string, scanId: string, caption?: string) => {
     try {
       // Get current progress to preserve totalScans
       const currentProgress = scanProgress || {
@@ -1124,8 +1172,10 @@ No explanations, just JSON.`
       setCurrentScan({ id: scanId, uri, progress: { current: 10, total: 10 } });
       
       // Convert analyzed books to proper structure and separate complete vs incomplete
+      // Use timestamp + index for stable IDs that can be used for folder membership
+      const bookTimestamp = Date.now();
       const allBooks: Book[] = analyzedBooks.map((book, index) => ({
-        id: `${scanId}_${index}`,
+        id: `book_${bookTimestamp}_${index}`,
         title: book.title,
         author: book.author,
         isbn: book.isbn,
@@ -1151,12 +1201,18 @@ No explanations, just JSON.`
         ...newIncompleteBooks.map(book => ({ ...book, status: 'incomplete' as const }))
       ];
       
+      // Get the caption that was set during scanning (from ref or parameter)
+      const finalCaption = scanCaptionsRef.current.get(scanId) || caption || undefined;
+      // Clean up the ref
+      scanCaptionsRef.current.delete(scanId);
+      
       // Save results
       const newPhoto: Photo = {
         id: scanId,
         uri,
         books: photoBooks, // Store all books with correct statuses for scan modal
         timestamp: Date.now(),
+        caption: finalCaption, // Include caption if provided
       };
       
       const updatedPhotos = [...photos, newPhoto];
@@ -1170,6 +1226,12 @@ No explanations, just JSON.`
       
       // Fetch covers for books in background (don't wait for this)
       fetchCoversForBooks(newPendingBooks);
+      
+      // Add books to selected folder if one was chosen
+      if (selectedFolderId) {
+        const scannedBookIds = newPendingBooks.map(book => book.id).filter((id): id is string => id !== undefined);
+        await addBooksToSelectedFolder(scannedBookIds);
+      }
       
       // Update queue status
       const updatedQueue = scanQueue.map(item => 
@@ -1480,8 +1542,12 @@ No explanations, just JSON.`
     await saveUserData(remainingBooks, approvedBooks, updatedRejected, photos);
   };
 
-  const addImageToQueue = (uri: string) => {
-    const scanId = Date.now().toString();
+  const addImageToQueue = (uri: string, caption?: string, providedScanId?: string) => {
+    const scanId = providedScanId || Date.now().toString();
+    // Store caption if provided
+    if (caption !== undefined) {
+      scanCaptionsRef.current.set(scanId, caption);
+    }
     const newScanItem: ScanQueueItem = {
       id: scanId,
       uri,
@@ -1526,8 +1592,115 @@ No explanations, just JSON.`
       );
       // Small delay to ensure notification renders before processing starts
       setTimeout(() => {
-        processImage(uri, scanId);
+        processImage(uri, scanId, caption);
       }, 50);
+    }
+  };
+
+  const handleCaptionSubmit = () => {
+    // Scanning already started in background - save caption for the current scan
+    if (currentScanIdRef.current) {
+      scanCaptionsRef.current.set(currentScanIdRef.current, captionText.trim());
+      currentScanIdRef.current = null; // Clear after saving
+    }
+    
+    setPendingImageUri(null);
+    setCaptionText('');
+    setShowCaptionModal(false);
+    // Scanning notification will automatically appear if scanning is still in progress
+  };
+
+  const handleCaptionSkip = () => {
+    // Scanning already started in background - just close modal
+    // Caption stays empty (already initialized in useEffect)
+    currentScanIdRef.current = null; // Clear ref
+    setPendingImageUri(null);
+    setCaptionText('');
+    setShowCaptionModal(false);
+    // Scanning notification will automatically appear if scanning is still in progress
+  };
+
+  const handleAddToFolder = () => {
+    if (!user || !pendingImageUri) return;
+    // Close caption modal first, then show folder modal
+    setShowCaptionModal(false);
+    // Small delay to ensure caption modal closes before folder modal opens
+    setTimeout(() => {
+      setShowFolderModal(true);
+    }, 100);
+  };
+
+  const saveFolders = async (updatedFolders: Folder[]) => {
+    if (!user) return;
+    try {
+      const userFoldersKey = `folders_${user.uid}`;
+      await AsyncStorage.setItem(userFoldersKey, JSON.stringify(updatedFolders));
+      setFolders(updatedFolders);
+    } catch (error) {
+      console.error('Error saving folders:', error);
+    }
+  };
+
+  const createFolder = async () => {
+    const folderName = newFolderName.trim();
+    if (!folderName || !user) return;
+    
+    const newFolder: Folder = {
+      id: `folder_${Date.now()}`,
+      name: folderName,
+      bookIds: [],
+      photoIds: [],
+      createdAt: Date.now(),
+    };
+    
+    const updatedFolders = [...folders, newFolder];
+    await saveFolders(updatedFolders);
+    setNewFolderName('');
+    setSelectedFolderId(newFolder.id);
+  };
+
+  const handleFolderSelection = async (folderId: string | null) => {
+    if (!user || !pendingImageUri) return;
+    
+    if (folderId === null) {
+      // Skip folder assignment - just close folder modal and caption modal
+      setSelectedFolderId(null);
+      setShowFolderModal(false);
+      handleCaptionSkip();
+      return;
+    }
+    
+    // The books will be added to the folder after scanning completes
+    // Store the selected folder ID and add books to it later
+    setSelectedFolderId(folderId);
+    setShowFolderModal(false);
+    
+    // Close caption modal - scanning already started in background
+    handleCaptionSubmit();
+  };
+
+  // Helper to add scanned books to selected folder after scan completes
+  const addBooksToSelectedFolder = async (scannedBookIds: string[]) => {
+    if (!user || !selectedFolderId || scannedBookIds.length === 0) return;
+    
+    try {
+      const updatedFolders = folders.map(folder => {
+        if (folder.id === selectedFolderId) {
+          // Add new book IDs, avoiding duplicates
+          const existingIds = new Set(folder.bookIds);
+          scannedBookIds.forEach(id => {
+            if (!existingIds.has(id)) {
+              folder.bookIds.push(id);
+            }
+          });
+        }
+        return folder;
+      });
+      
+      await saveFolders(updatedFolders);
+      setSelectedFolderId(null); // Clear selection after adding
+    } catch (error) {
+      console.error('Error adding books to folder:', error);
     }
   };
 
@@ -1540,8 +1713,17 @@ No explanations, just JSON.`
         });
         
         if (photo?.uri) {
-          addImageToQueue(photo.uri);
+          console.log('📷 Photo taken:', photo.uri);
+          // Close camera first
           setIsCameraActive(false);
+          // Reset caption modal state
+          setShowCaptionModal(false);
+          setCaptionText('');
+          // Start scanning and show modal immediately
+          // Small delay to ensure camera closes first
+          setTimeout(() => {
+            handleImageSelected(photo.uri);
+          }, 100);
         }
       } catch (error) {
         console.error('Error taking picture:', error);
@@ -1568,7 +1750,12 @@ No explanations, just JSON.`
       });
 
       if (!result.canceled && result.assets[0]) {
-        addImageToQueue(result.assets[0].uri);
+        console.log('📂 Image picked from library:', result.assets[0].uri);
+        // Reset caption modal state
+        setShowCaptionModal(false);
+        setCaptionText('');
+        // Start scanning and show modal immediately
+        handleImageSelected(result.assets[0].uri);
       }
     } catch (error) {
       console.error(' Error picking image:', error);
@@ -1636,7 +1823,13 @@ No explanations, just JSON.`
 
   return (
     <View style={styles.safeContainer}>
-      <SafeAreaView style={{ flex: 1 }} edges={['left','right','top']}>
+      <SafeAreaView style={{ flex: 1 }} edges={['left','right']}>
+        <LinearGradient
+          colors={['#f5f7fa', '#1a1a2e']}
+          style={{ height: insets.top }}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+        />
         <ScrollView 
           style={styles.container}
           contentContainerStyle={[
@@ -2151,6 +2344,199 @@ No explanations, just JSON.`
         </SafeAreaView>
       </Modal>
 
+      {/* Caption Modal - Appears after taking/uploading photo */}
+      <Modal
+        visible={showCaptionModal}
+        animationType="fade"
+        presentationStyle="fullScreen"
+        onRequestClose={handleCaptionSkip}
+        transparent={false}
+      >
+        <View style={styles.captionModalContainer}>
+          <View style={styles.captionModalHeader}>
+            <Text style={styles.modalTitle}>Add Caption</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={handleCaptionSkip}
+            >
+              <Text style={styles.modalCloseText}>Skip</Text>
+            </TouchableOpacity>
+          </View>
+          
+          {pendingImageUri && (
+            <KeyboardAvoidingView 
+              style={{ flex: 1 }} 
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+            >
+              <ScrollView 
+                style={styles.captionModalContent}
+                contentContainerStyle={styles.captionModalContentContainer}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                <Image source={{ uri: pendingImageUri }} style={styles.captionModalImage} />
+                
+                <View style={styles.captionSection}>
+                  <Text style={styles.captionLabel}>Caption / Location</Text>
+                  <Text style={styles.captionHint}>e.g., Living Room Bookshelf, Office, Bedroom...</Text>
+                <TextInput
+                  style={styles.captionInput}
+                  value={captionText}
+                  onChangeText={setCaptionText}
+                  placeholder="Add a caption to remember where this is..."
+                  multiline
+                  numberOfLines={3}
+                  autoFocus
+                  blurOnSubmit={true}
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    Keyboard.dismiss();
+                    handleCaptionSubmit();
+                  }}
+                />
+                  <TouchableOpacity
+                    style={styles.captionFolderButton}
+                    onPress={handleAddToFolder}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="folder-outline" size={20} color="#ffffff" style={{ marginRight: 8 }} />
+                    <Text style={styles.captionFolderButtonText}>Add to Folder</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.captionSubmitButton}
+                    onPress={handleCaptionSubmit}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.captionSubmitButtonText}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          )}
+        </View>
+      </Modal>
+
+      {/* Folder Selection Modal */}
+      <Modal
+        visible={showFolderModal}
+        animationType="fade"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowFolderModal(false);
+          setNewFolderName('');
+        }}
+        transparent={false}
+      >
+        <View style={styles.folderModalContainer}>
+          <LinearGradient
+            colors={['#f5f7fa', '#1a1a2e']}
+            style={{ height: insets.top }}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+          />
+          <View style={styles.folderModalHeader}>
+            <Text style={styles.modalTitle}>Add to Folder</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => {
+                setShowFolderModal(false);
+                setNewFolderName('');
+              }}
+            >
+              <Text style={styles.modalCloseText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          
+          <ScrollView style={styles.folderModalContent} showsVerticalScrollIndicator={false}>
+            {/* Create Folder Section - Always visible */}
+            <View style={styles.createFolderSection}>
+              <Text style={styles.createFolderTitle}>Create New Folder</Text>
+              <View style={styles.createFolderRow}>
+                <TextInput
+                  style={styles.createFolderInput}
+                  value={newFolderName}
+                  onChangeText={setNewFolderName}
+                  placeholder="Folder name..."
+                  autoCapitalize="words"
+                  autoFocus={folders.length === 0}
+                />
+                <TouchableOpacity
+                  style={[styles.createFolderButton, !newFolderName.trim() && styles.createFolderButtonDisabled]}
+                  onPress={createFolder}
+                  activeOpacity={0.8}
+                  disabled={!newFolderName.trim()}
+                >
+                  <Text style={styles.createFolderButtonText}>Create</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Existing Folders */}
+            {folders.length > 0 && (
+              <View style={styles.existingFoldersSection}>
+                <Text style={styles.existingFoldersTitle}>Select Folder</Text>
+                {folders.map((folder) => (
+                  <TouchableOpacity
+                    key={folder.id}
+                    style={[
+                      styles.folderItem,
+                      selectedFolderId === folder.id && styles.folderItemSelected
+                    ]}
+                    onPress={() => setSelectedFolderId(folder.id)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons 
+                      name={selectedFolderId === folder.id ? "folder" : "folder-outline"} 
+                      size={24} 
+                      color={selectedFolderId === folder.id ? "#007AFF" : "#4a5568"} 
+                      style={{ marginRight: 12 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[
+                        styles.folderItemName,
+                        selectedFolderId === folder.id && styles.folderItemNameSelected
+                      ]}>
+                        {folder.name}
+                      </Text>
+                      <Text style={styles.folderItemCount}>
+                        {folder.bookIds.length} {folder.bookIds.length === 1 ? 'book' : 'books'}
+                      </Text>
+                    </View>
+                    {selectedFolderId === folder.id && (
+                      <Ionicons name="checkmark-circle" size={24} color="#007AFF" />
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Action Buttons */}
+            <View style={styles.folderModalActions}>
+              <TouchableOpacity
+                style={[styles.folderActionButton, styles.folderSkipButton]}
+                onPress={() => handleFolderSelection(null)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.folderSkipButtonText}>Skip</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.folderActionButton,
+                  styles.folderConfirmButton,
+                  !selectedFolderId && styles.folderConfirmButtonDisabled
+                ]}
+                onPress={() => handleFolderSelection(selectedFolderId || null)}
+                activeOpacity={0.8}
+                disabled={!selectedFolderId}
+              >
+                <Text style={styles.folderConfirmButtonText}>Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
       </SafeAreaView>
       
       {/* Sticky toolbar at bottom - positioned at absolute bottom, tab bar will be directly below */}
@@ -2164,9 +2550,11 @@ No explanations, just JSON.`
             }
           ]}
         >
-          <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
-          <View style={styles.stickyToolbarRow}>
+          <View style={styles.stickyToolbarHeader}>
+            <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
             <Text style={styles.stickySelectedCount}>{selectedBooks.size} selected</Text>
+          </View>
+          <View style={styles.stickyToolbarRow}>
             <TouchableOpacity 
               style={[styles.stickyButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
               onPress={approveSelectedBooks}
@@ -2820,6 +3208,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3,
   },
+  modalDeleteButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   modalContent: {
     flex: 1,
     padding: 20,
@@ -3134,11 +3531,16 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
+  stickyToolbarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
   stickyToolbarTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#1a202c',
-    marginBottom: 8,
   },
   stickyToolbarRow: {
     flexDirection: 'row',
@@ -3148,8 +3550,7 @@ const styles = StyleSheet.create({
   stickySelectedCount: {
     fontSize: 13,
     color: '#4a5568',
-    marginRight: 8,
-    flex: 1,
+    fontWeight: '600',
   },
   stickyButton: {
     backgroundColor: '#007AFF',
@@ -3196,6 +3597,270 @@ const styles = StyleSheet.create({
   selectedCheckbox: {},
   unselectedCheckbox: {},
   checkmark: {},
+  captionSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginTop: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  captionLabel: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  captionHint: {
+    fontSize: 13,
+    color: '#718096',
+    marginBottom: 12,
+    fontStyle: 'italic',
+  },
+  scanningInBackgroundHint: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginBottom: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  captionInput: {
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#1a202c',
+    minHeight: 100,
+    textAlignVertical: 'top',
+    marginBottom: 16,
+  },
+  captionSubmitButton: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  captionSubmitButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  captionFolderButton: {
+    backgroundColor: '#718096',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  captionFolderButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  captionModalContainer: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  captionModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    backgroundColor: '#1a1a2e',
+    borderBottomWidth: 0,
+  },
+  captionModalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  captionModalContentContainer: {
+    paddingBottom: 100,
+  },
+  captionModalImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  folderModalContainer: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  folderModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    backgroundColor: '#1a1a2e',
+    borderBottomWidth: 0,
+  },
+  folderModalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  createFolderSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  createFolderTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+    letterSpacing: 0.3,
+  },
+  createFolderRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  createFolderInput: {
+    flex: 1,
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 16,
+    color: '#1a202c',
+  },
+  createFolderButton: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  createFolderButtonDisabled: {
+    backgroundColor: '#cbd5e0',
+    opacity: 0.6,
+  },
+  createFolderButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  existingFoldersSection: {
+    marginBottom: 24,
+  },
+  existingFoldersTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 16,
+    letterSpacing: 0.3,
+  },
+  folderItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  folderItemSelected: {
+    borderColor: '#007AFF',
+    backgroundColor: '#f0f8ff',
+  },
+  folderItemName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a202c',
+    marginBottom: 4,
+  },
+  folderItemNameSelected: {
+    color: '#007AFF',
+  },
+  folderItemCount: {
+    fontSize: 13,
+    color: '#718096',
+  },
+  folderModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingBottom: 20,
+  },
+  folderActionButton: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  folderSkipButton: {
+    backgroundColor: '#e2e8f0',
+  },
+  folderSkipButtonText: {
+    color: '#4a5568',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  folderConfirmButton: {
+    backgroundColor: '#007AFF',
+  },
+  folderConfirmButtonDisabled: {
+    backgroundColor: '#cbd5e0',
+    opacity: 0.6,
+  },
+  folderConfirmButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
 });
 
 

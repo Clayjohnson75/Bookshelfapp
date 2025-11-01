@@ -11,6 +11,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
 import { Ionicons } from '@expo/vector-icons';
@@ -73,7 +74,12 @@ export const ExploreTab: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
-      <View style={{ height: insets.top, backgroundColor: '#1a1a2e' }} />
+      <LinearGradient
+        colors={['#f5f7fa', '#1a1a2e']}
+        style={{ height: insets.top }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      />
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Explore</Text>

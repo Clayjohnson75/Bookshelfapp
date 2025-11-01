@@ -37,3 +37,11 @@ export interface UserProfile {
   totalBooks: number;
   totalPhotos: number;
 }
+
+export interface Folder {
+  id: string;
+  name: string;
+  bookIds: string[]; // Array of book IDs that belong to this folder
+  photoIds: string[]; // Array of photo IDs that belong to this folder
+  createdAt: number;
+}

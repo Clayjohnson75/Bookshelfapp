@@ -17,8 +17,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Create prompt for DALL-E
-    const prompt = `A profile picture that includes the name "${firstName}" that is book and library related, simple but elegant.`;
+    // Create prompt for DALL-E - ONLY TEXT, book-themed typography, HUGE text
+    // Note: DALL-E struggles with exact text spelling, so we emphasize it heavily
+    const prompt = `Profile picture: ONLY the exact text "${firstName}" in enormous bold letters filling 95% of the square image. The letters are styled with a book theme - each letter looks like a book or has book-like texture. Zero decorations. Zero icons. Zero background elements. Zero borders. Pure text only. The spelling must be exactly "${firstName}". The text is the only thing visible in the entire image.`;
 
     // Call DALL-E API
     const response = await fetch('https://api.openai.com/v1/images/generations', {
