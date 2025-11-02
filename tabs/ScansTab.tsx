@@ -1835,6 +1835,8 @@ No explanations, just JSON.`
           contentContainerStyle={[
             pendingBooks.length > 0 && { paddingBottom: 100 } // Add padding so content isn't hidden behind sticky toolbar
           ]}
+          bounces={false}
+          overScrollMode="never"
         >
       <View style={styles.header}>
         <Text style={styles.title}>Book Scanner</Text>

@@ -469,17 +469,215 @@ export const MyLibraryTab: React.FC = () => {
     setShowAnalytics(!showAnalytics);
   };
 
+  // Get books with covers for collage (max 100)
+  const booksWithCovers = useMemo(() => {
+    return books.filter(book => getBookCoverUri(book)).slice().sort(() => Math.random() - 0.5); // Shuffle for randomness
+  }, [books]);
+
+  const collageBookCount = useMemo(() => {
+    const count = booksWithCovers.length;
+    // Show max 7 books in a single row
+    return Math.min(count, 7);
+  }, [booksWithCovers.length]);
+
+  const collageBooks = useMemo(() => {
+    return booksWithCovers.slice(0, collageBookCount);
+  }, [booksWithCovers, collageBookCount]);
+
+  // Calculate dynamic cover size - even smaller covers to prevent overlap
+  const collageLayout = useMemo(() => {
+    const count = collageBookCount;
+    if (count === 0) return { coverWidth: 30, coverHeight: 45 };
+    
+    // Even smaller size - around 30px wide
+    const coverWidth = 30;
+    const coverHeight = coverWidth * 1.5; // Maintain 2:3 aspect ratio
+    
+    return { coverWidth, coverHeight };
+  }, [collageBookCount]);
+
+  // Pre-calculate positions to avoid overlap and profile area
+  const bookPositions = useMemo(() => {
+    if (collageBooks.length === 0) return [];
+    
+    const { coverWidth, coverHeight } = collageLayout;
+    const headerWidth = screenWidth - 40;
+    const headerHeight = 100;
+    
+    // Books can extend into the gradient area (above header)
+    const gradientHeight = insets.top;
+    const totalAvailableHeight = gradientHeight + headerHeight;
+    
+    // Avoid the center area where profile info is (approximately center 40% of width, middle section)
+    // Profile area is in the blue header section, not the gradient
+    const profileArea = {
+      left: screenWidth * 0.25,
+      right: screenWidth * 0.75,
+      top: gradientHeight + 30, // Start below gradient
+      bottom: gradientHeight + 70 // End before bottom of header
+    };
+    
+    // Minimum spacing between books - ensure NO overlap
+    const minSpacing = coverWidth + 6; // Cover width plus padding
+    const positions: Array<{ x: number; y: number; rotation: number }> = [];
+    const usedPositions: Array<{ x: number; y: number }> = [];
+    
+    // Helper to check if two rectangles overlap
+    const rectanglesOverlap = (x1: number, y1: number, w1: number, h1: number,
+                              x2: number, y2: number, w2: number, h2: number): boolean => {
+      return !(x1 + w1 + 6 < x2 || x2 + w2 + 6 < x1 ||
+               y1 + h1 + 6 < y2 || y2 + h2 + 6 < y1);
+    };
+    
+    // Check if position is valid (not overlapping and not in profile area)
+    const isPositionValid = (x: number, y: number): boolean => {
+      // Check bounds - allow books in gradient area (y can be negative to go into gradient)
+      if (x < 20 || x > screenWidth - 20 - coverWidth) return false;
+      if (y < 5 || y > headerHeight + gradientHeight - coverHeight - 10) return false;
+      
+      // Check if overlaps with existing books
+      for (const used of usedPositions) {
+        if (rectanglesOverlap(x, y, coverWidth, coverHeight, used.x, used.y, coverWidth, coverHeight)) {
+          return false;
+        }
+      }
+      
+      // Check if in profile area (where name/username is)
+      const centerX = x + coverWidth / 2;
+      const centerY = y + coverHeight / 2;
+      if (centerX >= profileArea.left && centerX <= profileArea.right &&
+          centerY >= profileArea.top && centerY <= profileArea.bottom) {
+        return false;
+      }
+      
+      return true;
+    };
+    
+    // Create a visible staggered/zigzag pattern instead of a straight line
+    const totalBooks = collageBooks.length;
+    const availableWidth = headerWidth - coverWidth;
+    const availableHeight = totalAvailableHeight - coverHeight;
+    const centerY = (availableHeight - coverHeight) / 2 + 10; // Center vertically
+    
+    // Create a zigzag pattern - alternate between higher and lower positions
+    const staggerAmplitude = 20; // How much books move up/down from center
+    
+    collageBooks.forEach((book, index) => {
+      // Distribute books evenly across the width
+      const progress = totalBooks > 1 ? index / (totalBooks - 1) : 0;
+      let x = 20 + progress * availableWidth;
+      
+      // Create zigzag/staggered pattern - alternate between higher and lower
+      // Avoid center area (where profile is) by keeping center books more level
+      const centerDistance = Math.abs(progress - 0.5); // Distance from center (0 to 0.5)
+      const staggerPhase = index % 2 === 0 ? 1 : -1; // Alternates: 1, -1, 1, -1, ...
+      const staggerOffset = staggerPhase * staggerAmplitude;
+      
+      // Reduce stagger in the center area (where profile info is)
+      const centerBlend = Math.min(1, centerDistance * 4); // 0 at center, 1 at edges
+      const finalOffset = staggerOffset * centerBlend;
+      
+      let y = centerY + finalOffset;
+      
+      // Add small random variation for organic feel
+      const randomVariation = (Math.random() - 0.5) * 5;
+      y = y + randomVariation;
+      
+      // Try to find a valid position if the initial position is invalid or overlaps
+      if (!isPositionValid(x, y)) {
+        // Try positions in a spiral pattern around the initial position
+        let foundValid = false;
+        let attempts = 0;
+        const maxAttempts = 15;
+        const angleStep = (Math.PI * 2) / 8; // 8 directions
+        
+        while (!foundValid && attempts < maxAttempts) {
+          const radius = minSpacing * (attempts + 1) / 2;
+          
+          // Try 8 directions around the initial point
+          for (let dir = 0; dir < 8; dir++) {
+            const angle = dir * angleStep;
+            const testX = x + Math.cos(angle) * radius;
+            const testY = y + Math.sin(angle) * radius;
+            
+            if (isPositionValid(testX, testY)) {
+              x = testX;
+              y = testY;
+              foundValid = true;
+              break;
+            }
+          }
+          attempts++;
+        }
+      }
+      
+      // Final bounds check
+      x = Math.max(20, Math.min(screenWidth - 20 - coverWidth, x));
+      y = Math.max(5, Math.min(headerHeight + gradientHeight - coverHeight - 10, y));
+      
+      // Add rotation that varies with position (more rotation at arch extremes)
+      const rotationIntensity = Math.abs((progress - 0.5) * 2); // 0 at center, 1 at edges
+      const rotation = (Math.random() - 0.5) * 8 * rotationIntensity; // More rotation at edges
+      
+      positions.push({ x, y, rotation });
+      usedPositions.push({ x, y });
+    });
+    
+    return positions;
+  }, [collageBooks, collageLayout, screenWidth, insets.top]);
+
   return (
     <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
-      <LinearGradient
-        colors={['#f5f7fa', '#1a1a2e']}
-        style={{ height: insets.top }}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-      />
-      <ScrollView ref={scrollViewRef} style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* User Profile Header */}
-      <View style={styles.profileHeader}>
+      <ScrollView 
+        ref={scrollViewRef} 
+        style={styles.container} 
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
+      >
+      {/* Gradient Header and Profile Header - Combined container for books to span both */}
+      <View style={{ position: 'relative', overflow: 'visible' }}>
+        <LinearGradient
+          colors={['#f5f7fa', '#1a1a2e']}
+          style={{ height: insets.top }}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+        />
+        {/* User Profile Header */}
+        <View style={styles.profileHeader}>
+          {/* Book Cover Collage Background - Fixed, over blue background and gradient */}
+          {collageBooks.length > 0 && (
+            <View style={[styles.collageContainer, { top: -insets.top }]} pointerEvents="none">
+            {collageBooks.map((book, index) => {
+              const coverUri = getBookCoverUri(book);
+              if (!coverUri) return null;
+              
+              const { coverWidth, coverHeight } = collageLayout;
+              const position = bookPositions[index];
+              
+              if (!position) return null;
+              
+              return (
+                <Image
+                  key={`${book.id}-${index}`}
+                  source={{ uri: coverUri }}
+                  style={[
+                    styles.collageCover,
+                    {
+                      width: coverWidth,
+                      height: coverHeight,
+                      left: position.x,
+                      top: position.y + insets.top, // Account for gradient height
+                      transform: [{ rotate: `${position.rotation}deg` }],
+                    }
+                  ]}
+                  resizeMode="cover"
+                />
+              );
+            })}
+          </View>
+        )}
+        
         <View style={styles.profileHeaderContent}>
           <View style={styles.profileImagePlaceholder}>
             <Text style={styles.profileInitial}>
@@ -502,6 +700,7 @@ export const MyLibraryTab: React.FC = () => {
           >
             <Ionicons name="settings-outline" size={22} color="#ffffff" />
           </TouchableOpacity>
+        </View>
         </View>
       </View>
         
@@ -1373,6 +1572,23 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 30,
     paddingHorizontal: 20,
+    position: 'relative',
+    overflow: 'visible', // Allow books to extend into gradient
+  },
+  collageContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 0,
+    overflow: 'visible', // Allow books to extend beyond container
+  },
+  collageCover: {
+    position: 'absolute',
+    borderRadius: 4,
+    opacity: 0.55, // More visible
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   profileHeaderContent: {
     flexDirection: 'row',
@@ -1430,7 +1646,7 @@ const styles = StyleSheet.create({
   },
   profileUsername: {
     fontSize: 14,
-    color: '#a0aec0',
+    color: '#ffffff',
     fontWeight: '400',
     marginTop: 2,
   },

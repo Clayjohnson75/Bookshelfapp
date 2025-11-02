@@ -32,6 +32,7 @@ export const ExploreTab: React.FC = () => {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
 
+
   useEffect(() => {
     const delayedSearch = setTimeout(async () => {
       if (searchQuery.length >= 2) {
