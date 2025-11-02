@@ -703,6 +703,14 @@ export const MyLibraryTab: React.FC = () => {
         </View>
         </View>
       </View>
+      
+      {/* Fade Gradient Below Header */}
+      <LinearGradient
+        colors={['#1a1a2e', '#ebedf0']}
+        style={{ height: 30 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      />
         
       {/* Stats Section - Elegant Cards */}
       <View style={styles.statsSection}>
@@ -1561,7 +1569,7 @@ export const MyLibraryTab: React.FC = () => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#ebedf0',
   },
   container: {
     flex: 1,
@@ -1611,7 +1619,7 @@ const styles = StyleSheet.create({
     width: 70,
     height: 70,
     borderRadius: 35,
-    backgroundColor: '#4a5568',
+    backgroundColor: 'rgba(74, 85, 104, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 3,
@@ -1664,7 +1672,7 @@ const styles = StyleSheet.create({
   },
   // Stats Section
   statsSection: {
-    marginTop: -15,
+    marginTop: -20,
     marginHorizontal: 15,
     marginBottom: 15,
   },

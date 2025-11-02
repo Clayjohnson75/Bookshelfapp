@@ -1842,6 +1842,14 @@ No explanations, just JSON.`
         <Text style={styles.title}>Book Scanner</Text>
         <Text style={styles.subtitle}>Scan your bookshelf to build your library</Text>
       </View>
+      
+      {/* Fade Gradient Below Header */}
+      <LinearGradient
+        colors={['#1a1a2e', '#ebedf0']}
+        style={{ height: 30 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      />
 
       {/* Scan Options */}
       <View style={styles.scanOptions}>
@@ -2583,7 +2591,7 @@ No explanations, just JSON.`
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#ebedf0',
     position: 'relative',
   },
   container: {
@@ -2611,7 +2619,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: 20,
     gap: 15,
-    marginTop: -15,
+    marginTop: -55,
   },
   scanButton: {
     flex: 1,

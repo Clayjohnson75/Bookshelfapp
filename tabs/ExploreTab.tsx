@@ -86,6 +86,14 @@ export const ExploreTab: React.FC = () => {
           <Text style={styles.title}>Explore</Text>
           <Text style={styles.subtitle}>Search for users by username or name</Text>
         </View>
+        
+        {/* Fade Gradient Below Header */}
+        <LinearGradient
+          colors={['#1a1a2e', '#ebedf0']}
+          style={{ height: 30 }}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+        />
 
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={styles.searchContainer}>
@@ -168,7 +176,7 @@ export const ExploreTab: React.FC = () => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#ebedf0',
   },
   container: {
     flex: 1,
@@ -193,7 +201,7 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     padding: 20,
-    marginTop: -15,
+    marginTop: -55,
     position: 'relative',
   },
   searchInput: {
