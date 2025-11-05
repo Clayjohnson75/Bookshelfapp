@@ -23,12 +23,21 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/SimpleAuthContext';
 import { useScanning } from '../contexts/ScanningContext';
 import { Book, Photo, Folder } from '../types/BookTypes';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+
+// Helper to read env vars in both development and production builds
+const getEnvVar = (key: string): string => {
+  return Constants.expoConfig?.extra?.[key] || 
+         Constants.manifest?.extra?.[key] || 
+         process.env[key] || 
+         '';
+};
 
 // Utility: wait for ms
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -314,7 +323,7 @@ export const ScansTab: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY')}`,
         },
         signal: controller.signal,
         body: JSON.stringify({
@@ -652,7 +661,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY')}`,
         },
         signal: controller.signal,
         body: JSON.stringify({
@@ -731,7 +740,7 @@ Return the JSON array now. Do not include any text before or after the array.`
       const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
       
       // Use gemini-2.5-pro (more accurate, supports vision) - verified available models
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.EXPO_PUBLIC_GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY')}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -993,7 +1002,9 @@ No explanations, just JSON.`
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<Book[]> => {
     console.log('🚀 Starting AI scan with OpenAI and Gemini...');
-    const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+    // Use helper function to read env vars in both dev and production
+    const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    console.log(`🔍 API Base URL: ${baseUrl || 'NOT SET'}`);
     // Try server first if configured
     if (baseUrl) {
       console.log(`📡 Attempting Vercel API scan at: ${baseUrl}/api/scan`);
@@ -1573,7 +1584,7 @@ No explanations, just JSON.`
     setScanQueue(updatedQueue);
     
     // Set scan progress IMMEDIATELY (outside of setState to avoid render conflicts)
-    setScanProgress({
+    const progressData = {
       currentScanId: null,
       currentStep: 0,
       totalSteps: 10,
@@ -1581,7 +1592,9 @@ No explanations, just JSON.`
       completedScans: completedCount,
       failedScans: 0, // No failed scans yet when adding new item
       startTimestamp: Date.now(), // Add start timestamp for ETA calculation
-    });
+    };
+    console.log('📊 Setting scan progress:', progressData);
+    setScanProgress(progressData);
     
     if (!isProcessing) {
       setIsProcessing(true);
