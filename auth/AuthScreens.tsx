@@ -23,7 +23,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true); // Show by default
   const [showSignUp, setShowSignUp] = useState(false);
-  const { signIn, loading } = useAuth();
+  const { signIn, signInWithDemoAccount, loading, demoCredentials } = useAuth();
 
   const handleLogin = async () => {
     if (!identifier || !password) {
@@ -32,6 +32,15 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     }
 
     const success = await signIn(identifier, password);
+    if (success) {
+      onAuthSuccess();
+    }
+  };
+
+  const handleDemoLogin = async () => {
+    setIdentifier(demoCredentials.username);
+    setPassword(demoCredentials.password);
+    const success = await signInWithDemoAccount();
     if (success) {
       onAuthSuccess();
     }
@@ -51,6 +60,25 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
         </View>
 
         <View style={styles.form}>
+          <View style={styles.demoContainer}>
+            <Text style={styles.demoHeader}>App Review Demo Account</Text>
+            <Text style={styles.demoText}>Use the button below or enter these credentials manually:</Text>
+            <Text style={styles.demoCredential}>Username: <Text style={styles.demoCode}>{demoCredentials.username}</Text></Text>
+            <Text style={styles.demoCredential}>Password: <Text style={styles.demoCode}>{demoCredentials.password}</Text></Text>
+            <Text style={styles.demoCredential}>Email: <Text style={styles.demoCode}>{demoCredentials.email}</Text></Text>
+            <TouchableOpacity
+              style={[styles.button, styles.secondaryButton]}
+              onPress={handleDemoLogin}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#007AFF" />
+              ) : (
+                <Text style={styles.secondaryButtonText}>Sign In Instantly</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
           <TextInput
             style={styles.input}
             placeholder="Email or Username"
@@ -281,6 +309,34 @@ const styles = StyleSheet.create({
     color: '#1a1a2e',
     fontWeight: '500',
   },
+  demoContainer: {
+    marginBottom: 20,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#f1f5ff',
+    borderWidth: 1,
+    borderColor: '#c6d8ff',
+  },
+  demoHeader: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a2e',
+    marginBottom: 8,
+  },
+  demoText: {
+    fontSize: 14,
+    color: '#1a1a2e',
+    marginBottom: 8,
+  },
+  demoCredential: {
+    fontSize: 14,
+    color: '#1a1a2e',
+    marginBottom: 4,
+  },
+  demoCode: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+    fontWeight: '600',
+  },
   form: {
     width: '100%',
   },
@@ -334,6 +390,17 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: '#007AFF',
+  },
+  secondaryButton: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    marginTop: 12,
+  },
+  secondaryButtonText: {
+    color: '#007AFF',
+    fontSize: 16,
+    fontWeight: '600',
   },
   buttonText: {
     color: '#fff',

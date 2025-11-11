@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
+import { Book, Photo, Folder } from '../types/BookTypes';
 
 interface User {
   uid: string;
@@ -15,12 +16,18 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<boolean>;
+  signInWithDemoAccount: () => Promise<boolean>;
   signUp: (email: string, password: string, username: string, displayName: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<boolean>;
   searchUsers: (query: string) => Promise<User[]>;
   getUserByUsername: (username: string) => Promise<User | null>;
   deleteAccount: () => Promise<void>;
+  demoCredentials: {
+    username: string;
+    email: string;
+    password: string;
+  };
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -40,6 +47,127 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const DEMO_USERNAME = 'test12';
+  const DEMO_PASSWORD = 'admin12345';
+  const DEMO_EMAIL = 'appstore.review+test12@bookshelfscanner.app';
+  const DEMO_UID = 'demo-user-test12';
+  const DEMO_SEEDED_KEY = `demo_seeded_${DEMO_UID}`;
+
+  const handleDemoSignIn = async (saveUserToStorageFn: (userData: User) => Promise<void>) => {
+    const demoUser: User = {
+      uid: DEMO_UID,
+      email: DEMO_EMAIL,
+      username: DEMO_USERNAME,
+      displayName: 'App Review Demo',
+    };
+
+    try {
+      const alreadySeeded = await AsyncStorage.getItem(DEMO_SEEDED_KEY);
+      if (!alreadySeeded) {
+        const now = Date.now();
+        const approvedBooks: Book[] = [
+          {
+            id: 'demo-book-1',
+            title: 'The Great Gatsby',
+            author: 'F. Scott Fitzgerald',
+            confidence: 'high',
+            status: 'approved',
+            scannedAt: now - 1000 * 60 * 60 * 24,
+            coverUrl: 'https://covers.openlibrary.org/b/id/7222246-L.jpg',
+          },
+          {
+            id: 'demo-book-2',
+            title: 'Atomic Habits',
+            author: 'James Clear',
+            confidence: 'high',
+            status: 'approved',
+            scannedAt: now - 1000 * 60 * 60 * 12,
+            coverUrl: 'https://covers.openlibrary.org/b/id/9259255-L.jpg',
+          },
+          {
+            id: 'demo-book-3',
+            title: 'Becoming',
+            author: 'Michelle Obama',
+            confidence: 'medium',
+            status: 'approved',
+            scannedAt: now - 1000 * 60 * 30,
+            coverUrl: 'https://covers.openlibrary.org/b/id/9253191-L.jpg',
+          },
+        ];
+
+        const pendingBooks: Book[] = [
+          {
+            id: 'demo-book-4',
+            title: 'The Midnight Library',
+            author: 'Matt Haig',
+            confidence: 'medium',
+            status: 'pending',
+            scannedAt: now - 1000 * 60 * 15,
+          },
+        ];
+
+        const rejectedBooks: Book[] = [
+          {
+            id: 'demo-book-5',
+            title: 'Unknown Title',
+            author: 'Unknown',
+            confidence: 'low',
+            status: 'rejected',
+            scannedAt: now - 1000 * 60 * 45,
+          },
+        ];
+
+        const photos: Photo[] = [
+          {
+            id: 'demo-photo-1',
+            uri: 'https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&w=1200&q=80',
+            books: approvedBooks,
+            timestamp: now - 1000 * 60 * 60,
+            caption: 'Living Room Bookshelf',
+          },
+          {
+            id: 'demo-photo-2',
+            uri: 'https://images.unsplash.com/photo-1516979187457-637abb4f9353?auto=format&fit=crop&w=1200&q=80',
+            books: pendingBooks,
+            timestamp: now - 1000 * 60 * 20,
+            caption: 'Office Desk',
+          },
+        ];
+
+        const folders: Folder[] = [
+          {
+            id: 'demo-folder-1',
+            name: 'Classics',
+            bookIds: ['demo-book-1'],
+            photoIds: ['demo-photo-1'],
+            createdAt: now - 1000 * 60 * 60 * 24 * 3,
+          },
+          {
+            id: 'demo-folder-2',
+            name: 'Personal Growth',
+            bookIds: ['demo-book-2'],
+            photoIds: ['demo-photo-2'],
+            createdAt: now - 1000 * 60 * 60 * 10,
+          },
+        ];
+
+        await AsyncStorage.multiSet([
+          [`approved_books_${DEMO_UID}`, JSON.stringify(approvedBooks)],
+          [`pending_books_${DEMO_UID}`, JSON.stringify(pendingBooks)],
+          [`rejected_books_${DEMO_UID}`, JSON.stringify(rejectedBooks)],
+          [`photos_${DEMO_UID}`, JSON.stringify(photos)],
+          [`folders_${DEMO_UID}`, JSON.stringify(folders)],
+          [`usernameToEmail:${DEMO_USERNAME}`, DEMO_EMAIL],
+        ]);
+        await AsyncStorage.setItem(DEMO_SEEDED_KEY, 'true');
+      }
+    } catch (error) {
+      console.warn('Failed to seed demo data', error);
+    }
+
+    setUser(demoUser);
+    await saveUserToStorageFn(demoUser);
+  };
 
   const fetchUserProfile = async (userId: string): Promise<{ username: string; displayName?: string; photoURL?: string }> => {
     if (!supabase) {
@@ -147,7 +275,30 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  const signInWithDemoAccount = async (): Promise<boolean> => {
+    try {
+      setLoading(true);
+      await handleDemoSignIn(saveUserToStorage);
+      return true;
+    } catch (error) {
+      console.error('Demo sign in error:', error);
+      Alert.alert('Sign In Error', 'Unable to load the demo account right now. Please try again.');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const signIn = async (emailOrUsername: string, password: string): Promise<boolean> => {
+    const normalizedInput = emailOrUsername.trim().toLowerCase();
+    const isDemoLogin =
+      password === DEMO_PASSWORD &&
+      (normalizedInput === DEMO_USERNAME || normalizedInput === DEMO_EMAIL.toLowerCase());
+
+    if (isDemoLogin) {
+      return signInWithDemoAccount();
+    }
+
     try {
       setLoading(true);
       
@@ -497,12 +648,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     user,
     loading,
     signIn,
+    signInWithDemoAccount,
     signUp,
     signOut,
     resetPassword,
     searchUsers,
     getUserByUsername,
     deleteAccount,
+    demoCredentials: {
+      username: DEMO_USERNAME,
+      email: DEMO_EMAIL,
+      password: DEMO_PASSWORD,
+    },
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
