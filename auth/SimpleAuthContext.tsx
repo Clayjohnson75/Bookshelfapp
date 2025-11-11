@@ -291,9 +291,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const signIn = async (emailOrUsername: string, password: string): Promise<boolean> => {
     const normalizedInput = emailOrUsername.trim().toLowerCase();
-    const isDemoLogin =
-      password === DEMO_PASSWORD &&
-      (normalizedInput === DEMO_USERNAME || normalizedInput === DEMO_EMAIL.toLowerCase());
+    const cleanedPassword = password.trim();
+    const isDemoIdentifier = normalizedInput === DEMO_USERNAME || normalizedInput === DEMO_EMAIL.toLowerCase();
+    const isDemoLogin = isDemoIdentifier && cleanedPassword === DEMO_PASSWORD;
 
     if (isDemoLogin) {
       return signInWithDemoAccount();
@@ -308,7 +308,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
       
       // Allow username sign-in by resolving to email from Supabase
-      let email = emailOrUsername;
+      let email = emailOrUsername.trim();
       if (!emailOrUsername.includes('@')) {
         const { data: emailData, error: rpcError } = await supabase.rpc('get_email_by_username', {
           username_input: emailOrUsername.toLowerCase(),
@@ -328,7 +328,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
       }
       
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password: cleanedPassword });
       if (error || !data.user) {
         Alert.alert('Sign In Error', error?.message || 'Invalid credentials');
         return false;
