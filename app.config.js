@@ -41,7 +41,7 @@ module.exports = {
   expo: {
     name: "Bookshelf Scanner",
     slug: "bookshelf-scanner",
-    version: "1.0.0",
+    version: "6.0.0",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
