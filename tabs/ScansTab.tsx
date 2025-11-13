@@ -312,6 +312,12 @@ export const ScansTab: React.FC = () => {
 
   // Copy the ChatGPT validation function from App.tsx
   const analyzeBookWithChatGPT = async (book: any): Promise<any> => {
+    const apiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
+    if (!apiKey) {
+      console.error('❌ OpenAI API key not set for validation!');
+      throw new Error('OpenAI API key not configured');
+    }
+    
     try {
       // Analyzing book with ChatGPT
       
@@ -323,7 +329,7 @@ export const ScansTab: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY')}`,
+          'Authorization': `Bearer ${apiKey}`,
         },
         signal: controller.signal,
         body: JSON.stringify({
@@ -370,7 +376,9 @@ Remember: Respond with ONLY the JSON object, nothing else.`
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text().catch(() => '');
+        console.error(`❌ OpenAI validation API error ${response.status}:`, errorText.substring(0, 300));
+        throw new Error(`OpenAI API error: ${response.status} - ${errorText.substring(0, 100)}`);
       }
 
       const data = await response.json();
@@ -427,10 +435,17 @@ Remember: Respond with ONLY the JSON object, nothing else.`
           chatgptReason: analysis.reason
         };
       }
-    } catch (error) {
-      // Silently handle validation errors - book will be marked incomplete if needed
-      console.log(`Issue with "${book.title}"`);
-      return book; // Return original if analysis fails
+    } catch (error: any) {
+      // Log validation errors clearly
+      console.error(`❌ Validation failed for "${book.title}":`, error?.message || error);
+      
+      // If it's a key issue, throw to surface the problem
+      if (error?.message?.includes('key') || error?.message?.includes('API key')) {
+        throw error;
+      }
+      
+      // Return original book if validation fails - it will still be processed
+      return book;
     }
   };
 
@@ -651,6 +666,12 @@ Remember: Respond with ONLY the JSON object, nothing else.`
 
   const scanImageWithOpenAI = async (imageDataURL: string): Promise<Book[]> => {
     try {
+      const apiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
+      if (!apiKey) {
+        console.error('❌ OpenAI API key not set!');
+        return [];
+      }
+      
       console.log('🔵 OpenAI scanning image...');
       
       // Prevent long hangs from the API by aborting after 15s
@@ -661,7 +682,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY')}`,
+          'Authorization': `Bearer ${apiKey}`,
         },
         signal: controller.signal,
         body: JSON.stringify({
@@ -734,13 +755,19 @@ Return the JSON array now. Do not include any text before or after the array.`
 
   const scanImageWithGemini = async (imageDataURL: string): Promise<Book[]> => {
     try {
+      const apiKey = getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY');
+      if (!apiKey) {
+        console.error('❌ Gemini API key not set!');
+        return [];
+      }
+      
       console.log('🟣 Gemini scanning image...');
       
       // Convert data URL to base64
       const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
       
       // Use gemini-2.5-pro (more accurate, supports vision) - verified available models
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY')}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1000,11 +1027,17 @@ No explanations, just JSON.`
     return final;
   };
 
-  const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<Book[]> => {
+  const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<{ books: Book[], fromVercel: boolean }> => {
     console.log('🚀 Starting AI scan with OpenAI and Gemini...');
     // Use helper function to read env vars in both dev and production
     const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    const openaiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
+    const geminiKey = getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY');
+    
     console.log(`🔍 API Base URL: ${baseUrl || 'NOT SET'}`);
+    console.log(`🔑 OpenAI Key: ${openaiKey ? '✅ SET' : '❌ MISSING'}`);
+    console.log(`🔑 Gemini Key: ${geminiKey ? '✅ SET' : '❌ MISSING'}`);
+    
     // Try server first if configured
     if (baseUrl) {
       console.log(`📡 Attempting Vercel API scan at: ${baseUrl}/api/scan`);
@@ -1014,6 +1047,7 @@ No explanations, just JSON.`
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ imageDataURL: primaryDataURL }),
         });
+        
         if (resp.ok) {
           const data = await resp.json();
           const serverBooks = Array.isArray(data.books) ? data.books : [];
@@ -1027,16 +1061,17 @@ No explanations, just JSON.`
           }
           
           if (serverBooks.length > 0) {
-            console.log(`✅ Using Vercel API results: ${serverBooks.length} books found`);
-            return serverBooks;
+            console.log(`✅ Using Vercel API results: ${serverBooks.length} books found (already validated)`);
+            return { books: serverBooks, fromVercel: true };
           } else {
             console.log('⚠️ Vercel API returned 0 books, falling back to client-side APIs...');
           }
         } else {
-          console.warn(`❌ Vercel API error: ${resp.status}`);
+          const errorText = await resp.text().catch(() => '');
+          console.warn(`❌ Vercel API error: ${resp.status} - ${errorText.substring(0, 200)}`);
         }
-      } catch (e) {
-        console.warn('❌ Vercel API request failed, falling back to client providers:', e?.message || e);
+      } catch (e: any) {
+        console.error('❌ Vercel API request failed, falling back to client providers:', e?.message || e);
       }
     } else {
       console.log('⚠️ No Vercel API URL configured, using client-side APIs...');
@@ -1044,16 +1079,22 @@ No explanations, just JSON.`
 
     // Fallback: run client-side providers (requires local .env keys)
     try {
+      if (!openaiKey && !geminiKey) {
+        console.error('❌ CRITICAL: No API keys configured! Neither OpenAI nor Gemini keys are set.');
+        console.error('❌ Please set EXPO_PUBLIC_OPENAI_API_KEY and/or EXPO_PUBLIC_GEMINI_API_KEY in your .env file or app.config.js');
+        return { books: [], fromVercel: false };
+      }
+      
       console.log('🔄 Using client-side fallback APIs...');
       const [openaiPrimary, geminiPrimary] = await Promise.all([
-        withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch((e) => {
-          console.warn('❌ OpenAI primary attempt failed:', e?.message || e);
+        openaiKey ? withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch((e) => {
+          console.error('❌ OpenAI primary attempt failed:', e?.message || e);
           return [];
-        }),
-        withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch((e) => {
-          console.warn('❌ Gemini primary attempt failed:', e?.message || e);
+        }) : Promise.resolve([]),
+        geminiKey ? withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch((e) => {
+          console.error('❌ Gemini primary attempt failed:', e?.message || e);
           return [];
-        }),
+        }) : Promise.resolve([]),
       ]);
 
       let openaiResults = openaiPrimary;
@@ -1063,14 +1104,14 @@ No explanations, just JSON.`
       if (openaiResults.length === 0 && geminiResults.length === 0) {
         console.log('⚠️ Both APIs returned 0 books, trying with downscaled image...');
         const [openaiFallback, geminiFallback] = await Promise.all([
-          withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch((e) => {
-            console.warn('❌ OpenAI fallback attempt failed:', e?.message || e);
+          openaiKey ? withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch((e) => {
+            console.error('❌ OpenAI fallback attempt failed:', e?.message || e);
             return [];
-          }),
-          withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch((e) => {
-            console.warn('❌ Gemini fallback attempt failed:', e?.message || e);
+          }) : Promise.resolve([]),
+          geminiKey ? withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch((e) => {
+            console.error('❌ Gemini fallback attempt failed:', e?.message || e);
             return [];
-          }),
+          }) : Promise.resolve([]),
         ]);
         openaiResults = openaiFallback;
         geminiResults = geminiFallback;
@@ -1102,10 +1143,10 @@ No explanations, just JSON.`
       
       console.log(`✅ Client-side API Status: OpenAI=${openaiResults.length > 0 ? '✅' : '❌'} (${openaiResults.length} books), Gemini=${geminiResults.length > 0 ? '✅' : '❌'} (${geminiResults.length} books), Merged=${final.length} unique`);
       
-      return final;
+      return { books: final, fromVercel: false };
     } catch (err) {
       console.error('❌ Client-side fallback failed:', err);
-      return [];
+      return { books: [], fromVercel: false };
     }
   };
 
@@ -1148,34 +1189,66 @@ No explanations, just JSON.`
 
       // Step 3: Scanning with AI (40%)
       const fallbackDataURL = await fallbackPromise || imageDataURL;
-      const detectedBooks = await scanImageWithAI(imageDataURL, fallbackDataURL);
+      console.log('📸 Starting AI scan...');
+      const scanResult = await scanImageWithAI(imageDataURL, fallbackDataURL);
+      const detectedBooks = scanResult.books;
+      const cameFromVercel = scanResult.fromVercel;
+      
+      console.log(`📚 AI scan completed: ${detectedBooks.length} books detected (${cameFromVercel ? 'from Vercel API, already validated' : 'from client-side, needs validation'})`);
+      
+      if (detectedBooks.length === 0) {
+        console.error('❌ WARNING: No books detected from scan!');
+        console.error('   Possible causes:');
+        console.error('   1. API keys not configured (check logs above)');
+        console.error('   2. Image quality too low or no books visible');
+        console.error('   3. API errors (check network/status)');
+      }
+      
       updateProgress({ currentStep: 4, totalScans: totalScans });
       setCurrentScan({ id: scanId, uri, progress: { current: 4, total: 10 } });
       
-      // Step 4: Validate each book with ChatGPT (40-90%, with incremental updates)
+      // Step 4: Books are already validated server-side (Vercel API handles validation)
+      // If books came from Vercel API, they're already validated. If from client-side fallback, validate here.
       const analyzedBooks = [];
       const totalBooks = detectedBooks.length;
-      for (let i = 0; i < detectedBooks.length; i++) {
-        const book = detectedBooks[i];
-        try {
-          const analyzedBook = await analyzeBookWithChatGPT(book);
-          analyzedBooks.push(analyzedBook);
-          
-          // Update progress: 4 (start) + (i+1)/totalBooks * 5 (remaining steps to 9)
-          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
-          
-          // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (error) {
-          analyzedBooks.push(book); // Keep original if analysis fails
-          
-          // Still update progress even on error
-          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
+      
+      if (totalBooks > 0) {
+        if (cameFromVercel) {
+          console.log(`✅ Using ${totalBooks} validated books from Vercel API (already validated server-side)`);
+          analyzedBooks.push(...detectedBooks);
+          // Skip validation step, move directly to finalizing
+          updateProgress({ currentStep: 9, totalScans: totalScans });
+          setCurrentScan({ id: scanId, uri, progress: { current: 9, total: 10 } });
+        } else {
+          // Client-side fallback: validate with ChatGPT if key available
+          console.log(`🔍 Validating ${totalBooks} books with ChatGPT (client-side fallback)...`);
+          for (let i = 0; i < detectedBooks.length; i++) {
+            const book = detectedBooks[i];
+            try {
+              const analyzedBook = await analyzeBookWithChatGPT(book);
+              analyzedBooks.push(analyzedBook);
+              
+              // Update progress: 4 (start) + (i+1)/totalBooks * 5 (remaining steps to 9)
+              const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
+              updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
+              setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
+              
+              // Small delay to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (error) {
+              console.error(`❌ ChatGPT validation failed for "${book.title}":`, error);
+              // Keep original book but log the error
+              analyzedBooks.push(book);
+              
+              // Still update progress even on error
+              const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
+              updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
+              setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
+            }
+          }
         }
+      } else {
+        console.log(`⚠️ No books detected to validate`);
       }
       
       // Step 5: Finalizing (100%)
@@ -1723,6 +1796,7 @@ No explanations, just JSON.`
         const photo = await cameraRef.takePictureAsync({
           quality: 0.8,
           base64: false,
+          flashMode: 'on',
         });
         
         if (photo?.uri) {
@@ -1793,6 +1867,7 @@ No explanations, just JSON.`
         <CameraView
           style={styles.camera}
           facing="back"
+          flashMode="on"
           ref={(ref) => setCameraRef(ref)}
         />
         {/* Overlay outside CameraView using absolute positioning */}

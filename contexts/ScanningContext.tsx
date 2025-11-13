@@ -41,8 +41,24 @@ export const ScanningProvider: React.FC<ScanningProviderProps> = ({ children }) 
     });
   };
 
+  const logError = (error: string) => {
+    console.error(`❌ [Scan Error] ${error}`);
+    setScanProgress(prev => {
+      if (!prev) return prev;
+      return { ...prev, lastError: error };
+    });
+  };
+
+  const logDebug = (info: string) => {
+    console.log(`🔍 [Scan Debug] ${info}`);
+    setScanProgress(prev => {
+      if (!prev) return prev;
+      return { ...prev, debugInfo: info };
+    });
+  };
+
   return (
-    <ScanningContext.Provider value={{ scanProgress, setScanProgress, updateProgress }}>
+    <ScanningContext.Provider value={{ scanProgress, setScanProgress, updateProgress, logError, logDebug }}>
       {children}
     </ScanningContext.Provider>
   );

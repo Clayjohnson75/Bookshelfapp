@@ -41,7 +41,7 @@ module.exports = {
   expo: {
     name: "Bookshelf Scanner",
     slug: "bookshelf-scanner",
-    version: "6.0.0",
+    version: "7.0.0",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
@@ -56,7 +56,7 @@ module.exports = {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-      buildNumber: "6",
+      buildNumber: "7",
       infoPlist: {
         ITSAppUsesNonExemptEncryption: false
       }
@@ -78,6 +78,9 @@ module.exports = {
       EXPO_PUBLIC_SUPABASE_URL: envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co',
       EXPO_PUBLIC_SUPABASE_ANON_KEY: envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0',
       EXPO_PUBLIC_API_BASE_URL: envVars.EXPO_PUBLIC_API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app',
+      // API keys for client-side fallback (from .env or EAS secrets)
+      EXPO_PUBLIC_OPENAI_API_KEY: envVars.EXPO_PUBLIC_OPENAI_API_KEY || process.env.EXPO_PUBLIC_OPENAI_API_KEY || '',
+      EXPO_PUBLIC_GEMINI_API_KEY: envVars.EXPO_PUBLIC_GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '',
     }
   }
 };

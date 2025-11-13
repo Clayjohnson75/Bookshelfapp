@@ -171,6 +171,111 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   }
 }
 
+async function validateBookWithChatGPT(book: any): Promise<any> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return book; // Return original if no key
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content: `You are a book expert analyzing a detected book from a bookshelf scan.
+
+DETECTED BOOK:
+Title: "${book.title}"
+Author: "${book.author}"
+Confidence: ${book.confidence}
+
+TASK: Analyze this book and determine if it's a real book. If it is, correct any OCR errors and return the proper title and author.
+
+RULES:
+1. If the title and author are swapped, fix them
+2. Fix obvious OCR errors (e.g., "owmen" → "women")
+3. Clean up titles (remove publisher prefixes, series numbers)
+4. Validate that the author looks like a real person's name
+5. If it's not a real book, mark it as invalid
+
+CRITICAL: You MUST respond with ONLY valid JSON. No explanations, no markdown, no code blocks. Just the raw JSON object.
+
+RETURN FORMAT (JSON ONLY, NO OTHER TEXT):
+{"isValid": true, "title": "Corrected Title", "author": "Corrected Author Name", "confidence": "high", "reason": "Brief explanation"}
+
+EXAMPLES:
+Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
+Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
+
+Input: Title="controlling owmen", Author="Unknown"
+Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book"}
+
+Input: Title="The Great Gatsby", Author="F. Scott Fitzgerald"
+Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "confidence": "high", "reason": "Already correct"}
+
+Remember: Respond with ONLY the JSON object, nothing else.`,
+          },
+        ],
+        max_tokens: 500,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`[API] Validation failed for "${book.title}": ${res.status}`);
+      return book;
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content?.trim();
+
+    if (!content) return book;
+
+    let analysis;
+    try {
+      analysis = JSON.parse(content);
+    } catch {
+      // Try extracting from code blocks
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        analysis = JSON.parse(jsonMatch[0]);
+      } else {
+        return book;
+      }
+    }
+
+    if (analysis.isValid) {
+      return {
+        ...book,
+        title: analysis.title,
+        author: analysis.author,
+        confidence: analysis.confidence,
+      };
+    } else {
+      return {
+        ...book,
+        title: analysis.title,
+        author: analysis.author,
+        confidence: 'low',
+        chatgptReason: analysis.reason,
+      };
+    }
+  } catch (e) {
+    console.error(`[API] Validation error for "${book.title}":`, e);
+    return book;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -191,8 +296,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
     
+    // Validate all detected books with ChatGPT (server-side)
+    console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
+    const validatedBooks = await Promise.all(
+      merged.map(book => validateBookWithChatGPT(book))
+    );
+    
+    console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
+    
     return res.status(200).json({ 
-      books: merged,
+      books: validatedBooks,
       apiResults: {
         openai: { count: openaiCount, working: openaiCount > 0 },
         gemini: { count: geminiCount, working: geminiCount > 0 }
