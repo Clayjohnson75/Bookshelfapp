@@ -17,10 +17,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.clayjohnson75.bookshelf-scanner",
-      "buildNumber": "7",
+      "buildNumber": "8",
       "infoPlist": {
-        "NSCameraUsageDescription": "This app needs access to camera to scan bookshelves.",
-        "NSPhotoLibraryUsageDescription": "This app needs access to photo library to upload book images."
+        "NSCameraUsageDescription": "Bookshelf Scanner uses your camera to capture photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, allowing you to build and manage your digital book library. For example, when you take a photo of your bookshelf, the app identifies books like 'The Great Gatsby by F. Scott Fitzgerald' from their spines.",
+        "NSPhotoLibraryUsageDescription": "Bookshelf Scanner accesses your photo library to allow you to select existing photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, which are then added to your digital book library. For example, you can choose a photo you previously took of your bookshelf, and the app will identify and catalog all visible books."
       }
     },
     "android": {
@@ -42,13 +42,13 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Bookshelf Scanner to access your camera to scan bookshelves."
+          "cameraPermission": "Bookshelf Scanner uses your camera to capture photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, allowing you to build and manage your digital book library. For example, when you take a photo of your bookshelf, the app identifies books like 'The Great Gatsby by F. Scott Fitzgerald' from their spines."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Bookshelf Scanner to access your photos to upload book images."
+          "photosPermission": "Bookshelf Scanner accesses your photo library to allow you to select existing photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, which are then added to your digital book library. For example, you can choose a photo you previously took of your bookshelf, and the app will identify and catalog all visible books."
         }
       ]
     ],
