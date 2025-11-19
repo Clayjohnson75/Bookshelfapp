@@ -333,7 +333,7 @@ export const ScansTab: React.FC = () => {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'gpt-5',
           messages: [
             {
               role: 'user',
@@ -686,7 +686,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'gpt-5',
           messages: [
             {
               role: 'user',
@@ -766,8 +766,8 @@ Return the JSON array now. Do not include any text before or after the array.`
       // Convert data URL to base64
       const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
       
-      // Use gemini-2.5-pro (more accurate, supports vision) - verified available models
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`, {
+      // Use gemini-3-pro (latest model as of November 2025, supports vision)
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

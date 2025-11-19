@@ -89,7 +89,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: 'gpt-5',
         messages: [
           {
             role: 'user',
@@ -130,7 +130,7 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -187,7 +187,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: 'gpt-5',
         messages: [
           {
             role: 'user',

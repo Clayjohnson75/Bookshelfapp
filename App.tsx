@@ -167,7 +167,7 @@ const BookshelfScannerAppInner: React.FC = () => {
           'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'gpt-5',
           messages: [
             {
               role: 'user',
@@ -357,7 +357,7 @@ Return the JSON array now. Do not include any text before or after the array.${s
           'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'gpt-5',
           messages: [
             {
               role: 'user',
