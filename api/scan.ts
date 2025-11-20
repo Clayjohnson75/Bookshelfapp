@@ -107,19 +107,60 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
         temperature: 0.1,
       }),
     });
-    if (!res.ok) return [];
-    const data = await res.json();
-    let content = data.choices?.[0]?.message?.content?.trim() || '';
-    if (content.includes('```')) {
-      content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    }
-    if (!content.startsWith('[')) return [];
-    try {
-      const parsed = JSON.parse(content);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
       return [];
     }
+    const data = await res.json();
+    let content = data.choices?.[0]?.message?.content?.trim() || '';
+    
+    console.log(`[API] OpenAI raw response length: ${content.length} chars`);
+    if (content.length > 0) {
+      console.log(`[API] OpenAI response preview: ${content.slice(0, 200)}...`);
+    }
+    
+    if (!content) {
+      console.error(`[API] OpenAI returned empty content`);
+      return [];
+    }
+    
+    // Remove markdown code blocks
+    if (content.includes('```')) {
+      content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    }
+    
+    // Try to extract JSON array from response (might have text before/after)
+    let parsed: any = null;
+    
+    // First try: parse entire content if it's pure JSON
+    try {
+      parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        console.log(`[API] OpenAI parsed ${parsed.length} books (direct JSON)`);
+        return parsed;
+      }
+    } catch {}
+    
+    // Second try: find JSON array in content
+    const arrayMatch = content.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        parsed = JSON.parse(arrayMatch[0]);
+        if (Array.isArray(parsed)) {
+          console.log(`[API] OpenAI parsed ${parsed.length} books (extracted from text)`);
+          return parsed;
+        }
+      } catch (e) {
+        console.error(`[API] OpenAI failed to parse extracted JSON:`, e);
+      }
+    }
+    
+    console.error(`[API] OpenAI response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
+    return [];
+  } catch (e: any) {
+    console.error(`[API] OpenAI scan exception:`, e?.message || String(e));
+    return [];
   } finally {
     clearTimeout(timeout);
   }
@@ -130,7 +171,7 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -149,7 +190,11 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
       }),
     }
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const errorText = await res.text();
+    console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
+    return [];
+  }
   const data = await res.json();
   let content = '';
   if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
@@ -157,18 +202,51 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   } else if (data.candidates?.[0]?.text) {
     content = data.candidates[0].text;
   }
-  if (!content) return [];
-  if (content.includes('```')) {
-    content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+  
+  console.log(`[API] Gemini raw response length: ${content.length} chars`);
+  if (content.length > 0) {
+    console.log(`[API] Gemini response preview: ${content.slice(0, 200)}...`);
   }
-  content = content.trim();
-  if (!content.startsWith('[')) return [];
-  try {
-    const parsed = JSON.parse(content);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  
+  if (!content) {
+    console.error(`[API] Gemini returned empty content`);
     return [];
   }
+  
+  // Remove markdown code blocks
+  if (content.includes('```')) {
+    content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  }
+  content = content.trim();
+  
+  // Try to extract JSON array from response
+  let parsed: any = null;
+  
+  // First try: parse entire content if it's pure JSON
+  try {
+    parsed = JSON.parse(content);
+    if (Array.isArray(parsed)) {
+      console.log(`[API] Gemini parsed ${parsed.length} books (direct JSON)`);
+      return parsed;
+    }
+  } catch {}
+  
+  // Second try: find JSON array in content
+  const arrayMatch = content.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    try {
+      parsed = JSON.parse(arrayMatch[0]);
+      if (Array.isArray(parsed)) {
+        console.log(`[API] Gemini parsed ${parsed.length} books (extracted from text)`);
+        return parsed;
+      }
+    } catch (e) {
+      console.error(`[API] Gemini failed to parse extracted JSON:`, e);
+    }
+  }
+  
+  console.error(`[API] Gemini response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
+  return [];
 }
 
 async function validateBookWithChatGPT(book: any): Promise<any> {

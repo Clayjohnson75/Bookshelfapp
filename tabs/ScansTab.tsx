@@ -766,8 +766,8 @@ Return the JSON array now. Do not include any text before or after the array.`
       // Convert data URL to base64
       const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
       
-      // Use gemini-3-pro (latest model as of November 2025, supports vision)
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent?key=${apiKey}`, {
+      // Use gemini-3-pro-preview (latest model, supports vision)
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1222,29 +1222,29 @@ No explanations, just JSON.`
         } else {
           // Client-side fallback: validate with ChatGPT if key available
           console.log(`🔍 Validating ${totalBooks} books with ChatGPT (client-side fallback)...`);
-          for (let i = 0; i < detectedBooks.length; i++) {
-            const book = detectedBooks[i];
-            try {
-              const analyzedBook = await analyzeBookWithChatGPT(book);
-              analyzedBooks.push(analyzedBook);
-              
-              // Update progress: 4 (start) + (i+1)/totalBooks * 5 (remaining steps to 9)
-              const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-              updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-              setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
-              
-              // Small delay to avoid rate limiting
-              await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (error) {
+      for (let i = 0; i < detectedBooks.length; i++) {
+        const book = detectedBooks[i];
+        try {
+          const analyzedBook = await analyzeBookWithChatGPT(book);
+          analyzedBooks.push(analyzedBook);
+          
+          // Update progress: 4 (start) + (i+1)/totalBooks * 5 (remaining steps to 9)
+          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
+          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
+          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
+          
+          // Small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (error) {
               console.error(`❌ ChatGPT validation failed for "${book.title}":`, error);
               // Keep original book but log the error
               analyzedBooks.push(book);
-              
-              // Still update progress even on error
-              const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-              updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-              setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
-            }
+          
+          // Still update progress even on error
+          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
+          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
+          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
+        }
           }
         }
       } else {
