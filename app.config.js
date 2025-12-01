@@ -56,9 +56,11 @@ module.exports = {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-      buildNumber: "9",
+      buildNumber: "10",
       infoPlist: {
-        ITSAppUsesNonExemptEncryption: false
+        ITSAppUsesNonExemptEncryption: false,
+        NSCameraUsageDescription: "Bookshelf Scanner uses your camera to capture photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, allowing you to build and manage your digital book library. For example, when you take a photo of your bookshelf, the app identifies books like 'The Great Gatsby by F. Scott Fitzgerald' from their spines.",
+        NSPhotoLibraryUsageDescription: "Bookshelf Scanner accesses your photo library to allow you to select existing photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, which are then added to your digital book library. For example, you can choose a photo you previously took of your bookshelf, and the app will identify and catalog all visible books."
       }
     },
     android: {
@@ -71,6 +73,20 @@ module.exports = {
     web: {
       favicon: "./assets/favicon.png"
     },
+    plugins: [
+      [
+        "expo-camera",
+        {
+          cameraPermission: "Bookshelf Scanner uses your camera to capture photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, allowing you to build and manage your digital book library. For example, when you take a photo of your bookshelf, the app identifies books like 'The Great Gatsby by F. Scott Fitzgerald' from their spines."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          photosPermission: "Bookshelf Scanner accesses your photo library to allow you to select existing photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, which are then added to your digital book library. For example, you can choose a photo you previously took of your bookshelf, and the app will identify and catalog all visible books."
+        }
+      ]
+    ],
     extra: {
       eas: {
         projectId: "b558ee2d-5af2-481c-82af-669e79311aab"
