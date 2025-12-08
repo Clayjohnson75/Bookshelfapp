@@ -1344,9 +1344,22 @@ export const ScansTab: React.FC = () => {
   };
 
   const takePicture = async () => {
-    if (cameraRef) {
-      try {
-        const photo = await cameraRef.takePictureAsync({
+    if (!cameraRef) {
+      console.warn('Camera ref not available');
+      return;
+    }
+    
+    // Check if camera is still active before taking picture
+    if (!isCameraActive) {
+      console.warn('Camera not active, cannot take picture');
+      return;
+    }
+    
+    try {
+      // Store the camera ref locally to prevent issues if component unmounts
+      const currentCameraRef = cameraRef;
+      
+      const photo = await currentCameraRef.takePictureAsync({
           quality: 0.8,
           base64: false,
           flashMode: 'on',
@@ -1354,19 +1367,30 @@ export const ScansTab: React.FC = () => {
         
         if (photo?.uri) {
           console.log('📷 Photo taken:', photo.uri);
-          // Close camera first
+        
+        // Store photo URI first before any state changes
+        const photoUri = photo.uri;
+        
+        // Close camera after photo is captured
           setIsCameraActive(false);
+        
           // Reset caption modal state
           setShowCaptionModal(false);
           setCaptionText('');
-          // Start scanning and show modal immediately
-          // Small delay to ensure camera closes first
+        
+        // Start scanning with a small delay to ensure camera closes first
           setTimeout(() => {
-            handleImageSelected(photo.uri);
+          handleImageSelected(photoUri);
           }, 100);
+      } else {
+        console.error('Photo captured but no URI returned');
+        Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
         }
-      } catch (error) {
+    } catch (error: any) {
         console.error('Error taking picture:', error);
+      
+      // Only show alert if camera is still active (not unmounted)
+      if (isCameraActive) {
         Alert.alert('Camera Error', 'Failed to take picture. Please try again.');
       }
     }
