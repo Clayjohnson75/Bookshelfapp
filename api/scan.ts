@@ -413,18 +413,33 @@ Return the array in the same order as the input. Respond with ONLY the JSON arra
       }
 
       // Map validated results back to original books
-      for (let j = 0; j < batch.length; j++) {
+      // Ensure we process all books, even if analysis array is shorter
+      const maxLength = Math.max(batch.length, analyses.length);
+      for (let j = 0; j < maxLength; j++) {
         const book = batch[j];
         const analysis = analyses[j];
         
-        if (analysis && analysis.isValid) {
+        // If no book or no analysis, skip
+        if (!book) continue;
+        
+        if (analysis && analysis.isValid !== false) {
+          // Valid book - use corrected data
           results.push({
             ...book,
-            title: analysis.title,
-            author: analysis.author,
-            confidence: analysis.confidence,
+            title: analysis.title || book.title,
+            author: analysis.author || book.author,
+            confidence: analysis.confidence || book.confidence,
+          });
+        } else if (analysis && analysis.isValid === false) {
+          // Explicitly invalid - log but still include it
+          console.log(`[API] Book marked invalid: "${book.title}" by "${book.author}" - ${analysis?.reason || 'No reason provided'}`);
+          results.push({
+            ...book,
+            confidence: 'low', // Mark as low confidence
           });
         } else {
+          // No analysis available - keep original book
+          console.log(`[API] No analysis for book "${book.title}", keeping original`);
           results.push({
             ...book,
             title: analysis?.title || book.title,
@@ -530,28 +545,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (async () => {
         // Try primary model first
         try {
-          return await scanWithGemini(imageDataURL, 'gemini-3-pro-preview');
+          const result = await scanWithGemini(imageDataURL, 'gemini-3-pro-preview');
+          if (result && result.length > 0) {
+            return result;
+          }
+          // If empty result, try fallback
+          console.log(`[API] Gemini 3 Pro returned empty, trying fallback...`);
+          throw new Error('Empty result from Gemini 3 Pro');
         } catch (e: any) {
-          // If overloaded, try alternative models
-          if (e?.isOverloaded || e?.message?.includes('503') || e?.message?.includes('overloaded')) {
-            console.log(`[API] Gemini 3 Pro overloaded, trying alternative models...`);
+          // If overloaded or empty, try alternative model
+          if (e?.isOverloaded || e?.message?.includes('503') || e?.message?.includes('overloaded') || e?.message?.includes('Empty result')) {
+            console.log(`[API] Gemini 3 Pro failed, trying Gemini 2.5 Pro...`);
             
-            const alternativeModels = ['gemini-2.5-pro'];
-            for (const altModel of alternativeModels) {
-              try {
-                console.log(`[API] Trying Gemini model: ${altModel}`);
-                const result = await scanWithGemini(imageDataURL, altModel);
-                if (result && result.length > 0) {
-                  console.log(`[API] ✅ ${altModel} succeeded with ${result.length} books`);
-                  return result;
-                }
-              } catch (altError: any) {
-                console.log(`[API] ${altModel} also failed: ${altError?.message || altError}`);
-                continue;
+            try {
+              const result = await scanWithGemini(imageDataURL, 'gemini-2.5-pro');
+              if (result && result.length > 0) {
+                console.log(`[API] ✅ Gemini 2.5 Pro succeeded with ${result.length} books`);
+                return result;
+              } else {
+                console.log(`[API] Gemini 2.5 Pro returned empty result`);
+                return [];
               }
+            } catch (altError: any) {
+              console.error(`[API] Gemini 2.5 Pro also failed: ${altError?.message || altError}`);
+              return [];
             }
-            console.log(`[API] All Gemini models failed, returning empty array`);
-            return [];
           }
           // For non-overload errors, return empty array
           console.error(`[API] Gemini scan error (non-overload):`, e?.message || e);
