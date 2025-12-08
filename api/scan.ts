@@ -354,14 +354,61 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
   }
 }
 
+// Track scan in Supabase (non-blocking, don't fail scan if tracking fails)
+async function trackScan(userId: string | undefined): Promise<void> {
+  if (!userId) {
+    return; // No user ID provided, skip tracking
+  }
+
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  
+  if (!supabaseUrl || !supabaseServiceKey) {
+    console.warn('[API] Supabase credentials not configured, skipping scan tracking');
+    return;
+  }
+
+  try {
+    // Use dynamic import to avoid bundling issues
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+
+    // Call the increment function we created in the migration
+    const { error } = await supabase.rpc('increment_user_scan_count', {
+      user_uuid: userId
+    });
+
+    if (error) {
+      console.error(`[API] Failed to track scan for user ${userId}:`, error);
+    } else {
+      console.log(`[API] Successfully tracked scan for user ${userId}`);
+    }
+  } catch (e: any) {
+    // Don't throw - tracking failures shouldn't break scans
+    console.error('[API] Error tracking scan:', e?.message || e);
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
   try {
-    const { imageDataURL } = req.body || {};
+    const { imageDataURL, userId } = req.body || {};
     if (!imageDataURL || typeof imageDataURL !== 'string') {
       return res.status(400).json({ error: 'imageDataURL required' });
+    }
+
+    // Track scan asynchronously (don't wait for it)
+    if (userId && typeof userId === 'string') {
+      trackScan(userId).catch(err => {
+        console.error('[API] Scan tracking error (non-blocking):', err);
+      });
     }
 
     const [openai, gemini] = await Promise.all([

@@ -310,144 +310,8 @@ export const ScansTab: React.FC = () => {
     return false;
   };
 
-  // Copy the ChatGPT validation function from App.tsx
-  const analyzeBookWithChatGPT = async (book: any): Promise<any> => {
-    const apiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
-    if (!apiKey) {
-      console.error('❌ OpenAI API key not set for validation!');
-      throw new Error('OpenAI API key not configured');
-    }
-    
-    try {
-      // Analyzing book with ChatGPT
-      
-      // Hard timeout so OpenAI cannot hang the scan
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s
-
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: 'gpt-5',
-          messages: [
-            {
-              role: 'user',
-              content: `You are a book expert analyzing a detected book from a bookshelf scan.
-
-DETECTED BOOK:
-Title: "${book.title}"
-Author: "${book.author}"
-Confidence: ${book.confidence}
-
-TASK: Analyze this book and determine if it's a real book. If it is, correct any OCR errors and return the proper title and author.
-
-RULES:
-1. If the title and author are swapped, fix them
-2. Fix obvious OCR errors (e.g., "owmen" → "women")
-3. Clean up titles (remove publisher prefixes, series numbers)
-4. Validate that the author looks like a real person's name
-5. If it's not a real book, mark it as invalid
-
-CRITICAL: You MUST respond with ONLY valid JSON. No explanations, no markdown, no code blocks. Just the raw JSON object.
-
-RETURN FORMAT (JSON ONLY, NO OTHER TEXT):
-{"isValid": true, "title": "Corrected Title", "author": "Corrected Author Name", "confidence": "high", "reason": "Brief explanation"}
-
-EXAMPLES:
-Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
-Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
-
-Input: Title="controlling owmen", Author="Unknown"
-Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book"}
-
-Input: Title="The Great Gatsby", Author="F. Scott Fitzgerald"
-Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "confidence": "high", "reason": "Already correct"}
-
-Remember: Respond with ONLY the JSON object, nothing else.`
-            }
-          ],
-          max_tokens: 500,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        console.error(`❌ OpenAI validation API error ${response.status}:`, errorText.substring(0, 300));
-        throw new Error(`OpenAI API error: ${response.status} - ${errorText.substring(0, 100)}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices[0]?.message?.content?.trim();
-
-      if (!content) {
-        throw new Error('No content in response');
-      }
-
-      let analysis;
-      try {
-        // Try direct parse first
-        analysis = JSON.parse(content);
-      } catch (parseError) {
-        console.log(` Failed to parse ChatGPT response for "${book.title}". Response:`, content.substring(0, 200));
-        
-        // Try to extract JSON from markdown code blocks
-        const codeBlockMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-        if (codeBlockMatch) {
-          analysis = JSON.parse(codeBlockMatch[1]);
-          console.log(' Extracted JSON from code block');
-        } else {
-          // Try to find JSON object in response
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            analysis = JSON.parse(jsonMatch[0]);
-            console.log(' Extracted JSON from response');
-          } else {
-            console.error(` No valid JSON found in response for "${book.title}"`);
-            // Fallback: return original book with low confidence
-            return {
-              ...book,
-              confidence: 'low',
-              chatgptError: 'Failed to parse response'
-            };
-          }
-        }
-      }
-
-      if (analysis.isValid) {
-        return {
-          ...book,
-          title: analysis.title,
-          author: analysis.author,
-          confidence: analysis.confidence,
-        };
-      } else {
-        // Mark as invalid - this will be caught by our incomplete filter
-        return {
-          ...book,
-          title: analysis.title,
-          author: analysis.author,
-          confidence: 'low', // This triggers our incomplete filter
-          chatgptReason: analysis.reason
-        };
-      }
-    } catch (error: any) {
-      // Log validation errors clearly
-      console.error(`❌ Validation failed for "${book.title}":`, error?.message || error);
-      
-      // If it's a key issue, throw to surface the problem
-      if (error?.message?.includes('key') || error?.message?.includes('API key')) {
-        throw error;
-      }
-      
-      // Return original book if validation fails - it will still be processed
-      return book;
-    }
-  };
+  // NOTE: Client-side validation removed for security
+  // All validation is now handled server-side by the API endpoint
 
   const convertImageToBase64 = async (uri: string): Promise<string> => {
     try {
@@ -664,289 +528,8 @@ Remember: Respond with ONLY the JSON object, nothing else.`
     }
   };
 
-  const scanImageWithOpenAI = async (imageDataURL: string): Promise<Book[]> => {
-    try {
-      const apiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
-      if (!apiKey) {
-        console.error('❌ OpenAI API key not set!');
-        return [];
-      }
-      
-      console.log('🔵 OpenAI scanning image...');
-      
-      // Prevent long hangs from the API by aborting after 15s
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: 'gpt-5',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `Scan this image and return ALL visible book spines as JSON.
-
-Read each book spine from left to right. For each spine:
-- Extract the title (larger text, usually at top)
-- Extract the author (smaller text, usually at bottom, or "Unknown" if not visible)
-- Assign confidence: "high" (both clear), "medium" (title clear), "low" (unclear)
-
-RETURN ONLY JSON (no explanations):
-[
-  {"title": "Book Title", "author": "Author Name or Unknown", "confidence": "high/medium/low"},
-  {"title": "Next Book", "author": "Next Author", "confidence": "high"}
-]
-
-Return the JSON array now. Do not include any text before or after the array.`
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: imageDataURL
-                  }
-                }
-              ]
-            }
-          ],
-          max_tokens: 1200,
-          temperature: 0.1,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status} - ${await response.text()}`);
-      }
-
-      const data = await response.json();
-      clearTimeout(timeoutId);
-      let content = data.choices?.[0]?.message?.content?.trim() || '';
-
-      if (content.includes('```')) {
-        content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      }
-
-      if (!content.startsWith('[') && !content.startsWith('{')) {
-        return [];
-      }
-
-      try {
-        const parsedBooks = JSON.parse(content);
-        const books = Array.isArray(parsedBooks) ? parsedBooks : [];
-        return books;
-      } catch (_) {
-        console.warn('❌ OpenAI JSON parse failed');
-        return [];
-      }
-      
-    } catch (error) {
-      console.error('❌ OpenAI scan failed:', error);
-      return [];
-    }
-  };
-
-  const scanImageWithGemini = async (imageDataURL: string): Promise<Book[]> => {
-    try {
-      const apiKey = getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY');
-      if (!apiKey) {
-        console.error('❌ Gemini API key not set!');
-        return [];
-      }
-      
-      console.log('🟣 Gemini scanning image...');
-      
-      // Convert data URL to base64
-      const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
-      
-      // Use gemini-3-pro-preview (latest model, supports vision)
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `Scan book spines. Return JSON array only:
-[{"title":"Book Title","author":"Author or Unknown","confidence":"high/medium/low"}]
-No explanations, just JSON.`
-                },
-                {
-                  inline_data: {
-                    mime_type: "image/jpeg",
-                    data: base64Data
-                  }
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 8000, // Increased to handle more books without truncation
-            topP: 0.95,
-            topK: 40,
-          }
-        }),
-      });
-
-      if (!response.ok) {
-        // If overloaded (503), suggest retry by returning [] to withRetries
-        const bodyText = await response.text();
-        console.warn(`Gemini error ${response.status}: ${bodyText.slice(0, 180)}`);
-        return [];
-      }
-
-      const data = await response.json();
-      
-      // Check if response was truncated
-      const wasTruncated = data.candidates?.[0]?.finishReason === 'MAX_TOKENS';
-      if (wasTruncated) {
-        console.warn('Gemini response truncated due to token limit');
-      }
-      
-      // Try multiple ways to extract content
-      let content = '';
-      
-      // Method 1: Standard structure
-      if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-        content = data.candidates[0].content.parts[0].text;
-      }
-      // Method 2: Alternative structure
-      else if (data.candidates?.[0]?.text) {
-        content = data.candidates[0].text;
-      }
-      // Method 3: Direct text
-      else if (data.text) {
-        content = data.text;
-      }
-      // Method 4: Check all parts
-      else if (data.candidates?.[0]?.content?.parts) {
-        for (const part of data.candidates[0].content.parts) {
-          if (part.text) {
-            content += part.text;
-          }
-        }
-      }
-
-      if (!content) {
-        console.warn('Gemini returned empty content');
-        return [];
-      }
-
-      // Clean up markdown formatting if present
-      if (content.includes('```json')) {
-        content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      } else if (content.includes('```')) {
-        // Handle generic code blocks
-        content = content.replace(/```[a-z]*\n?/g, '').replace(/```\n?/g, '');
-      }
-
-      content = content.trim();
-      
-      // Try to extract JSON from the response
-      let jsonContent = content.trim();
-      
-      // Remove any leading/trailing text that's not JSON
-      // Find the first [ or { and the last matching ] or }
-      const firstBracket = jsonContent.indexOf('[');
-      const firstBrace = jsonContent.indexOf('{');
-      
-      let startIndex = -1;
-      let isArray = false;
-      
-      if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
-        startIndex = firstBracket;
-        isArray = true;
-      } else if (firstBrace !== -1) {
-        startIndex = firstBrace;
-        isArray = false;
-      }
-      
-      if (startIndex === -1) {
-        console.warn('Gemini returned non-JSON content. Content preview:', content.substring(0, 200));
-        return [];
-      }
-      
-      // Extract from the start bracket to the end
-      jsonContent = jsonContent.substring(startIndex);
-      
-      // Try to find the matching closing bracket
-      if (isArray) {
-        // Count brackets to find the end
-        let bracketCount = 0;
-        let endIndex = -1;
-        for (let i = 0; i < jsonContent.length; i++) {
-          if (jsonContent[i] === '[') bracketCount++;
-          if (jsonContent[i] === ']') bracketCount--;
-          if (bracketCount === 0 && jsonContent[i] === ']') {
-            endIndex = i + 1;
-            break;
-          }
-        }
-        if (endIndex > 0) {
-          jsonContent = jsonContent.substring(0, endIndex);
-        }
-      }
-      
-      // Try parsing
-      try {
-        const parsedBooks = JSON.parse(jsonContent);
-        return Array.isArray(parsedBooks) ? parsedBooks : [];
-      } catch (parseError) {
-        // If parsing fails and was truncated, try to extract complete entries
-        if (wasTruncated) {
-          console.warn('Attempting to extract complete entries from truncated JSON...');
-          
-          // Find all complete book objects using regex - handle escaped quotes and various formats
-          // This pattern matches: {"title":"...","author":"...","confidence":"..."}
-          const bookPattern = /\{"title":\s*"[^"\\]*(?:\\.[^"\\]*)*",\s*"author":\s*"[^"\\]*(?:\\.[^"\\]*)*",\s*"confidence":\s*"[^"]+"\}/g;
-          const matches = jsonContent.match(bookPattern);
-          
-          if (matches && matches.length > 0) {
-            try {
-              const completeBooks = matches.map(match => {
-                // Fix any incomplete matches by escaping quotes properly
-                const fixed = match.replace(/'/g, '"');
-                return JSON.parse(fixed);
-              });
-              return completeBooks;
-            } catch (extractError) {
-              console.warn('Failed to extract complete entries from truncated JSON');
-            }
-          }
-          
-          // Fallback: try removing the last incomplete entry
-          const lastCompleteEntry = jsonContent.lastIndexOf('}]');
-          if (lastCompleteEntry > 0) {
-            try {
-              const fixedJson = jsonContent.substring(0, lastCompleteEntry + 2) + ']';
-              const parsedBooks = JSON.parse(fixedJson);
-              return Array.isArray(parsedBooks) ? parsedBooks : [];
-            } catch (fixError) {
-              // Ignore and continue to final return
-            }
-          }
-        }
-        
-        console.warn('Failed to parse Gemini JSON. Content preview:', jsonContent.substring(0, 300));
-        return [];
-      }
-      
-    } catch (error) {
-      console.error(' Gemini scan failed:', error);
-      return [];
-    }
-  };
+  // NOTE: Client-side API key usage removed for security
+  // All scans now go through the server API endpoint which handles API keys securely
 
   const mergeBookResults = (openaiBooks: Book[], geminiBooks: Book[]): Book[] => {
     // Aggressive normalization to catch duplicates with slight variations
@@ -1028,124 +611,84 @@ No explanations, just JSON.`
   };
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<{ books: Book[], fromVercel: boolean }> => {
-    console.log('🚀 Starting AI scan with OpenAI and Gemini...');
-    // Use helper function to read env vars in both dev and production
+    console.log('🚀 Starting AI scan via server API...');
     const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
-    const openaiKey = getEnvVar('EXPO_PUBLIC_OPENAI_API_KEY');
-    const geminiKey = getEnvVar('EXPO_PUBLIC_GEMINI_API_KEY');
     
-    console.log(`🔍 API Base URL: ${baseUrl || 'NOT SET'}`);
-    console.log(`🔑 OpenAI Key: ${openaiKey ? '✅ SET' : '❌ MISSING'}`);
-    console.log(`🔑 Gemini Key: ${geminiKey ? '✅ SET' : '❌ MISSING'}`);
-    
-    // Try server first if configured
-    if (baseUrl) {
-      console.log(`📡 Attempting Vercel API scan at: ${baseUrl}/api/scan`);
-      try {
-        const resp = await fetch(`${baseUrl}/api/scan`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imageDataURL: primaryDataURL }),
-        });
-        
-        if (resp.ok) {
-          const data = await resp.json();
-          const serverBooks = Array.isArray(data.books) ? data.books : [];
-          
-          // Log API status if available
-          if (data.apiResults) {
-            const { openai, gemini } = data.apiResults;
-            console.log(`✅ Vercel API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
-          } else {
-            console.log(`✅ Vercel API returned ${serverBooks.length} books (API status not available - Vercel may need redeployment)`);
-          }
-          
-          if (serverBooks.length > 0) {
-            console.log(`✅ Using Vercel API results: ${serverBooks.length} books found (already validated)`);
-            return { books: serverBooks, fromVercel: true };
-          } else {
-            console.log('⚠️ Vercel API returned 0 books, falling back to client-side APIs...');
-          }
-        } else {
-          const errorText = await resp.text().catch(() => '');
-          console.warn(`❌ Vercel API error: ${resp.status} - ${errorText.substring(0, 200)}`);
-        }
-      } catch (e: any) {
-        console.error('❌ Vercel API request failed, falling back to client providers:', e?.message || e);
-      }
-    } else {
-      console.log('⚠️ No Vercel API URL configured, using client-side APIs...');
+    if (!baseUrl) {
+      console.error('❌ CRITICAL: No API base URL configured!');
+      console.error('❌ Please set EXPO_PUBLIC_API_BASE_URL in your .env file or app.config.js');
+      Alert.alert(
+        'Configuration Error',
+        'The API server URL is not configured. Please contact support or check your configuration.'
+      );
+      return { books: [], fromVercel: false };
     }
-
-    // Fallback: run client-side providers (requires local .env keys)
+    
+    console.log(`📡 Attempting server API scan at: ${baseUrl}/api/scan`);
+    
     try {
-      if (!openaiKey && !geminiKey) {
-        console.error('❌ CRITICAL: No API keys configured! Neither OpenAI nor Gemini keys are set.');
-        console.error('❌ Please set EXPO_PUBLIC_OPENAI_API_KEY and/or EXPO_PUBLIC_GEMINI_API_KEY in your .env file or app.config.js');
-        return { books: [], fromVercel: false };
-      }
-      
-      console.log('🔄 Using client-side fallback APIs...');
-      const [openaiPrimary, geminiPrimary] = await Promise.all([
-        openaiKey ? withRetries(() => scanImageWithOpenAI(primaryDataURL), 1, 800).catch((e) => {
-          console.error('❌ OpenAI primary attempt failed:', e?.message || e);
-          return [];
-        }) : Promise.resolve([]),
-        geminiKey ? withRetries(() => scanImageWithGemini(primaryDataURL), 1, 800).catch((e) => {
-          console.error('❌ Gemini primary attempt failed:', e?.message || e);
-          return [];
-        }) : Promise.resolve([]),
-      ]);
-
-      let openaiResults = openaiPrimary;
-      let geminiResults = geminiPrimary;
-      
-      
-      if (openaiResults.length === 0 && geminiResults.length === 0) {
-        console.log('⚠️ Both APIs returned 0 books, trying with downscaled image...');
-        const [openaiFallback, geminiFallback] = await Promise.all([
-          openaiKey ? withRetries(() => scanImageWithOpenAI(fallbackDataURL), 2, 1200).catch((e) => {
-            console.error('❌ OpenAI fallback attempt failed:', e?.message || e);
-            return [];
-          }) : Promise.resolve([]),
-          geminiKey ? withRetries(() => scanImageWithGemini(fallbackDataURL), 2, 1200).catch((e) => {
-            console.error('❌ Gemini fallback attempt failed:', e?.message || e);
-            return [];
-          }) : Promise.resolve([]),
-        ]);
-        openaiResults = openaiFallback;
-        geminiResults = geminiFallback;
-      }
-
-      const mergedResults = mergeBookResults(openaiResults, geminiResults);
-      // mergeBookResults already does aggressive deduplication, so this is just a safety pass
-      const normalizeKey = (s?: string) => {
-        if (!s) return '';
-        return s.trim().toLowerCase().replace(/[.,;:!?]/g, '').replace(/\s+/g, ' ');
-      };
-      const normalizeTitle = (title?: string) => {
-        return normalizeKey(title).replace(/^(the|a|an)\s+/, '');
-      };
-      const normalizeAuthor = (author?: string) => {
-        return normalizeKey(author).replace(/\s+(jr|sr|iii?|iv)$/i, '');
-      };
-      
-      const seen = new Set<string>();
-      const final = mergedResults.filter(b => {
-        const key = `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
-        if (seen.has(key)) {
-          console.log(`🔄 Filtered duplicate: "${b.title}" by ${b.author}`);
-          return false;
-        }
-        seen.add(key);
-        return true;
+      const resp = await fetch(`${baseUrl}/api/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          imageDataURL: primaryDataURL,
+          userId: user?.uid || undefined // Include user ID for scan tracking
+        }),
       });
       
-      console.log(`✅ Client-side API Status: OpenAI=${openaiResults.length > 0 ? '✅' : '❌'} (${openaiResults.length} books), Gemini=${geminiResults.length > 0 ? '✅' : '❌'} (${geminiResults.length} books), Merged=${final.length} unique`);
-      
-      return { books: final, fromVercel: false };
-    } catch (err) {
-      console.error('❌ Client-side fallback failed:', err);
+      if (resp.ok) {
+        const data = await resp.json();
+        const serverBooks = Array.isArray(data.books) ? data.books : [];
+        
+        // Log API status if available
+        if (data.apiResults) {
+          const { openai, gemini } = data.apiResults;
+          console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
+        } else {
+          console.log(`✅ Server API returned ${serverBooks.length} books`);
+        }
+        
+        console.log(`✅ Using server API results: ${serverBooks.length} books found (already validated)`);
+        return { books: serverBooks, fromVercel: true };
+      } else {
+        const errorText = await resp.text().catch(() => '');
+        console.error(`❌ Server API error: ${resp.status} - ${errorText.substring(0, 200)}`);
+        
+        // If server returns 0 books, try with fallback image
+        if (resp.status === 200) {
+          // Status 200 but might have returned empty array, try fallback
+          console.log('⚠️ Server returned empty results, trying with downscaled image...');
+          try {
+            const fallbackResp = await fetch(`${baseUrl}/api/scan`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                imageDataURL: fallbackDataURL,
+                userId: user?.uid || undefined // Include user ID for scan tracking
+              }),
+            });
+            
+            if (fallbackResp.ok) {
+              const fallbackData = await fallbackResp.json();
+              const fallbackBooks = Array.isArray(fallbackData.books) ? fallbackData.books : [];
+              if (fallbackBooks.length > 0) {
+                console.log(`✅ Fallback scan returned ${fallbackBooks.length} books`);
+                return { books: fallbackBooks, fromVercel: true };
+              }
+            }
+          } catch (fallbackErr) {
+            console.error('❌ Fallback scan failed:', fallbackErr);
+          }
+        }
+        
+        return { books: [], fromVercel: false };
+      }
+    } catch (e: any) {
+      console.error('❌ Server API request failed:', e?.message || e);
+      Alert.alert(
+        'Scan Failed',
+        'Unable to connect to the scan server. Please check your internet connection and try again.'
+      );
       return { books: [], fromVercel: false };
     }
   };
@@ -1214,38 +757,19 @@ No explanations, just JSON.`
       
       if (totalBooks > 0) {
         if (cameFromVercel) {
-          console.log(`✅ Using ${totalBooks} validated books from Vercel API (already validated server-side)`);
+          console.log(`✅ Using ${totalBooks} validated books from server API (already validated server-side)`);
           analyzedBooks.push(...detectedBooks);
-          // Skip validation step, move directly to finalizing
+          // Books are already validated by server, move directly to finalizing
           updateProgress({ currentStep: 9, totalScans: totalScans });
           setCurrentScan({ id: scanId, uri, progress: { current: 9, total: 10 } });
         } else {
-          // Client-side fallback: validate with ChatGPT if key available
-          console.log(`🔍 Validating ${totalBooks} books with ChatGPT (client-side fallback)...`);
-      for (let i = 0; i < detectedBooks.length; i++) {
-        const book = detectedBooks[i];
-        try {
-          const analyzedBook = await analyzeBookWithChatGPT(book);
-          analyzedBooks.push(analyzedBook);
-          
-          // Update progress: 4 (start) + (i+1)/totalBooks * 5 (remaining steps to 9)
-          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
-          
-          // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (error) {
-              console.error(`❌ ChatGPT validation failed for "${book.title}":`, error);
-              // Keep original book but log the error
-              analyzedBooks.push(book);
-          
-          // Still update progress even on error
-          const validationProgress = 4 + Math.floor(((i + 1) / totalBooks) * 5);
-          updateProgress({ currentStep: Math.min(validationProgress, 9), totalScans: totalScans });
-          setCurrentScan({ id: scanId, uri, progress: { current: validationProgress, total: 10 } });
-        }
-          }
+          // If server API is not available, we can't proceed (no client-side fallback for security)
+          console.error('❌ Server API not available and client-side API keys are not configured for security reasons');
+          console.error('❌ Please ensure EXPO_PUBLIC_API_BASE_URL is set correctly');
+          // Still add the books but they won't be validated
+          analyzedBooks.push(...detectedBooks);
+          updateProgress({ currentStep: 9, totalScans: totalScans });
+          setCurrentScan({ id: scanId, uri, progress: { current: 9, total: 10 } });
         }
       } else {
         console.log(`⚠️ No books detected to validate`);
