@@ -17,6 +17,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NavigationContainer } from '@react-navigation/native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { LoginScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
@@ -2305,8 +2306,10 @@ const AppWithAuth: React.FC = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppWithAuth />
-    </AuthProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <AppWithAuth />
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }
