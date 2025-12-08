@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -14,8 +14,10 @@ import {
   Animated,
   KeyboardAvoidingView,
   Platform,
-  Keyboard
+  Keyboard,
+  GestureResponderEvent
 } from 'react-native';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
@@ -75,6 +77,7 @@ export const ScansTab: React.FC = () => {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0); // Zoom level (0 = no zoom, 1 = max zoom)
+  const lastZoomRef = useRef(0); // Track last zoom for pinch gesture
   
   // Processing states
   const [isProcessing, setIsProcessing] = useState(false);
@@ -1408,16 +1411,37 @@ export const ScansTab: React.FC = () => {
     setIsCameraActive(true);
   };
 
+  // Pinch gesture for zoom
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => {
+      lastZoomRef.current = zoom;
+    })
+    .onUpdate((e) => {
+      // Scale from 1.0 (no change) - scale up = zoom in, scale down = zoom out
+      // Map scale to zoom: scale 0.5 = zoom out, scale 2.0 = zoom in
+      const baseZoom = lastZoomRef.current;
+      const scaleChange = e.scale - 1.0; // Change from 1.0
+      const newZoom = Math.max(0, Math.min(1, baseZoom + scaleChange * 0.5));
+      setZoom(newZoom);
+    })
+    .onEnd(() => {
+      lastZoomRef.current = zoom;
+    });
+
   if (isCameraActive) {
     return (
       <View style={styles.cameraContainer}>
-        <CameraView
-          style={styles.camera}
-          facing="back"
-          flashMode="on"
-          zoom={zoom}
-          ref={(ref) => setCameraRef(ref)}
-        />
+        <GestureDetector gesture={pinchGesture}>
+          <View style={styles.camera}>
+            <CameraView
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              flashMode="on"
+              zoom={zoom}
+              ref={(ref) => setCameraRef(ref)}
+            />
+          </View>
+        </GestureDetector>
         {/* Overlay outside CameraView using absolute positioning */}
         <View style={styles.cameraOverlay}>
           {/* Close button (X) - Top right corner, at the very top */}
