@@ -84,7 +84,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
     const elapsed = Date.now() - startTime;
     console.error(`[API] OpenAI request timed out after ${elapsed}ms`);
     controller.abort();
-  }, 120000); // Increased to 120s - GPT-5 with reasoning can be slow
+  }, 45000); // 45s timeout - GPT-4o is much faster than GPT-5
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -94,7 +94,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'gpt-5',
+        model: 'gpt-4o', // Using GPT-4o for speed - no reasoning tokens, much faster than GPT-5
         messages: [
           {
             role: 'user',
@@ -108,7 +108,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_completion_tokens: 10000, // Increased to 10000 to allow reasoning tokens + output
+        max_tokens: 2000, // GPT-4o uses max_tokens, not max_completion_tokens
       }),
     });
     if (!res.ok) {
@@ -321,7 +321,10 @@ async function validateBooksBatch(books: any[]): Promise<any[]> {
     const batch = books.slice(i, i + BATCH_SIZE);
     
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000); // 20s per batch
+    const timeout = setTimeout(() => {
+      console.error(`[API] Batch validation timeout after 45s`);
+      controller.abort();
+    }, 45000); // 45s per batch - increased to prevent premature aborts
 
     try {
       const booksList = batch.map((b, idx) => 
@@ -336,7 +339,7 @@ async function validateBooksBatch(books: any[]): Promise<any[]> {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: 'gpt-5',
+          model: 'gpt-4o', // Using GPT-4o for validation speed
           messages: [
             {
               role: 'user',
@@ -366,7 +369,7 @@ RETURN FORMAT (JSON ARRAY ONLY, NO OTHER TEXT):
 Return the array in the same order as the input. Respond with ONLY the JSON array, nothing else.`,
             },
           ],
-          max_completion_tokens: 2000, // GPT-5 uses max_completion_tokens
+          max_tokens: 2000, // GPT-4o uses max_tokens
         }),
       });
 
