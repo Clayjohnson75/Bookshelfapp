@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, StyleSheet, Image } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { ScansTab } from './tabs/ScansTab';
 import { ExploreTab } from './tabs/ExploreTab';
@@ -10,7 +11,7 @@ const Tab = createBottomTabNavigator();
 
 export const TabNavigator = () => {
   return (
-    <View style={styles.container}>
+    <GestureHandlerRootView style={styles.container}>
       <Tab.Navigator
         screenOptions={{
           tabBarActiveTintColor: '#2c3e50',
@@ -51,7 +52,7 @@ export const TabNavigator = () => {
         />
       </Tab.Navigator>
       <ScanningNotification />
-    </View>
+    </GestureHandlerRootView>
   );
 };
 

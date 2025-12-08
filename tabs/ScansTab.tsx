@@ -636,13 +636,16 @@ export const ScansTab: React.FC = () => {
       
         const resp = await fetch(`${baseUrl}/api/scan`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          imageDataURL: primaryDataURL,
-          userId: user?.uid || undefined // Include user ID for scan tracking
-        }),
-        signal: controller.signal,
-      });
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ 
+            imageDataURL: primaryDataURL,
+            userId: user?.uid || undefined // Include user ID for scan tracking
+          }),
+          signal: controller.signal,
+        });
       
       clearTimeout(timeoutId);
         
@@ -1433,13 +1436,13 @@ export const ScansTab: React.FC = () => {
       <View style={styles.cameraContainer}>
         <GestureDetector gesture={pinchGesture}>
           <View style={styles.camera}>
-            <CameraView
+        <CameraView
               style={StyleSheet.absoluteFill}
-              facing="back"
-              flashMode="on"
+          facing="back"
+          flashMode="on"
               zoom={zoom}
-              ref={(ref) => setCameraRef(ref)}
-            />
+          ref={(ref) => setCameraRef(ref)}
+        />
           </View>
         </GestureDetector>
         {/* Overlay outside CameraView using absolute positioning */}
