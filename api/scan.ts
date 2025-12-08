@@ -233,7 +233,6 @@ async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-
   );
   if (!res.ok) {
     const errorText = await res.text();
-    const errorData = JSON.parse(errorText).catch(() => ({}));
     console.error(`[API] Gemini scan failed (${modelName}): ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
     
     // If 503 (overloaded), throw error so we can retry with different model
