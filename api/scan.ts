@@ -108,7 +108,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_completion_tokens: 4000, // Increased for GPT-5 which uses reasoning tokens
+        max_completion_tokens: 10000, // Increased to 10000 to allow reasoning tokens + output
       }),
     });
     if (!res.ok) {
@@ -191,14 +191,14 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
   }
 }
 
-async function scanWithGemini(imageDataURL: string): Promise<any[]> {
+async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-3-pro-preview'): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
     console.log(`[API] Gemini API key not set, skipping Gemini scan`);
     return [];
   }
   
-  console.log(`[API] Starting Gemini scan...`);
+  console.log(`[API] Starting Gemini scan with model: ${modelName}...`);
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   
   const controller = new AbortController();
@@ -207,11 +207,11 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     const elapsed = Date.now() - startTime;
     console.error(`[API] Gemini request timed out after ${elapsed}ms`);
     controller.abort();
-  }, 90000); // Increased to 90s
+  }, 90000);
   
   try {
     const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -233,7 +233,13 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   );
   if (!res.ok) {
     const errorText = await res.text();
-    console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
+    const errorData = JSON.parse(errorText).catch(() => ({}));
+    console.error(`[API] Gemini scan failed (${modelName}): ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
+    
+    // If 503 (overloaded), throw error so we can retry with different model
+    if (res.status === 503) {
+      throw new Error(`Gemini ${modelName} overloaded (503)`);
+    }
     return [];
   }
   const data = await res.json();
@@ -359,7 +365,7 @@ RETURN FORMAT (JSON ARRAY ONLY, NO OTHER TEXT):
 Return the array in the same order as the input. Respond with ONLY the JSON array, nothing else.`,
             },
           ],
-          max_completion_tokens: 2000, // More tokens for batch
+          max_completion_tokens: 2000, // GPT-5 uses max_completion_tokens
         }),
       });
 
@@ -515,11 +521,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error(`[API] OpenAI scan failed after retries:`, e?.message || e);
         return [];
       }),
-      withRetries(() => {
-        console.log(`[API] Attempting Gemini scan...`);
-        return scanWithGemini(imageDataURL);
-      }, 2, 1200).catch((e) => {
-        console.error(`[API] Gemini scan failed after retries:`, e?.message || e);
+      (async () => {
+        // Try primary model first
+        try {
+          return await scanWithGemini(imageDataURL, 'gemini-3-pro-preview');
+        } catch (e: any) {
+          // If overloaded, try alternative models
+          if (e?.message?.includes('503') || e?.message?.includes('overloaded')) {
+            console.log(`[API] Gemini 3 Pro overloaded, trying alternative models...`);
+            
+            const alternativeModels = ['gemini-2.0-flash-exp', 'gemini-1.5-pro'];
+            for (const altModel of alternativeModels) {
+              try {
+                console.log(`[API] Trying Gemini model: ${altModel}`);
+                return await scanWithGemini(imageDataURL, altModel);
+              } catch (altError) {
+                console.log(`[API] ${altModel} also failed, trying next...`);
+                continue;
+              }
+            }
+          }
+          throw e;
+        }
+      })().catch((e) => {
+        console.error(`[API] Gemini scan failed after all retries:`, e?.message || e);
         return [];
       }),
     ]);
