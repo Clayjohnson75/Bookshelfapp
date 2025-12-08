@@ -253,7 +253,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // Reduced from 30s to 15s
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10s per book to keep total time reasonable
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
