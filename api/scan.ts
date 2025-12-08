@@ -79,10 +79,12 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
+  const startTime = Date.now();
   const timeout = setTimeout(() => {
-    console.error(`[API] OpenAI request timed out after 45s`);
+    const elapsed = Date.now() - startTime;
+    console.error(`[API] OpenAI request timed out after ${elapsed}ms`);
     controller.abort();
-  }, 45000);
+  }, 120000); // Increased to 120s - GPT-5 with reasoning can be slow
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -200,10 +202,12 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   
   const controller = new AbortController();
+  const startTime = Date.now();
   const timeout = setTimeout(() => {
-    console.error(`[API] Gemini request timed out after 60s`);
+    const elapsed = Date.now() - startTime;
+    console.error(`[API] Gemini request timed out after ${elapsed}ms`);
     controller.abort();
-  }, 60000);
+  }, 90000); // Increased to 90s
   
   try {
     const res = await fetch(
@@ -499,6 +503,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     console.log(`[API] Starting parallel scans: OpenAI and Gemini...`);
+    const imageSizeKB = Math.round(imageDataURL.length / 1024);
+    console.log(`[API] Image size: ${imageSizeKB}KB`);
+    
+    const scanStartTime = Date.now();
     const [openai, gemini] = await Promise.all([
       withRetries(() => {
         console.log(`[API] Attempting OpenAI scan...`);
@@ -515,11 +523,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return [];
       }),
     ]);
+    const scanElapsed = Date.now() - scanStartTime;
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
     const merged = dedupeBooks([...(openai || []), ...(gemini || [])]);
     
-    console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
+    console.log(`[API] Scan completed in ${scanElapsed}ms: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
     
     // Validate all detected books with ChatGPT (server-side) in batches for speed
     console.log(`[API] Validating ${merged.length} books with ChatGPT (batched)...`);
