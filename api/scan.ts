@@ -207,7 +207,7 @@ async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-
     const elapsed = Date.now() - startTime;
     console.error(`[API] Gemini request timed out after ${elapsed}ms`);
     controller.abort();
-  }, 90000);
+  }, 60000); // 60s timeout - fail faster and try fallback sooner
   
   try {
     const res = await fetch(
