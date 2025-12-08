@@ -627,6 +627,9 @@ export const ScansTab: React.FC = () => {
     console.log(`📡 Attempting server API scan at: ${baseUrl}/api/scan`);
     
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+      
       const resp = await fetch(`${baseUrl}/api/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -634,7 +637,10 @@ export const ScansTab: React.FC = () => {
           imageDataURL: primaryDataURL,
           userId: user?.uid || undefined // Include user ID for scan tracking
         }),
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
       
       if (resp.ok) {
         const data = await resp.json();
@@ -684,11 +690,27 @@ export const ScansTab: React.FC = () => {
         return { books: [], fromVercel: false };
       }
     } catch (e: any) {
-      console.error('❌ Server API request failed:', e?.message || e);
-      Alert.alert(
-        'Scan Failed',
-        'Unable to connect to the scan server. Please check your internet connection and try again.'
-      );
+      const errorMsg = e?.message || String(e);
+      console.error('❌ Server API request failed:', errorMsg);
+      console.error('❌ Error details:', {
+        message: errorMsg,
+        name: e?.name,
+        stack: e?.stack?.slice(0, 500),
+        baseUrl: baseUrl
+      });
+      
+      // Check if it's a network error vs other error
+      if (errorMsg.includes('Network request failed') || errorMsg.includes('Failed to fetch')) {
+        Alert.alert(
+          'Network Error',
+          'Unable to connect to the scan server. Please check your internet connection and try again.\n\nIf this persists, the server may be temporarily unavailable.'
+        );
+      } else {
+        Alert.alert(
+          'Scan Failed',
+          `Error: ${errorMsg.substring(0, 100)}`
+        );
+      }
       return { books: [], fromVercel: false };
     }
   };
