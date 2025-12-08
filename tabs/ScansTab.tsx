@@ -74,6 +74,7 @@ export const ScansTab: React.FC = () => {
   const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(0); // Zoom level (0 = no zoom, 1 = max zoom)
   
   // Processing states
   const [isProcessing, setIsProcessing] = useState(false);
@@ -630,9 +631,9 @@ export const ScansTab: React.FC = () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
       
-      const resp = await fetch(`${baseUrl}/api/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        const resp = await fetch(`${baseUrl}/api/scan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           imageDataURL: primaryDataURL,
           userId: user?.uid || undefined // Include user ID for scan tracking
@@ -641,23 +642,23 @@ export const ScansTab: React.FC = () => {
       });
       
       clearTimeout(timeoutId);
-      
-      if (resp.ok) {
-        const data = await resp.json();
-        const serverBooks = Array.isArray(data.books) ? data.books : [];
         
-        // Log API status if available
-        if (data.apiResults) {
-          const { openai, gemini } = data.apiResults;
+        if (resp.ok) {
+          const data = await resp.json();
+          const serverBooks = Array.isArray(data.books) ? data.books : [];
+          
+          // Log API status if available
+          if (data.apiResults) {
+            const { openai, gemini } = data.apiResults;
           console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
-        } else {
+          } else {
           console.log(`✅ Server API returned ${serverBooks.length} books`);
-        }
-        
+          }
+          
         console.log(`✅ Using server API results: ${serverBooks.length} books found (already validated)`);
-        return { books: serverBooks, fromVercel: true };
-      } else {
-        const errorText = await resp.text().catch(() => '');
+            return { books: serverBooks, fromVercel: true };
+        } else {
+          const errorText = await resp.text().catch(() => '');
         console.error(`❌ Server API error: ${resp.status} - ${errorText.substring(0, 200)}`);
         
         // If server returns 0 books, try with fallback image
@@ -1414,6 +1415,7 @@ export const ScansTab: React.FC = () => {
           style={styles.camera}
           facing="back"
           flashMode="on"
+          zoom={zoom}
           ref={(ref) => setCameraRef(ref)}
         />
         {/* Overlay outside CameraView using absolute positioning */}
@@ -1433,6 +1435,25 @@ export const ScansTab: React.FC = () => {
                 ? 'Better lighting = better accuracy'
                 : 'Better lighting and smaller area = better accuracy'}
             </Text>
+          </View>
+        
+          {/* Zoom controls - Right side */}
+          <View style={styles.zoomControls}>
+            <TouchableOpacity
+              style={styles.zoomButton}
+              onPress={() => setZoom(Math.max(0, zoom - 0.1))}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="remove-outline" size={24} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.zoomText}>{Math.round(zoom * 100)}%</Text>
+            <TouchableOpacity
+              style={styles.zoomButton}
+              onPress={() => setZoom(Math.min(1, zoom + 0.1))}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add-outline" size={24} color="#fff" />
+            </TouchableOpacity>
           </View>
         
           {/* Capture button at bottom (iPhone style) */}
@@ -2326,6 +2347,34 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: '300',
     lineHeight: 36,
+  },
+  zoomControls: {
+    position: 'absolute',
+    right: 20,
+    top: '50%',
+    transform: [{ translateY: -60 }],
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 25,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'auto',
+  },
+  zoomButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginVertical: 4,
+  },
+  zoomText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginVertical: 4,
+    minWidth: 40,
+    textAlign: 'center',
   },
   cameraControls: {
     alignItems: 'center',
