@@ -104,7 +104,6 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
           },
         ],
         max_completion_tokens: 1200,
-        temperature: 0.1,
       }),
     });
     if (!res.ok) {
@@ -254,7 +253,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 15000); // Reduced from 30s to 15s
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -421,13 +420,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
     
-    // Validate all detected books with ChatGPT (server-side)
-    console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
-    const validatedBooks = await Promise.all(
-      merged.map(book => validateBookWithChatGPT(book))
+    // Validate books with ChatGPT (server-side) - limit to 10 books max to avoid timeout
+    const booksToValidate = merged.slice(0, 10);
+    console.log(`[API] Validating ${booksToValidate.length} books with ChatGPT (limited to 10 to avoid timeout)...`);
+    
+    // Use Promise.allSettled to continue even if some validations fail
+    const validationResults = await Promise.allSettled(
+      booksToValidate.map(book => validateBookWithChatGPT(book))
     );
     
-    console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
+    const validatedBooks = validationResults.map((result, index) => 
+      result.status === 'fulfilled' ? result.value : booksToValidate[index]
+    );
+    
+    // Add any books beyond the limit without validation
+    if (merged.length > 10) {
+      validatedBooks.push(...merged.slice(10));
+      console.log(`[API] Added ${merged.length - 10} additional books without validation (to avoid timeout)`);
+    }
+    
+    console.log(`[API] Validation complete: ${validatedBooks.length} books processed`);
     
     return res.status(200).json({ 
       books: validatedBooks,
