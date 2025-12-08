@@ -237,7 +237,9 @@ async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-
     
     // If 503 (overloaded), throw error so we can retry with different model
     if (res.status === 503) {
-      throw new Error(`Gemini ${modelName} overloaded (503)`);
+      const error = new Error(`Gemini ${modelName} overloaded (503)`);
+      (error as any).isOverloaded = true; // Mark for fallback logic
+      throw error;
     }
     return [];
   }
@@ -528,21 +530,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return await scanWithGemini(imageDataURL, 'gemini-3-pro-preview');
         } catch (e: any) {
           // If overloaded, try alternative models
-          if (e?.message?.includes('503') || e?.message?.includes('overloaded')) {
+          if (e?.isOverloaded || e?.message?.includes('503') || e?.message?.includes('overloaded')) {
             console.log(`[API] Gemini 3 Pro overloaded, trying alternative models...`);
             
             const alternativeModels = ['gemini-2.0-flash-exp', 'gemini-1.5-pro'];
             for (const altModel of alternativeModels) {
               try {
                 console.log(`[API] Trying Gemini model: ${altModel}`);
-                return await scanWithGemini(imageDataURL, altModel);
-              } catch (altError) {
-                console.log(`[API] ${altModel} also failed, trying next...`);
+                const result = await scanWithGemini(imageDataURL, altModel);
+                if (result && result.length > 0) {
+                  console.log(`[API] ✅ ${altModel} succeeded with ${result.length} books`);
+                  return result;
+                }
+              } catch (altError: any) {
+                console.log(`[API] ${altModel} also failed: ${altError?.message || altError}`);
                 continue;
               }
             }
+            console.log(`[API] All Gemini models failed, returning empty array`);
+            return [];
           }
-          throw e;
+          // For non-overload errors, return empty array
+          console.error(`[API] Gemini scan error (non-overload):`, e?.message || e);
+          return [];
         }
       })().catch((e) => {
         console.error(`[API] Gemini scan failed after all retries:`, e?.message || e);
