@@ -79,7 +79,10 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
+  const timeout = setTimeout(() => {
+    console.error(`[API] OpenAI request timed out after 45s`);
+    controller.abort();
+  }, 45000);
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -188,13 +191,27 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
 
 async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
-  if (!key) return [];
+  if (!key) {
+    console.log(`[API] Gemini API key not set, skipping Gemini scan`);
+    return [];
+  }
+  
+  console.log(`[API] Starting Gemini scan...`);
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
-  const res = await fetch(
+  
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    console.error(`[API] Gemini request timed out after 60s`);
+    controller.abort();
+  }, 60000);
+  
+  try {
+    const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         contents: [
           {
@@ -273,6 +290,12 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   
   console.error(`[API] Gemini response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
   return [];
+  } catch (e: any) {
+    console.error(`[API] Gemini scan exception:`, e?.message || String(e));
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Validate multiple books in batches (much faster than one-by-one)
@@ -475,9 +498,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    console.log(`[API] Starting parallel scans: OpenAI and Gemini...`);
     const [openai, gemini] = await Promise.all([
-      withRetries(() => scanWithOpenAI(imageDataURL), 2, 1200).catch(() => []),
-      withRetries(() => scanWithGemini(imageDataURL), 2, 1200).catch(() => []),
+      withRetries(() => {
+        console.log(`[API] Attempting OpenAI scan...`);
+        return scanWithOpenAI(imageDataURL);
+      }, 2, 1200).catch((e) => {
+        console.error(`[API] OpenAI scan failed after retries:`, e?.message || e);
+        return [];
+      }),
+      withRetries(() => {
+        console.log(`[API] Attempting Gemini scan...`);
+        return scanWithGemini(imageDataURL);
+      }, 2, 1200).catch((e) => {
+        console.error(`[API] Gemini scan failed after retries:`, e?.message || e);
+        return [];
+      }),
     ]);
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
