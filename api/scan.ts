@@ -536,7 +536,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (e?.isOverloaded || e?.message?.includes('503') || e?.message?.includes('overloaded')) {
             console.log(`[API] Gemini 3 Pro overloaded, trying alternative models...`);
             
-            const alternativeModels = ['gemini-2.0-flash-exp', 'gemini-1.5-pro'];
+            const alternativeModels = ['gemini-2.5-pro'];
             for (const altModel of alternativeModels) {
               try {
                 console.log(`[API] Trying Gemini model: ${altModel}`);
