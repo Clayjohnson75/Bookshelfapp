@@ -112,6 +112,12 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
       return [];
     }
     const data = await res.json();
+    
+    // Debug: log the full response structure if content is missing
+    if (!data.choices?.[0]?.message?.content) {
+      console.error(`[API] OpenAI response structure:`, JSON.stringify(data, null, 2).slice(0, 500));
+    }
+    
     let content = data.choices?.[0]?.message?.content?.trim() || '';
     
     console.log(`[API] OpenAI raw response length: ${content.length} chars`);
@@ -120,7 +126,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
     }
     
     if (!content) {
-      console.error(`[API] OpenAI returned empty content`);
+      console.error(`[API] OpenAI returned empty content. Full response:`, JSON.stringify(data).slice(0, 1000));
       return [];
     }
     
@@ -195,6 +201,12 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     return [];
   }
   const data = await res.json();
+  
+  // Debug: log the full response structure if content is missing
+  if (!data.candidates?.[0]?.content?.parts?.[0]?.text && !data.candidates?.[0]?.text) {
+    console.error(`[API] Gemini response structure:`, JSON.stringify(data, null, 2).slice(0, 500));
+  }
+  
   let content = '';
   if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
     content = data.candidates[0].content.parts[0].text;
@@ -208,7 +220,7 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   }
   
   if (!content) {
-    console.error(`[API] Gemini returned empty content`);
+    console.error(`[API] Gemini returned empty content. Full response:`, JSON.stringify(data).slice(0, 1000));
     return [];
   }
   
