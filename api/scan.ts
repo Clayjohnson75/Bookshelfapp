@@ -103,7 +103,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_completion_tokens: 1200,
+        max_completion_tokens: 4000, // Increased for GPT-5 which uses reasoning tokens
       }),
     });
     if (!res.ok) {
@@ -113,12 +113,27 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
     }
     const data = await res.json();
     
-    // Debug: log the full response structure if content is missing
-    if (!data.choices?.[0]?.message?.content) {
-      console.error(`[API] OpenAI response structure:`, JSON.stringify(data, null, 2).slice(0, 500));
+    // Check for reasoning model response format (GPT-5 uses reasoning tokens)
+    let content = '';
+    const choice = data.choices?.[0];
+    
+    if (choice?.message?.content) {
+      content = choice.message.content.trim();
+    } else if (choice?.message?.refusal) {
+      // Model refused to respond
+      console.error(`[API] OpenAI refused: ${choice.message.refusal}`);
+      return [];
+    } else if (choice?.finish_reason === 'length') {
+      // Hit token limit - check if there's any partial content
+      console.error(`[API] OpenAI hit token limit. Usage:`, data.usage);
+      // Try to get any partial content if available
+      content = choice.message?.content?.trim() || '';
     }
     
-    let content = data.choices?.[0]?.message?.content?.trim() || '';
+    // Debug: log the full response structure if content is missing
+    if (!content) {
+      console.error(`[API] OpenAI response structure:`, JSON.stringify(data, null, 2).slice(0, 500));
+    }
     
     console.log(`[API] OpenAI raw response length: ${content.length} chars`);
     if (content.length > 0) {
