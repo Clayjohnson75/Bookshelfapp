@@ -248,34 +248,43 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   return [];
 }
 
-async function validateBookWithChatGPT(book: any): Promise<any> {
+// Validate multiple books in batches (much faster than one-by-one)
+async function validateBooksBatch(books: any[]): Promise<any[]> {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) return book; // Return original if no key
+  if (!key || books.length === 0) return books;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000); // 10s per book to keep total time reasonable
+  const BATCH_SIZE = 10; // Validate 10 books at a time
+  const results: any[] = [];
 
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: 'gpt-5',
-        messages: [
-          {
-            role: 'user',
-            content: `You are a book expert analyzing a detected book from a bookshelf scan.
+  for (let i = 0; i < books.length; i += BATCH_SIZE) {
+    const batch = books.slice(i, i + BATCH_SIZE);
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s per batch
 
-DETECTED BOOK:
-Title: "${book.title}"
-Author: "${book.author}"
-Confidence: ${book.confidence}
+    try {
+      const booksList = batch.map((b, idx) => 
+        `${idx + 1}. Title: "${b.title}", Author: "${b.author}", Confidence: ${b.confidence}`
+      ).join('\n');
 
-TASK: Analyze this book and determine if it's a real book. If it is, correct any OCR errors and return the proper title and author.
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'gpt-5',
+          messages: [
+            {
+              role: 'user',
+              content: `You are a book expert analyzing detected books from a bookshelf scan.
+
+DETECTED BOOKS:
+${booksList}
+
+TASK: Analyze each book and determine if it's a real book. For each book, correct any OCR errors and return the proper title and author.
 
 RULES:
 1. If the title and author are swapped, fix them
@@ -284,73 +293,93 @@ RULES:
 4. Validate that the author looks like a real person's name
 5. If it's not a real book, mark it as invalid
 
-CRITICAL: You MUST respond with ONLY valid JSON. No explanations, no markdown, no code blocks. Just the raw JSON object.
+CRITICAL: You MUST respond with ONLY valid JSON array. No explanations, no markdown, no code blocks. Just the raw JSON array.
 
-RETURN FORMAT (JSON ONLY, NO OTHER TEXT):
-{"isValid": true, "title": "Corrected Title", "author": "Corrected Author Name", "confidence": "high", "reason": "Brief explanation"}
+RETURN FORMAT (JSON ARRAY ONLY, NO OTHER TEXT):
+[
+  {"isValid": true, "title": "Corrected Title 1", "author": "Corrected Author 1", "confidence": "high", "reason": "Brief explanation"},
+  {"isValid": false, "title": "Book 2", "author": "Author 2", "confidence": "low", "reason": "Not a real book"},
+  ...
+]
 
-EXAMPLES:
-Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
-Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
+Return the array in the same order as the input. Respond with ONLY the JSON array, nothing else.`,
+            },
+          ],
+          max_completion_tokens: 2000, // More tokens for batch
+        }),
+      });
 
-Input: Title="controlling owmen", Author="Unknown"
-Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book"}
-
-Input: Title="The Great Gatsby", Author="F. Scott Fitzgerald"
-Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "confidence": "high", "reason": "Already correct"}
-
-Remember: Respond with ONLY the JSON object, nothing else.`,
-          },
-        ],
-        max_completion_tokens: 500,
-      }),
-    });
-
-    if (!res.ok) {
-      console.error(`[API] Validation failed for "${book.title}": ${res.status}`);
-      return book;
-    }
-
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content?.trim();
-
-    if (!content) return book;
-
-    let analysis;
-    try {
-      analysis = JSON.parse(content);
-    } catch {
-      // Try extracting from code blocks
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        analysis = JSON.parse(jsonMatch[0]);
-      } else {
-        return book;
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[API] Batch validation failed: ${res.status} - ${errorText.slice(0, 200)}`);
+        // Return original books if validation fails
+        results.push(...batch);
+        continue;
       }
-    }
 
-    if (analysis.isValid) {
-      return {
-        ...book,
-        title: analysis.title,
-        author: analysis.author,
-        confidence: analysis.confidence,
-      };
-    } else {
-      return {
-        ...book,
-        title: analysis.title,
-        author: analysis.author,
-        confidence: 'low',
-        chatgptReason: analysis.reason,
-      };
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content?.trim();
+
+      if (!content) {
+        results.push(...batch);
+        continue;
+      }
+
+      let analyses: any[];
+      try {
+        analyses = JSON.parse(content);
+        if (!Array.isArray(analyses)) {
+          throw new Error('Response is not an array');
+        }
+      } catch {
+        // Try extracting from code blocks
+        const arrayMatch = content.match(/\[[\s\S]*\]/);
+        if (arrayMatch) {
+          try {
+            analyses = JSON.parse(arrayMatch[0]);
+          } catch {
+            console.error(`[API] Failed to parse batch validation response`);
+            results.push(...batch);
+            continue;
+          }
+        } else {
+          results.push(...batch);
+          continue;
+        }
+      }
+
+      // Map validated results back to original books
+      for (let j = 0; j < batch.length; j++) {
+        const book = batch[j];
+        const analysis = analyses[j];
+        
+        if (analysis && analysis.isValid) {
+          results.push({
+            ...book,
+            title: analysis.title,
+            author: analysis.author,
+            confidence: analysis.confidence,
+          });
+        } else {
+          results.push({
+            ...book,
+            title: analysis?.title || book.title,
+            author: analysis?.author || book.author,
+            confidence: 'low',
+            chatgptReason: analysis?.reason,
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`[API] Batch validation error:`, e);
+      // Return original books if validation fails
+      results.push(...batch);
+    } finally {
+      clearTimeout(timeout);
     }
-  } catch (e) {
-    console.error(`[API] Validation error for "${book.title}":`, e);
-    return book;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return results;
 }
 
 // Track scan in Supabase (non-blocking, don't fail scan if tracking fails)
@@ -420,11 +449,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
     
-    // Validate all detected books with ChatGPT (server-side)
-    console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
-    const validatedBooks = await Promise.all(
-      merged.map(book => validateBookWithChatGPT(book))
-    );
+    // Validate all detected books with ChatGPT (server-side) in batches for speed
+    console.log(`[API] Validating ${merged.length} books with ChatGPT (batched)...`);
+    const validatedBooks = await validateBooksBatch(merged);
     
     console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
     
