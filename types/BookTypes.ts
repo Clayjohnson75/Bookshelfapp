@@ -10,6 +10,7 @@ export interface Book {
   localCoverPath?: string; // Local cached path for offline access
   googleBooksId?: string;
   description?: string; // Book description from Google Books API
+  readAt?: number; // Timestamp when book was marked as read
 }
 
 export interface Photo {
@@ -44,4 +45,8 @@ export interface Folder {
   bookIds: string[]; // Array of book IDs that belong to this folder
   photoIds: string[]; // Array of photo IDs that belong to this folder
   createdAt: number;
+}
+
+export interface WishlistItem extends Book {
+  addedAt: number; // Timestamp when added to wishlist
 }

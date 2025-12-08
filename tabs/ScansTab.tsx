@@ -1530,12 +1530,6 @@ export const ScansTab: React.FC = () => {
   return (
     <View style={styles.safeContainer}>
       <SafeAreaView style={{ flex: 1 }} edges={['left','right']}>
-        <LinearGradient
-          colors={['#f5f7fa', '#1a1a2e']}
-          style={{ height: insets.top }}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 0, y: 1 }}
-        />
         <ScrollView 
           style={styles.container}
           contentContainerStyle={[
@@ -1544,18 +1538,11 @@ export const ScansTab: React.FC = () => {
           bounces={false}
           overScrollMode="never"
         >
+      <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
       <View style={styles.header}>
         <Text style={styles.title}>Book Scanner</Text>
         <Text style={styles.subtitle}>Scan your bookshelf to build your library</Text>
       </View>
-      
-      {/* Fade Gradient Below Header */}
-      <LinearGradient
-        colors={['#1a1a2e', '#ebedf0']}
-        style={{ height: 30 }}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-      />
 
       {/* Scan Options */}
       <View style={styles.scanOptions}>
@@ -2146,7 +2133,7 @@ export const ScansTab: React.FC = () => {
       >
         <View style={styles.folderModalContainer}>
           <LinearGradient
-            colors={['#f5f7fa', '#1a1a2e']}
+            colors={['#ffffff', '#2d3748']}
             style={{ height: insets.top }}
             start={{ x: 0, y: 0 }}
             end={{ x: 0, y: 1 }}
@@ -2297,14 +2284,14 @@ export const ScansTab: React.FC = () => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#ebedf0',
+    backgroundColor: '#f8f9fa', // Subtle gray background
     position: 'relative',
   },
   container: {
     flex: 1,
   },
   header: {
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#2d3748', // Slate header
     paddingTop: 20,
     paddingBottom: 30,
     paddingHorizontal: 20,
@@ -2318,33 +2305,33 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 15,
-    color: '#cbd5e0',
+    color: '#cbd5e0', // Light gray text
     fontWeight: '400',
   },
   scanOptions: {
     flexDirection: 'row',
     padding: 20,
     gap: 15,
-    marginTop: -55,
+    marginTop: 0,
   },
   scanButton: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#e8e6e3', // Grey marble
     padding: 18,
     borderRadius: 16,
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 5,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: '#d4d2cf', // Slightly darker grey border
   },
   scanButtonText: {
-    color: '#1a202c',
+    color: '#2d3748', // Slate text (darker for contrast on marble)
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '600',
     letterSpacing: 0.3,
   },
   cameraContainer: {
@@ -2457,40 +2444,46 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(0, 0, 0, 0.1)',
   },
   queueSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#ffffff', // White card
     marginHorizontal: 15,
     marginBottom: 20,
     borderRadius: 16,
     padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   pendingSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#ffffff', // White card
     marginHorizontal: 15,
     marginBottom: 20,
     borderRadius: 16,
     padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   recentSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#ffffff', // White card
     marginHorizontal: 15,
     marginBottom: 20,
     borderRadius: 16,
     padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   sectionTitle: {
     fontSize: 22,
@@ -2501,8 +2494,8 @@ const styles = StyleSheet.create({
   },
   sectionSubtitle: {
     fontSize: 14,
-    color: '#718096',
-    fontWeight: '600',
+    color: '#6b7280', // Medium gray text
+    fontWeight: '500',
     marginBottom: 15,
   },
   booksGrid: {
@@ -2517,8 +2510,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     marginHorizontal: 4,
     flexDirection: 'column',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
     width: (screenWidth - 94) / 4,
     alignItems: 'center',
     shadowColor: 'transparent',
@@ -2548,14 +2541,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 8,
-    backgroundColor: '#f7fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    backgroundColor: '#f8f9fa', // Subtle gray
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   placeholderText: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#4a5568',
+    fontWeight: '600',
+    color: '#6b7280', // Medium gray
     textAlign: 'center',
     lineHeight: 14,
   },
@@ -2565,18 +2558,18 @@ const styles = StyleSheet.create({
   },
   bookTitle: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#1a202c',
+    fontWeight: '600',
+    color: '#1a1a1a', // Deep charcoal
     marginBottom: 2,
     textAlign: 'center',
     letterSpacing: 0.2,
   },
   bookAuthor: {
     fontSize: 11,
-    color: '#4a5568',
+    color: '#6b7280', // Medium gray
     marginBottom: 6,
     textAlign: 'center',
-    fontWeight: '600',
+    fontWeight: '500',
     lineHeight: 14,
     paddingHorizontal: 2,
   },
@@ -2587,19 +2580,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   approveButton: {
-    backgroundColor: '#4caf50',
+    backgroundColor: '#059669', // Emerald accent
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderRadius: 12,
     flex: 1,
     alignItems: 'center',
-    shadowColor: '#000',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.15,
     shadowRadius: 4,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: '#45a049',
+    elevation: 3,
+    borderWidth: 0,
     marginRight: 6,
   },
   approveButtonText: {
@@ -2695,33 +2687,35 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rejectedSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#ffffff', // White card
     marginHorizontal: 15,
     marginBottom: 20,
     borderRadius: 16,
     padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   rejectedBookCard: {
-    backgroundColor: '#f7fafc',
+    backgroundColor: '#f8f9fa', // Subtle gray
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
     borderLeftWidth: 4,
-    borderLeftColor: '#dc3545',
+    borderLeftColor: '#dc2626', // Red accent
     opacity: 0.85,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   modalContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#faf8f3', // Warm cream background
   },
   modalHeader: {
     flexDirection: 'row',
@@ -2729,7 +2723,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
     paddingTop: 60,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#2d1b0e', // Dark wood brown (walnut/espresso)
     borderBottomWidth: 0,
   },
   modalHeaderButtons: {
@@ -3095,15 +3089,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   selectAllButton: {
-    backgroundColor: '#4caf50',
+    backgroundColor: '#2563eb', // Deep blue accent
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 10,
-    shadowColor: '#000',
+    shadowColor: '#2563eb',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 3,
     elevation: 3,
+    borderWidth: 0,
   },
   selectAllButtonText: {
     color: 'white',
@@ -3112,15 +3107,16 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   clearButton: {
-    backgroundColor: '#718096',
+    backgroundColor: '#6b7280', // Medium gray
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 10,
-    shadowColor: '#000',
+    shadowColor: '#6b7280',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.1,
     shadowRadius: 3,
-    elevation: 3,
+    elevation: 2,
+    borderWidth: 0,
   },
   clearButtonText: {
     color: 'white',
@@ -3130,18 +3126,17 @@ const styles = StyleSheet.create({
   },
   addAllButton: {
     flex: 1,
-    backgroundColor: '#4caf50',
+    backgroundColor: '#059669', // Emerald accent
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 12,
     alignItems: 'center',
-    shadowColor: '#000',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.15,
     shadowRadius: 4,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: '#45a049',
+    elevation: 3,
+    borderWidth: 0,
     marginRight: 5,
   },
   addAllButtonText: {
@@ -3152,7 +3147,7 @@ const styles = StyleSheet.create({
   },
   deleteAllButton: {
     flex: 1,
-    backgroundColor: '#f44336',
+    backgroundColor: '#dc2626', // Red for delete
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 12,
@@ -3297,15 +3292,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   stickyButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#2563eb', // Deep blue accent
     paddingHorizontal: 18,
     paddingVertical: 12,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#005FCC',
-    shadowColor: '#007AFF',
+    borderWidth: 0,
+    shadowColor: '#2563eb',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.15,
     shadowRadius: 6,
     elevation: 3,
   },
@@ -3319,15 +3313,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   stickyDeleteButton: {
-    backgroundColor: '#E53935',
+    backgroundColor: '#dc2626', // Red for delete
     paddingHorizontal: 18,
     paddingVertical: 12,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#C62828',
-    shadowColor: '#E53935',
+    borderWidth: 0,
+    shadowColor: '#dc2626',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.15,
     shadowRadius: 6,
     elevation: 3,
   },
@@ -3342,26 +3335,28 @@ const styles = StyleSheet.create({
   unselectedCheckbox: {},
   checkmark: {},
   captionSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#ffffff', // White card
     borderRadius: 16,
     padding: 20,
     marginTop: 0,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
   },
   captionLabel: {
     fontSize: 18,
-    fontWeight: '700',
-    color: '#1a202c',
+    fontWeight: '600',
+    color: '#1a1a1a', // Deep charcoal
     marginBottom: 8,
     letterSpacing: 0.3,
   },
   captionHint: {
     fontSize: 13,
-    color: '#718096',
+    color: '#6b7280', // Medium gray
     marginBottom: 12,
     fontStyle: 'italic',
   },
@@ -3373,19 +3368,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   captionInput: {
-    backgroundColor: '#f7fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    backgroundColor: '#f8f9fa', // Subtle gray
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
-    color: '#1a202c',
+    color: '#1a1a1a', // Deep charcoal
     minHeight: 100,
     textAlignVertical: 'top',
     marginBottom: 16,
   },
   captionSubmitButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#2563eb', // Deep blue accent
     paddingVertical: 16,
     paddingHorizontal: 24,
     borderRadius: 12,
@@ -3403,7 +3398,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   captionFolderButton: {
-    backgroundColor: '#718096',
+    backgroundColor: '#6b7280', // Medium gray
     paddingVertical: 14,
     paddingHorizontal: 20,
     borderRadius: 12,
@@ -3425,7 +3420,7 @@ const styles = StyleSheet.create({
   },
   captionModalContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#f8f9fa', // Subtle gray background
   },
   captionModalHeader: {
     flexDirection: 'row',
@@ -3456,7 +3451,7 @@ const styles = StyleSheet.create({
   },
   folderModalContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#f8f9fa', // Subtle gray background
   },
   folderModalHeader: {
     flexDirection: 'row',

@@ -11,14 +11,6 @@ export const ScanningNotification: React.FC = () => {
   const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
   const bottomPosition = insets.bottom + tabBarHeight;
 
-  // Debug logging
-  React.useEffect(() => {
-    if (scanProgress) {
-      console.log('📊 ScanningNotification: scanProgress detected', scanProgress);
-    } else {
-      console.log('📊 ScanningNotification: No scanProgress');
-    }
-  }, [scanProgress]);
 
   if (!scanProgress) {
     return null;

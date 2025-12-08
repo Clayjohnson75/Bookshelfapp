@@ -199,6 +199,45 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   };
 
+  // Helper function to clear invalid session and storage
+  const clearInvalidSession = async () => {
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (signOutError) {
+      // If signOut fails, manually clear storage keys
+      try {
+        const allKeys = await AsyncStorage.getAllKeys();
+        const supabaseKeys = allKeys.filter(key => 
+          key.includes('supabase') || 
+          key.includes('sb-') || 
+          key.includes('auth-token') ||
+          key.includes('auth.')
+        );
+        if (supabaseKeys.length > 0) {
+          await AsyncStorage.multiRemove(supabaseKeys);
+        }
+      } catch (clearError) {
+        console.error('Error clearing Supabase storage:', clearError);
+      }
+    }
+    // Clear local user storage
+    await AsyncStorage.removeItem('user');
+    setUser(null);
+  };
+
+  // Helper function to check if an error is an invalid token error
+  const isInvalidTokenError = (error: any): boolean => {
+    const errorMessage = error?.message || '';
+    return (
+      errorMessage.includes('Invalid Refresh Token') ||
+      errorMessage.includes('Refresh Token Not Found') ||
+      errorMessage.includes('invalid_grant') ||
+      error?.code === 'invalid_grant'
+    );
+  };
+
   useEffect(() => {
     // Load any persisted session on mount and subscribe to auth changes
     const init = async () => {
@@ -208,44 +247,74 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return;
       }
       
-      const { data } = await supabase.auth.getSession();
-      const sessionUser = data.session?.user;
-      if (sessionUser) {
-        const profile = await fetchUserProfile(sessionUser.id);
-        const userData: User = {
-          uid: sessionUser.id,
-          email: sessionUser.email || '',
-          username: profile.username,
-          displayName: profile.displayName,
-          photoURL: profile.photoURL,
-        };
-        setUser(userData);
-        await saveUserToStorage(userData);
-      } else {
-        await loadUserFromStorage();
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        
+        // Check for invalid refresh token error
+        if (error && isInvalidTokenError(error)) {
+          console.warn('⚠️ Invalid refresh token detected, clearing session...');
+          await clearInvalidSession();
+          setLoading(false);
+          return;
+        }
+        
+        const sessionUser = data?.session?.user;
+        if (sessionUser) {
+          const profile = await fetchUserProfile(sessionUser.id);
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: profile.username,
+            displayName: profile.displayName,
+            photoURL: profile.photoURL,
+          };
+          setUser(userData);
+          await saveUserToStorage(userData);
+        } else {
+          await loadUserFromStorage();
+        }
+      } catch (error: any) {
+        console.error('Error initializing auth session:', error);
+        // Check if it's an invalid token error
+        if (isInvalidTokenError(error)) {
+          console.warn('⚠️ Invalid refresh token detected in catch block, clearing session...');
+          await clearInvalidSession();
+        } else {
+          // For other errors, try loading from storage
+          await loadUserFromStorage();
+        }
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     init();
 
     if (!supabase) return;
     
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const sUser = session?.user;
-      if (sUser) {
-        const profile = await fetchUserProfile(sUser.id);
-        const userData: User = {
-          uid: sUser.id,
-          email: sUser.email || '',
-          username: profile.username,
-          displayName: profile.displayName,
-          photoURL: profile.photoURL,
-        };
-        setUser(userData);
-        await saveUserToStorage(userData);
-      } else {
-        setUser(null);
-        await AsyncStorage.removeItem('user');
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      try {
+        const sUser = session?.user;
+        if (sUser) {
+          const profile = await fetchUserProfile(sUser.id);
+          const userData: User = {
+            uid: sUser.id,
+            email: sUser.email || '',
+            username: profile.username,
+            displayName: profile.displayName,
+            photoURL: profile.photoURL,
+          };
+          setUser(userData);
+          await saveUserToStorage(userData);
+        } else {
+          setUser(null);
+          await AsyncStorage.removeItem('user');
+        }
+      } catch (error: any) {
+        console.error('Error handling auth state change:', error);
+        // If there's an error (like invalid token), clear the session
+        if (isInvalidTokenError(error)) {
+          await clearInvalidSession();
+        }
       }
     });
 

@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useAuth } from '../auth/SimpleAuthContext';
-import { Book } from '../types/BookTypes';
+import { Book, WishlistItem } from '../types/BookTypes';
 
 interface User {
   uid: string;
@@ -40,7 +40,9 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
   const [userBooks, setUserBooks] = useState<Book[]>([]);
   const [currentUserBooks, setCurrentUserBooks] = useState<Book[]>([]);
   const [commonBooks, setCommonBooks] = useState<Book[]>([]);
+  const [wishlist, setWishlist] = useState<WishlistItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const isOwnProfile = currentUser && user && currentUser.uid === user.uid;
 
   useEffect(() => {
     if (visible && user) {
@@ -75,6 +77,14 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
           )
         );
         setCommonBooks(common);
+      }
+
+      // Load wishlist if viewing own profile
+      if (isOwnProfile) {
+        const wishlistKey = `wishlist_${user.uid}`;
+        const wishlistData = await AsyncStorage.getItem(wishlistKey);
+        const wishlistItems = wishlistData ? JSON.parse(wishlistData) : [];
+        setWishlist(wishlistItems);
       }
     } catch (error) {
       console.error('Error loading user data:', error);
@@ -149,7 +159,13 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
                 <Text style={styles.statNumber}>{userBooks.length}</Text>
                 <Text style={styles.statLabel}>Books</Text>
               </View>
-              {currentUser && currentUser.uid !== user.uid && (
+              {isOwnProfile && (
+                <View style={styles.statCard}>
+                  <Text style={styles.statNumber}>{wishlist.length}</Text>
+                  <Text style={styles.statLabel}>Wishlist</Text>
+                </View>
+              )}
+              {!isOwnProfile && (
                 <View style={styles.statCard}>
                   <Text style={styles.statNumber}>{commonBooks.length}</Text>
                   <Text style={styles.statLabel}>In Common</Text>
@@ -172,10 +188,35 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
               </View>
             )}
 
+            {/* Wishlist Section (only for own profile) */}
+            {isOwnProfile && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="heart" size={24} color="#ed64a6" />
+                  <Text style={styles.sectionTitle}>My Wishlist ({wishlist.length})</Text>
+                </View>
+                {wishlist.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyText}>Your wishlist is empty</Text>
+                    <Text style={styles.emptySubtext}>Add books from the Explore tab</Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={wishlist}
+                    renderItem={renderBook}
+                    keyExtractor={(item, index) => item.id || `wishlist-${index}`}
+                    numColumns={2}
+                    scrollEnabled={false}
+                    columnWrapperStyle={styles.bookRow}
+                  />
+                )}
+              </View>
+            )}
+
             {/* All Books Section */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>
-                {currentUser && currentUser.uid === user.uid ? 'My Books' : 'Their Books'} ({userBooks.length})
+                {isOwnProfile ? 'My Books' : 'Their Books'} ({userBooks.length})
               </Text>
               {userBooks.length === 0 ? (
                 <View style={styles.emptyState}>
@@ -294,11 +335,16 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     padding: 20,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 15,
+  },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '800',
     color: '#1a202c',
-    marginBottom: 15,
     letterSpacing: 0.3,
   },
   booksList: {
@@ -346,6 +392,11 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     color: '#718096',
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#a0aec0',
+    marginTop: 4,
   },
 });
 

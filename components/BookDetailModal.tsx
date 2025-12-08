@@ -10,11 +10,12 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Book, Photo } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
+import { supabase } from '../lib/supabaseClient';
 
 interface BookDetailModalProps {
   visible: boolean;
@@ -31,13 +32,53 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onClose,
   onRemove,
 }) => {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [description, setDescription] = useState<string | null>(null);
   const [loadingDescription, setLoadingDescription] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [isRead, setIsRead] = useState(false);
+  const [togglingRead, setTogglingRead] = useState(false);
 
   useEffect(() => {
+    const loadReadStatus = async () => {
+      if (!visible || !book || !user) {
+        setIsRead(false);
+        return;
+      }
+
+      // Try to load read status from Supabase first (for production sync)
+      if (supabase) {
+        try {
+          const authorForQuery = book.author || '';
+          const { data, error } = await supabase
+            .from('books')
+            .select('read_at')
+            .eq('user_id', user.uid)
+            .eq('title', book.title)
+            .eq('author', authorForQuery)
+            .maybeSingle();
+
+          if (!error && data && data.read_at) {
+            setIsRead(true);
+            // Update the book object with the readAt from Supabase
+            if (book) {
+              book.readAt = data.read_at;
+            }
+            return;
+          }
+        } catch (error) {
+          console.warn('Error loading read status from Supabase, using local:', error);
+        }
+      }
+
+      // Fallback to local storage (book.readAt from AsyncStorage)
+      setIsRead(!!book.readAt);
+    };
+
     if (visible && book) {
+      loadReadStatus();
+      
       // If book has description already, use it
       if (book.description) {
         setDescription(cleanDescription(book.description));
@@ -49,8 +90,9 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
       }
     } else {
       setDescription(null);
+      setIsRead(false);
     }
-  }, [visible, book]);
+  }, [visible, book, user]);
 
   // Clean HTML from description
   const cleanDescription = (html: string): string => {
@@ -92,6 +134,124 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     cleaned = cleaned.trim();
     
     return cleaned;
+  };
+
+  const handleToggleReadStatus = async () => {
+    if (!book || !user) return;
+
+    setTogglingRead(true);
+    const newReadAt = isRead ? null : Date.now();
+    
+    try {
+      // Update AsyncStorage (for offline/backwards compatibility)
+      const userApprovedKey = `approved_books_${user.uid}`;
+      const approvedData = await AsyncStorage.getItem(userApprovedKey);
+      
+      if (approvedData) {
+        const approvedBooks: Book[] = JSON.parse(approvedData);
+        
+        // Find and update the book
+        const updatedBooks = approvedBooks.map((b) => {
+          // Match by title and author (or just title if author missing)
+          const matchesTitle = b.title === book.title;
+          const matchesAuthor = (!b.author && !book.author) || (b.author === book.author);
+          
+          if (matchesTitle && matchesAuthor) {
+            // Toggle read status
+            return {
+              ...b,
+              readAt: newReadAt || undefined,
+            };
+          }
+          return b;
+        });
+        
+        await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+      }
+      
+      // Save to Supabase for production cross-device sync
+      if (supabase) {
+        try {
+          // Upsert book read status to Supabase
+          const bookData = {
+            user_id: user.uid,
+            title: book.title,
+            author: book.author || null,
+            isbn: book.isbn || null,
+            confidence: book.confidence || null,
+            status: book.status || 'approved',
+            scanned_at: book.scannedAt || null,
+            cover_url: book.coverUrl || null,
+            local_cover_path: book.localCoverPath || null,
+            google_books_id: book.googleBooksId || null,
+            description: book.description || null,
+            read_at: newReadAt, // This is the key field we're updating
+            updated_at: new Date().toISOString(),
+          };
+
+          // Use upsert to insert or update based on user_id + title + author
+          // First try to find existing book (handle null authors by using empty string)
+          const authorForQuery = book.author || '';
+          const { data: existingBook, error: findError } = await supabase
+            .from('books')
+            .select('id')
+            .eq('user_id', user.uid)
+            .eq('title', book.title)
+            .eq('author', authorForQuery)
+            .maybeSingle();
+
+          if (findError) {
+            console.warn('Error finding book in Supabase:', findError);
+          }
+
+          if (existingBook) {
+            // Update existing book's read status
+            const { error: updateError } = await supabase
+              .from('books')
+              .update({
+                read_at: newReadAt,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingBook.id);
+            
+            if (updateError) {
+              console.warn('Error updating in Supabase (will use local storage):', updateError);
+            }
+          } else {
+            // Insert new book record with read status
+            // Use empty string for null author to match unique constraint
+            const insertData = {
+              ...bookData,
+              author: authorForQuery || null, // Store as null but query with empty string
+            };
+            
+            const { error: insertError } = await supabase
+              .from('books')
+              .insert(insertData);
+            
+            if (insertError) {
+              console.warn('Error inserting to Supabase (will use local storage):', insertError);
+            }
+          }
+        } catch (supabaseError) {
+          console.warn('Error connecting to Supabase (will use local storage):', supabaseError);
+          // Continue anyway - local storage is updated
+        }
+      }
+      
+      // Update local state
+      setIsRead(!isRead);
+      
+      // Update the book object if onRemove callback is available (to refresh parent)
+      if (onRemove) {
+        onRemove();
+      }
+    } catch (error) {
+      console.error('Error toggling read status:', error);
+      Alert.alert('Error', 'Failed to update read status');
+    } finally {
+      setTogglingRead(false);
+    }
   };
 
   const handleRemoveFromLibrary = async () => {
@@ -190,13 +350,14 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
       transparent={false}
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.safeContainer}>
+      <SafeAreaView style={styles.safeContainer} edges={['left','right','bottom']}>
+        <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={onClose}
             activeOpacity={0.7}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
           >
             <Text style={styles.backButtonText}>←</Text>
             <Text style={styles.backButtonLabel}>Back</Text>
@@ -223,6 +384,35 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 <Text style={styles.bookIsbn}>ISBN: {book.isbn}</Text>
               )}
             </View>
+          </View>
+
+          {/* Mark as Read Button */}
+          <View style={styles.section}>
+            <TouchableOpacity
+              style={[
+                styles.readButton,
+                isRead && styles.readButtonActive,
+                togglingRead && styles.readButtonDisabled,
+              ]}
+              onPress={handleToggleReadStatus}
+              disabled={togglingRead}
+              activeOpacity={0.8}
+            >
+              {togglingRead ? (
+                <ActivityIndicator size="small" color={isRead ? "#ffffff" : "#2d3748"} />
+              ) : (
+                <>
+                  <Text style={[styles.readButtonText, isRead && styles.readButtonTextActive]}>
+                    {isRead ? '✓ Mark as Unread' : "I've Read This"}
+                  </Text>
+                  {isRead && book.readAt && (
+                    <Text style={styles.readDateText}>
+                      Finished {new Date(book.readAt).toLocaleDateString()}
+                    </Text>
+                  )}
+                </>
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* Description */}
@@ -272,12 +462,12 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#f8f9fa', // Subtle gray background
   },
   header: {
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#2d3748', // Slate header
     paddingVertical: 16,
-    paddingTop: 60,
+    paddingTop: 20,
     paddingHorizontal: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -431,6 +621,50 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+  readButton: {
+    backgroundColor: '#f7fafc',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  readButtonActive: {
+    backgroundColor: '#48bb78',
+    borderColor: '#48bb78',
+    shadowColor: '#48bb78',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  readButtonDisabled: {
+    opacity: 0.6,
+  },
+  readButtonText: {
+    fontSize: 16,
+    color: '#2d3748',
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  readButtonTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  readDateText: {
+    fontSize: 12,
+    color: '#ffffff',
+    marginTop: 4,
+    opacity: 0.9,
+    fontWeight: '500',
   },
 });
 

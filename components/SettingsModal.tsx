@@ -10,7 +10,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/SimpleAuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -20,6 +20,7 @@ interface SettingsModalProps {
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
+  const insets = useSafeAreaInsets();
   const { user, signOut, deleteAccount } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [loading, setLoading] = useState(false);
@@ -130,7 +131,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['left','right','bottom']}>
+        <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Settings</Text>
           <TouchableOpacity 
@@ -279,15 +281,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: '#f8f9fa', // Subtle gray background
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
-    paddingTop: 40,
-    backgroundColor: '#1a1a2e',
+    paddingTop: 20,
+    backgroundColor: '#2d3748', // Slate header
   },
   headerTitle: {
     fontSize: 24,
@@ -296,7 +298,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   closeButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#2563eb', // Deep blue accent
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 10,
@@ -331,7 +333,7 @@ const styles = StyleSheet.create({
   infoRow: {
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: '#e5e7eb', // Subtle gray border
   },
   infoContent: {
     flexDirection: 'column',
@@ -367,16 +369,16 @@ const styles = StyleSheet.create({
     marginTop: 15,
   },
   input: {
-    backgroundColor: '#f7fafc',
+    backgroundColor: '#f8f9fa', // Subtle gray
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderWidth: 0.5,
+    borderColor: '#e5e7eb', // Subtle gray border
     marginBottom: 12,
   },
   saveButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#2563eb', // Deep blue accent
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -396,7 +398,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: '#e2e8f0',
+    backgroundColor: '#e5e7eb', // Subtle gray border
     marginVertical: 20,
   },
   comingSoon: {
