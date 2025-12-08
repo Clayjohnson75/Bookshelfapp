@@ -103,7 +103,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_tokens: 1200,
+        max_completion_tokens: 1200,
         temperature: 0.1,
       }),
     });
@@ -303,7 +303,7 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
 Remember: Respond with ONLY the JSON object, nothing else.`,
           },
         ],
-        max_tokens: 500,
+        max_completion_tokens: 500,
       }),
     });
 
