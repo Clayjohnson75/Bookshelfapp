@@ -635,12 +635,12 @@ export const MyLibraryTab: React.FC = () => {
         bounces={false}
         overScrollMode="never"
       >
-      {/* Profile Header - Combined container for books to span both */}
+      {/* Header - Match Scans tab design */}
+      <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
       <View style={{ position: 'relative', overflow: 'visible' }}>
-        <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
         {/* User Profile Header */}
         <View style={styles.profileHeader}>
-          {/* Book Cover Collage Background - Fixed, over blue background and gradient */}
+          {/* Book Cover Collage Background - Fixed, over blue background */}
           {collageBooks.length > 0 && (
             <View style={[styles.collageContainer, { top: -insets.top }]} pointerEvents="none">
             {collageBooks.map((book, index) => {
@@ -662,7 +662,7 @@ export const MyLibraryTab: React.FC = () => {
                       width: coverWidth,
                       height: coverHeight,
                       left: position.x,
-                      top: position.y + insets.top, // Account for gradient height
+                      top: position.y + insets.top, // Account for safe area
                       transform: [{ rotate: `${position.rotation}deg` }],
                     }
                   ]}
@@ -698,6 +698,8 @@ export const MyLibraryTab: React.FC = () => {
         </View>
         </View>
       </View>
+      
+      {/* Removed gradient fade - matching Scans tab design */}
         
       {/* Stats Section - Elegant Cards */}
       <View style={styles.statsSection}>
@@ -1556,14 +1558,15 @@ export const MyLibraryTab: React.FC = () => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#f8f9fa', // Subtle gray background
+    backgroundColor: '#f8f9fa', // Match Scans tab
+    position: 'relative',
   },
   container: {
     flex: 1,
   },
-  // Profile Header - Elegant Top Section
+  // Profile Header - Match Scans tab design
   profileHeader: {
-    backgroundColor: '#2d3748', // Slate header
+    backgroundColor: '#2d3748', // Match Scans tab
     paddingTop: 20,
     paddingBottom: 30,
     paddingHorizontal: 20,
@@ -1653,15 +1656,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 'auto',
-    alignSelf: 'flex-start',
-    marginTop: -15, // Raise button higher in top right
   },
   settingsButtonIcon: {
     fontSize: 24,
   },
   // Stats Section
   statsSection: {
-    marginTop: 10, // Lowered from -20 to 10
+    marginTop: 10,
     marginHorizontal: 15,
     marginBottom: 15,
   },
@@ -1698,12 +1699,12 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     marginHorizontal: 6,
   },
   statNumber: {
@@ -1735,7 +1736,7 @@ const styles = StyleSheet.create({
     padding: 18,
     marginTop: 12,
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
   },
   analyticsTitle: {
     fontSize: 16,
@@ -1790,9 +1791,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 14,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -1808,7 +1809,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
   },
   librarySearchClearText: {
     fontSize: 18,
@@ -1849,7 +1850,7 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
   },
   folderIcon: {
     marginBottom: 12,
@@ -1884,7 +1885,7 @@ const styles = StyleSheet.create({
     width: '100%',
     aspectRatio: 2 / 3,
     borderRadius: 8,
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
     marginBottom: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -1896,9 +1897,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 8,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
   },
   placeholderText: {
     fontSize: 11,
@@ -1924,12 +1925,12 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 20,
     borderWidth: 2,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
   },
   emptyStateIconText: {
     fontSize: 40,
@@ -1949,7 +1950,7 @@ const styles = StyleSheet.create({
   },
   // Photo Modal Styles
   modalHeader: {
-    backgroundColor: '#2d3748', // Slate header
+    backgroundColor: '#1a1a2e',
     paddingVertical: 16,
     paddingHorizontal: 20,
     paddingTop: 60,
@@ -2030,7 +2031,7 @@ const styles = StyleSheet.create({
   photoImage: {
     width: '100%',
     height: 250,
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
   },
   photoDeleteButton: {
     position: 'absolute',
@@ -2096,7 +2097,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
     borderColor: '#007AFF',
     borderRadius: 12,
@@ -2112,7 +2113,7 @@ const styles = StyleSheet.create({
   editPhotoImage: {
     width: '100%',
     height: 300,
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
     marginBottom: 20,
   },
   captionSection: {
@@ -2135,9 +2136,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   captionInput: {
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     borderRadius: 12,
     padding: 14,
     fontSize: 15,
@@ -2147,7 +2148,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   saveCaptionButton: {
-    backgroundColor: '#059669', // Emerald accent
+    backgroundColor: '#4caf50',
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
@@ -2189,9 +2190,9 @@ const styles = StyleSheet.create({
   },
   addBooksSearchInput: {
     flex: 1,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -2200,7 +2201,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   addBooksSearchButton: {
-    backgroundColor: '#2563eb', // Deep blue accent
+    backgroundColor: '#007AFF',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 10,
@@ -2258,9 +2259,9 @@ const styles = StyleSheet.create({
   addedChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 10,
@@ -2276,7 +2277,7 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2313,7 +2314,7 @@ const styles = StyleSheet.create({
     aspectRatio: 2 / 3,
     borderRadius: 8,
     marginBottom: 6,
-    backgroundColor: '#e5e7eb', // Subtle gray border
+    backgroundColor: '#e2e8f0',
   },
   photoBookTitle: {
     fontSize: 10,
@@ -2377,7 +2378,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   confirmModalButtonCancel: {
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
   },
   confirmModalButtonCancelText: {
     color: '#4a5568',
@@ -2409,7 +2410,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
@@ -2451,16 +2452,16 @@ const styles = StyleSheet.create({
   },
   createFolderInput: {
     flex: 1,
-    backgroundColor: '#ffffff', // White
+    backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#e5e7eb', // Subtle gray border
+    borderColor: '#e2e8f0',
     borderRadius: 12,
     padding: 14,
     fontSize: 16,
     color: '#1a202c',
   },
   createFolderButton: {
-    backgroundColor: '#2563eb', // Deep blue accent
+    backgroundColor: '#007AFF',
     paddingVertical: 14,
     paddingHorizontal: 20,
     borderRadius: 12,

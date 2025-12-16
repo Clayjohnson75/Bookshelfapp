@@ -84,6 +84,9 @@ export const ScansTab: React.FC = () => {
   const [scanQueue, setScanQueue] = useState<ScanQueueItem[]>([]);
   const [currentScan, setCurrentScan] = useState<{id: string, uri: string, progress: {current: number, total: number}} | null>(null);
   
+  // Ref to track latest totalScans to avoid stale closure issues
+  const totalScansRef = useRef<number>(0);
+  
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
   const [approvedBooks, setApprovedBooks] = useState<Book[]>([]);
@@ -109,8 +112,9 @@ export const ScansTab: React.FC = () => {
   const handleImageSelected = (uri: string) => {
     console.log('🖼️ Image selected, starting scan and showing caption modal', uri);
     
-    // Generate scanId before adding to queue so we can track it
-    const scanId = Date.now().toString();
+    // Generate unique scanId with counter to prevent duplicates when multiple images selected quickly
+    scanIdCounterRef.current += 1;
+    const scanId = `${Date.now()}_${scanIdCounterRef.current}_${Math.random().toString(36).substring(2, 9)}`;
     currentScanIdRef.current = scanId;
     scanCaptionsRef.current.set(scanId, ''); // Initialize with empty caption
     
@@ -164,6 +168,8 @@ export const ScansTab: React.FC = () => {
   const currentScanIdRef = React.useRef<string | null>(null);
   // Store caption for each scan (keyed by scanId)
   const scanCaptionsRef = React.useRef<Map<string, string>>(new Map());
+  // Counter to ensure unique scan IDs even when multiple images selected at once
+  const scanIdCounterRef = React.useRef<number>(0);
   
   // Folder management state
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -177,8 +183,8 @@ export const ScansTab: React.FC = () => {
   // Scroll tracking for sticky toolbar
   const scrollY = React.useRef(new Animated.Value(0)).current;
 
-  // Sort pending books by author's last name (moved outside conditional render to fix hooks error)
-  const sortedPendingBooks = useMemo(() => {
+  // Group and sort pending books by photo, then by author's last name
+  const groupedPendingBooks = useMemo(() => {
     const extractLastName = (author?: string): string => {
       if (!author) return '';
       const firstAuthor = author.split(/,|&| and /i)[0].trim();
@@ -187,7 +193,44 @@ export const ScansTab: React.FC = () => {
       return parts[parts.length - 1].replace(/,/, '').toLowerCase();
     };
     
-    return [...pendingBooks].sort((a, b) => {
+    // Create a map of book IDs to photo IDs by checking which photo contains each book
+    // Map ALL books (not just pending) to ensure we can find them even if status changes
+    const bookToPhotoMap = new Map<string, string>();
+    photos.forEach(photo => {
+      photo.books.forEach(book => {
+        if (book.id) {
+          bookToPhotoMap.set(book.id, photo.id);
+        }
+      });
+    });
+    
+    // Group books by photo - include ALL pending books
+    const grouped = new Map<string, Book[]>();
+    pendingBooks.forEach(book => {
+      // Try to find which photo this book came from
+      let photoId = 'unknown';
+      if (book.id) {
+        photoId = bookToPhotoMap.get(book.id) || 'unknown';
+        // Fallback: search all photos if not found in map
+        if (photoId === 'unknown') {
+          for (const photo of photos) {
+            if (photo.books.some(b => b.id === book.id)) {
+              photoId = photo.id;
+              break;
+            }
+          }
+        }
+      }
+      if (!grouped.has(photoId)) {
+        grouped.set(photoId, []);
+      }
+      grouped.get(photoId)!.push(book);
+    });
+    
+    // Sort books within each group by author
+    const sortedGroups: Array<{ photoId: string; books: Book[] }> = [];
+    grouped.forEach((books, photoId) => {
+      const sorted = books.sort((a, b) => {
       const aLast = extractLastName(a.author);
       const bLast = extractLastName(b.author);
       if (aLast && bLast) {
@@ -202,7 +245,11 @@ export const ScansTab: React.FC = () => {
       if (aTitle > bTitle) return 1;
       return 0;
     });
-  }, [pendingBooks]);
+      sortedGroups.push({ photoId, books: sorted });
+    });
+    
+    return sortedGroups;
+  }, [pendingBooks, photos]);
 
   // Detect orientation changes when camera is active
   useEffect(() => {
@@ -244,29 +291,117 @@ export const ScansTab: React.FC = () => {
       const userPhotosKey = `photos_${user.uid}`;
       const userFoldersKey = `folders_${user.uid}`;
       
-      const savedPending = await AsyncStorage.getItem(userPendingKey);
-      const savedApproved = await AsyncStorage.getItem(userApprovedKey);
-      const savedRejected = await AsyncStorage.getItem(userRejectedKey);
-      const savedPhotos = await AsyncStorage.getItem(userPhotosKey);
-      const savedFolders = await AsyncStorage.getItem(userFoldersKey);
+      // Load all data in parallel for faster initial load
+      const [savedPending, savedApproved, savedRejected, savedPhotos, savedFolders] = await Promise.all([
+        AsyncStorage.getItem(userPendingKey),
+        AsyncStorage.getItem(userApprovedKey),
+        AsyncStorage.getItem(userRejectedKey),
+        AsyncStorage.getItem(userPhotosKey),
+        AsyncStorage.getItem(userFoldersKey),
+      ]);
       
+      // Parse and set data with deduplication
       if (savedPending) {
-        setPendingBooks(JSON.parse(savedPending));
+        try {
+          const parsed = JSON.parse(savedPending);
+          // Deduplicate by ID
+          const seen = new Map<string, Book>();
+          const deduplicated = parsed.filter((book: Book) => {
+            if (!book.id) return false;
+            if (seen.has(book.id)) {
+              console.warn(`Duplicate book ID found: ${book.id}, keeping first occurrence`);
+              return false;
+            }
+            seen.set(book.id, book);
+            return true;
+          });
+          setPendingBooks(deduplicated);
+        } catch (e) {
+          console.error('Error parsing pending books:', e);
+        }
       }
       if (savedApproved) {
-        setApprovedBooks(JSON.parse(savedApproved));
+        try {
+          const parsed = JSON.parse(savedApproved);
+          // Deduplicate by ID
+          const seen = new Map<string, Book>();
+          const deduplicated = parsed.filter((book: Book) => {
+            if (!book.id) return false;
+            if (seen.has(book.id)) {
+              console.warn(`Duplicate approved book ID found: ${book.id}, keeping first occurrence`);
+              return false;
+            }
+            seen.set(book.id, book);
+            return true;
+          });
+          setApprovedBooks(deduplicated);
+        } catch (e) {
+          console.error('Error parsing approved books:', e);
+        }
       }
       if (savedRejected) {
-        setRejectedBooks(JSON.parse(savedRejected));
+        try {
+          const parsed = JSON.parse(savedRejected);
+          // Deduplicate by ID
+          const seen = new Map<string, Book>();
+          const deduplicated = parsed.filter((book: Book) => {
+            if (!book.id) return false;
+            if (seen.has(book.id)) {
+              console.warn(`Duplicate rejected book ID found: ${book.id}, keeping first occurrence`);
+              return false;
+            }
+            seen.set(book.id, book);
+            return true;
+          });
+          setRejectedBooks(deduplicated);
+        } catch (e) {
+          console.error('Error parsing rejected books:', e);
+        }
       }
       if (savedPhotos) {
-        setPhotos(JSON.parse(savedPhotos));
+        try {
+          const parsed = JSON.parse(savedPhotos);
+          // Deduplicate photos by ID
+          const seen = new Map<string, Photo>();
+          const deduplicated = parsed.filter((photo: Photo) => {
+            if (!photo.id) {
+              // Generate a unique ID for photos without one
+              photo.id = `photo_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            }
+            if (seen.has(photo.id)) {
+              console.warn(`Duplicate photo ID found: ${photo.id}, keeping first occurrence`);
+              return false;
+            }
+            seen.set(photo.id, photo);
+            return true;
+          });
+          setPhotos(deduplicated);
+        } catch (e) {
+          console.error('Error parsing photos:', e);
+        }
       }
       if (savedFolders) {
-        setFolders(JSON.parse(savedFolders));
+        try {
+          const parsed = JSON.parse(savedFolders);
+          // Deduplicate folders by ID
+          const seen = new Map<string, Folder>();
+          const deduplicated = parsed.filter((folder: Folder) => {
+            if (!folder.id) return false;
+            if (seen.has(folder.id)) {
+              console.warn(`Duplicate folder ID found: ${folder.id}, keeping first occurrence`);
+              return false;
+            }
+            seen.set(folder.id, folder);
+            return true;
+          });
+          setFolders(deduplicated);
+        } catch (e) {
+          console.error('Error parsing folders:', e);
+        }
       }
     } catch (error) {
       console.error('Error loading user data:', error);
+      // Don't crash the app if loading fails, just log the error
     }
   };
 
@@ -421,9 +556,12 @@ export const ScansTab: React.FC = () => {
   };
 
   const fetchCoversForBooks = async (books: Book[]) => {
-    try {
-      
-      for (const book of books) {
+    // Process covers in parallel batches to avoid blocking
+    const batchSize = 3; // Process 3 covers at a time
+    for (let i = 0; i < books.length; i += batchSize) {
+      const batch = books.slice(i, i + batchSize);
+      // Process batch in parallel, but don't wait for all to complete
+      await Promise.all(batch.map(async (book) => {
         try {
           // Skip if already has local cache
           if (book.localCoverPath && FileSystem.documentDirectory) {
@@ -431,7 +569,7 @@ export const ScansTab: React.FC = () => {
               const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
               const fileInfo = await FileSystem.getInfoAsync(fullPath);
               if (fileInfo.exists) {
-                continue; // Already cached, skip
+                return; // Already cached, skip
               }
             } catch (error) {
               // File doesn't exist, continue to fetch
@@ -441,7 +579,7 @@ export const ScansTab: React.FC = () => {
           const coverData = await fetchBookCover(book.title, book.author);
           
           if (coverData.coverUrl && coverData.googleBooksId) {
-            // Download and cache the cover
+            // Download and cache the cover (non-blocking)
             const localPath = await downloadAndCacheCover(coverData.coverUrl, coverData.googleBooksId);
             
             const updatedBook = {
@@ -483,13 +621,18 @@ export const ScansTab: React.FC = () => {
         } catch (error) {
           console.error(`Error fetching cover for ${book.title}:`, error);
         }
+      })).catch(err => console.error('Error in cover batch:', err));
+      
+      // Small delay between batches to avoid overwhelming the system
+      if (i + batchSize < books.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-
-      // Save updated data with cached paths
-      await saveUserData(pendingBooks, approvedBooks, rejectedBooks, photos);
-    } catch (error) {
-      console.error('Error in fetchCoversForBooks:', error);
     }
+
+    // Save updated data with cached paths (non-blocking, don't wait)
+    saveUserData(pendingBooks, approvedBooks, rejectedBooks, photos).catch(err => 
+      console.error('Error saving covers:', err)
+    );
   };
 
   const fetchBookCover = async (title: string, author?: string): Promise<{coverUrl?: string, googleBooksId?: string}> => {
@@ -724,30 +867,62 @@ export const ScansTab: React.FC = () => {
 
   const processImage = async (uri: string, scanId: string, caption?: string) => {
     try {
-      // Get current progress to preserve totalScans
-      const currentProgress = scanProgress || {
-        currentScanId: null,
-        currentStep: 0,
-        totalSteps: 10,
-        totalScans: scanQueue.length,
-        completedScans: 0,
-        failedScans: 0,
-      };
+      // Get latest progress to preserve totalScans - CRITICAL: never set totalScans to 0
+      // Use ref to get latest value (avoids stale closure issue)
+      const latestProgress = scanProgress;
+      const refTotalScans = totalScansRef.current;
+      const progressTotalScans = latestProgress?.totalScans || 0;
+      const existingTotalScans = Math.max(refTotalScans, progressTotalScans);
       
-      // Ensure totalScans reflects the actual queue length
-      const totalScans = Math.max(currentProgress.totalScans, scanQueue.length);
-      const completedCount = scanQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+      // Read queue length using functional update to get latest state
+      let currentQueueLength = 0;
+      let currentCompletedCount = 0;
+      let currentFailedCount = 0;
       
-      // Step 1: Initializing (1%)
+      setScanQueue(prev => {
+        currentQueueLength = prev.length;
+        currentCompletedCount = prev.filter(item => item.status === 'completed' || item.status === 'failed').length;
+        currentFailedCount = prev.filter(item => item.status === 'failed').length;
+        return prev; // Don't modify
+      });
+      
+      // Use the MAXIMUM of existing totalScans or current queue length
+      // This ensures we never lose the correct count that was set when images were added
+      const totalScans = Math.max(existingTotalScans, currentQueueLength);
+      
+      // Update ref with the value we're using
+      if (totalScans > 0) {
+        totalScansRef.current = totalScans;
+      }
+      
+      console.log('📊 processImage starting:', {
+        scanId,
+        existingTotalScans,
+        currentQueueLength,
+        totalScans,
+        'Will preserve totalScans': totalScans > 0 ? totalScans : 'ERROR: totalScans is 0!'
+      });
+      
+      // Step 1: Initializing (1%) - update progress with correct totalScans
+      // CRITICAL: Always preserve totalScans - never set it to 0
+      if (totalScans === 0) {
+        console.error('❌ ERROR: totalScans is 0 in processImage! This should never happen!');
+        console.error('   existingTotalScans:', existingTotalScans);
+        console.error('   currentQueueLength:', currentQueueLength);
+        console.error('   latestProgress:', latestProgress);
+      }
+      
       setScanProgress({
         currentScanId: scanId,
         currentStep: 1,
         totalSteps: 10, // More granular steps for better progress tracking
-        totalScans: totalScans,
-        completedScans: completedCount,
-        failedScans: scanQueue.filter(item => item.status === 'failed').length,
-        startTimestamp: scanProgress?.startTimestamp || Date.now(), // Preserve or set start timestamp
+        totalScans: totalScans, // Always use the correct total - MUST be > 0
+        completedScans: currentCompletedCount,
+        failedScans: currentFailedCount,
+        startTimestamp: latestProgress?.startTimestamp || Date.now(), // Preserve or set start timestamp
       });
+      
+      console.log('📊 processImage set scanProgress with totalScans:', totalScans);
       
       setCurrentScan({ id: scanId, uri, progress: { current: 1, total: 10 } });
       
@@ -809,10 +984,11 @@ export const ScansTab: React.FC = () => {
       setCurrentScan({ id: scanId, uri, progress: { current: 10, total: 10 } });
       
       // Convert analyzed books to proper structure and separate complete vs incomplete
-      // Use timestamp + index for stable IDs that can be used for folder membership
+      // Use timestamp + index + random for stable IDs that can be used for folder membership
       const bookTimestamp = Date.now();
+      const scanRandomSuffix = Math.random().toString(36).substring(2, 9);
       const allBooks: Book[] = analyzedBooks.map((book, index) => ({
-        id: `book_${bookTimestamp}_${index}`,
+        id: `book_${bookTimestamp}_${index}_${scanRandomSuffix}_${Math.random().toString(36).substring(2, 7)}`,
         title: book.title,
         author: book.author,
         isbn: book.isbn,
@@ -852,17 +1028,47 @@ export const ScansTab: React.FC = () => {
         caption: finalCaption, // Include caption if provided
       };
       
-      const updatedPhotos = [...photos, newPhoto];
-      const updatedPending = [...pendingBooks, ...newPendingBooks];
+      // Use functional updates to ensure we have the latest state
+      // This prevents books from previous scans from being lost
+      setPhotos(prevPhotos => {
+        const updatedPhotos = [...prevPhotos, newPhoto];
+        console.log('📸 Adding photo, total photos now:', updatedPhotos.length);
+        
+        // Deduplicate books by ID to prevent duplicate key errors
+        // Use functional update for pendingBooks to get latest state
+        setPendingBooks(prevPending => {
+          console.log('📚 Current pending books count:', prevPending.length);
+          console.log('📚 New pending books to add:', newPendingBooks.length);
+          
+          const existingBookIds = new Set(prevPending.map(b => b.id));
+          const uniqueNewPendingBooks = newPendingBooks.filter(book => !existingBookIds.has(book.id));
+          const updatedPending = [...prevPending, ...uniqueNewPendingBooks];
+          
+          console.log('📚 Updated pending books count:', updatedPending.length);
+          console.log('📚 Unique new books added:', uniqueNewPendingBooks.length);
+          
+          // Save data with the updated values
+          saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
+            console.error('Error saving user data:', error);
+          });
+          
+          return updatedPending;
+        });
+        
+        return updatedPhotos;
+      });
       
-      setPhotos(updatedPhotos);
-      setPendingBooks(updatedPending);
       // Ensure no book appears pre-selected after new results arrive
       setSelectedBooks(new Set());
-      await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
       
       // Fetch covers for books in background (don't wait for this)
-      fetchCoversForBooks(newPendingBooks);
+      // Use setTimeout to ensure books are added to state first
+      setTimeout(() => {
+        console.log('🖼️ Fetching covers for', newPendingBooks.length, 'books');
+        fetchCoversForBooks(newPendingBooks).catch(error => {
+          console.error('❌ Error fetching covers:', error);
+        });
+      }, 100);
       
       // Add books to selected folder if one was chosen
       if (selectedFolderId) {
@@ -870,54 +1076,91 @@ export const ScansTab: React.FC = () => {
         await addBooksToSelectedFolder(scannedBookIds);
       }
       
-      // Update queue status
-      const updatedQueue = scanQueue.map(item => 
+      // Update queue status using functional update to get latest state
+      setScanQueue(prev => {
+        const updatedQueue = prev.map(item => 
         item.id === scanId ? { ...item, status: 'completed' as const } : item
       );
-      setScanQueue(updatedQueue);
       
-      // Update scanning progress
+        // Update scanning progress - ensure totalScans is correct
       const newCompletedCount = updatedQueue.filter(item => item.status === 'completed').length;
       const pendingScans = updatedQueue.filter(item => item.status === 'pending');
       const stillProcessing = updatedQueue.some(item => item.status === 'processing');
-      
-      if (stillProcessing || pendingScans.length > 0) {
-        // More scans to process
+        const actualTotalScans = updatedQueue.length; // Use actual queue length
+        
+        console.log('📊 Scan completion check:', {
+          newCompletedCount,
+          pendingScans: pendingScans.length,
+          stillProcessing,
+          actualTotalScans,
+          queue: updatedQueue.map(i => ({ id: i.id, status: i.status }))
+        });
+        
+        // Defer progress update to avoid "Cannot update component during render" error
+        setTimeout(() => {
+          // ALWAYS update progress to keep notification visible with correct count
         updateProgress({
           currentScanId: null,
           currentStep: 0,
           completedScans: newCompletedCount,
-          totalScans: totalScans,
-        });
+            totalScans: actualTotalScans, // Use actual queue length
+          });
+          console.log('📊 Updated progress - totalScans:', actualTotalScans, 'completedScans:', newCompletedCount);
+        }, 0);
+        
+        // Check if there are more scans to process
+        const hasMoreScans = pendingScans.length > 0 || stillProcessing;
+        
+        if (hasMoreScans) {
+          // More scans to process - process next one
+          console.log('📊 More scans to process, keeping notification visible');
         
         // Process next pending scan if available and not already processing
         if (!stillProcessing && pendingScans.length > 0) {
           const nextScan = pendingScans[0];
+            console.log('📊 Starting next scan:', nextScan.id);
           setIsProcessing(true);
           setTimeout(() => {
-            setScanQueue(prev => 
-              prev.map(item => 
+              setScanQueue(currentQueue => {
+                const updatedQueue = currentQueue.map(item => 
                 item.id === nextScan.id ? { ...item, status: 'processing' as const } : item
-              )
-            );
+                );
+                // Read completed count from updated queue
+                const currentCompleted = updatedQueue.filter(item => item.status === 'completed').length;
+                // Update progress AFTER state update completes
+                setTimeout(() => {
+                  updateProgress({
+                    currentScanId: nextScan.id,
+                    currentStep: 0,
+                    completedScans: currentCompleted,
+                    totalScans: actualTotalScans,
+                  });
+                }, 0);
+                return updatedQueue;
+              });
             processImage(nextScan.uri, nextScan.id);
           }, 500);
         }
       } else {
         // All scans complete, hide notification after a brief delay
+          console.log('📊 All scans complete, hiding notification');
         setTimeout(() => {
           setScanProgress(null);
         }, 500);
       }
+        
+        return updatedQueue;
+      });
       
       console.log(`✅ Scan complete: ${newPendingBooks.length} books ready, ${newIncompleteBooks.length} incomplete`);
       
     } catch (error) {
       console.error(' Processing failed:', error);
-      const failedQueue = scanQueue.map(item => 
+      // Use functional update to get latest queue state
+      setScanQueue(prev => {
+        const failedQueue = prev.map(item => 
         item.id === scanId ? { ...item, status: 'failed' as const } : item
       );
-      setScanQueue(failedQueue);
       
       // Update progress with failed scan
       const newFailedCount = failedQueue.filter(item => item.status === 'failed').length;
@@ -948,8 +1191,8 @@ export const ScansTab: React.FC = () => {
           const nextScan = pendingScans[0];
           setIsProcessing(true);
           setTimeout(() => {
-            setScanQueue(prev => 
-              prev.map(item => 
+              setScanQueue(currentQueue => 
+                currentQueue.map(item => 
                 item.id === nextScan.id ? { ...item, status: 'processing' as const } : item
               )
             );
@@ -962,6 +1205,9 @@ export const ScansTab: React.FC = () => {
           setScanProgress(null);
         }, 500);
       }
+        
+        return failedQueue;
+      });
     } finally {
       setCurrentScan(null);
       // Check if there are more scans to process
@@ -1180,7 +1426,11 @@ export const ScansTab: React.FC = () => {
   };
 
   const addImageToQueue = (uri: string, caption?: string, providedScanId?: string) => {
-    const scanId = providedScanId || Date.now().toString();
+    // Generate unique scanId if not provided, using counter to prevent duplicates
+    const scanId = providedScanId || (() => {
+      scanIdCounterRef.current += 1;
+      return `${Date.now()}_${scanIdCounterRef.current}_${Math.random().toString(36).substring(2, 9)}`;
+    })();
     // Store caption if provided
     if (caption !== undefined) {
       scanCaptionsRef.current.set(scanId, caption);
@@ -1210,6 +1460,7 @@ export const ScansTab: React.FC = () => {
     setScanQueue(updatedQueue);
     
     // Set scan progress IMMEDIATELY (outside of setState to avoid render conflicts)
+    // Preserve existing startTimestamp if scanning is already in progress
     const progressData = {
       currentScanId: null,
       currentStep: 0,
@@ -1217,10 +1468,16 @@ export const ScansTab: React.FC = () => {
       totalScans: totalScans,
       completedScans: completedCount,
       failedScans: 0, // No failed scans yet when adding new item
-      startTimestamp: Date.now(), // Add start timestamp for ETA calculation
+      startTimestamp: scanProgress?.startTimestamp || Date.now(), // Preserve existing timestamp or set new one
     };
     console.log('📊 Setting scan progress:', progressData);
+    console.log('📊 Total scans in progressData:', progressData.totalScans, 'Queue length:', updatedQueue.length);
+    // Set progress immediately - the notification needs the correct totalScans right away
+    // Update ref to track latest totalScans (avoids stale closure issues)
+    totalScansRef.current = progressData.totalScans;
+    console.log('📊 About to set scanProgress with totalScans:', progressData.totalScans, 'ref updated to:', totalScansRef.current);
     setScanProgress(progressData);
+    console.log('📊 Scan progress set, totalScans should be:', progressData.totalScans);
     
     if (!isProcessing) {
       setIsProcessing(true);
@@ -1371,17 +1628,13 @@ export const ScansTab: React.FC = () => {
         // Store photo URI first before any state changes
         const photoUri = photo.uri;
         
-        // Close camera after photo is captured
-          setIsCameraActive(false);
-        
+        // Don't close camera - allow taking multiple photos
           // Reset caption modal state
           setShowCaptionModal(false);
           setCaptionText('');
         
-        // Start scanning with a small delay to ensure camera closes first
-          setTimeout(() => {
+        // Start scanning immediately (camera stays open for more photos)
           handleImageSelected(photoUri);
-          }, 100);
       } else {
         console.error('Photo captured but no URI returned');
         Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
@@ -1410,16 +1663,100 @@ export const ScansTab: React.FC = () => {
         mediaTypes: 'images',
         allowsEditing: false,
         quality: 1.0, // No compression = faster
-        selectionLimit: 1,
+        allowsMultipleSelection: true,
+        selectionLimit: 0, // 0 = unlimited
       });
 
-      if (!result.canceled && result.assets[0]) {
-        console.log('📂 Image picked from library:', result.assets[0].uri);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        console.log(`📂 ${result.assets.length} image(s) picked from library`);
         // Reset caption modal state
         setShowCaptionModal(false);
         setCaptionText('');
-        // Start scanning and show modal immediately
-        handleImageSelected(result.assets[0].uri);
+        
+        // Generate scanIds for all images first
+        const scanItems: Array<{uri: string, scanId: string}> = [];
+        result.assets.forEach((asset) => {
+          scanIdCounterRef.current += 1;
+          const scanId = `${Date.now()}_${scanIdCounterRef.current}_${Math.random().toString(36).substring(2, 9)}`;
+          scanCaptionsRef.current.set(scanId, ''); // Initialize with empty caption
+          scanItems.push({ uri: asset.uri, scanId });
+        });
+        
+        // Add all images to queue at once using functional update
+        // Clear any completed/failed items from previous scans to get accurate count
+        setScanQueue(prev => {
+          // Filter out completed and failed items from previous scans
+          const activeQueue = prev.filter(item => item.status === 'pending' || item.status === 'processing');
+          
+          const newItems: ScanQueueItem[] = scanItems.map(({ uri, scanId }) => ({
+            id: scanId,
+            uri,
+            status: 'pending' as const
+          }));
+          const updatedQueue = [...activeQueue, ...newItems];
+          const totalScans = updatedQueue.length; // This is now only active + new items
+          const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+          
+          // Update scan progress with correct total - use only the new batch count
+          const finalTotalScans = newItems.length; // Only count the new images being scanned
+          const progressData = {
+            currentScanId: null,
+            currentStep: 0,
+            totalSteps: 10,
+            totalScans: finalTotalScans, // Only the new images selected
+            completedScans: 0, // Reset for new batch
+            failedScans: 0,
+            startTimestamp: Date.now(), // New timestamp for new batch
+          };
+          
+          console.log('📊 Adding multiple images to queue:', {
+            totalScans: finalTotalScans,
+            newItems: newItems.length,
+            queueLength: updatedQueue.length,
+            prevQueueLength: prev.length,
+            'progressData.totalScans': progressData.totalScans,
+            'progressData object': JSON.stringify(progressData, null, 2)
+          });
+          
+          // Set progress immediately (synchronously) so notification shows correct count
+          console.log('📊 About to set scanProgress with totalScans:', progressData.totalScans, 'type:', typeof progressData.totalScans);
+          // Update ref to track latest totalScans
+          totalScansRef.current = progressData.totalScans;
+          setScanProgress(progressData);
+          console.log('📊 scanProgress set, totalScans:', progressData.totalScans, 'ref updated to:', totalScansRef.current);
+          
+          // Verify it was set correctly by checking in next tick
+          setTimeout(() => {
+            console.log('📊 Verification: scanProgress should now have totalScans:', progressData.totalScans);
+          }, 10);
+          
+          // Start processing the first new image if not already processing
+          const shouldStartProcessing = !isProcessing && newItems.length > 0;
+          if (shouldStartProcessing) {
+            const firstItem = newItems[0];
+            setIsProcessing(true);
+            setTimeout(() => {
+              setScanQueue(currentQueue => 
+                currentQueue.map(item => 
+                  item.id === firstItem.id ? { ...item, status: 'processing' as const } : item
+                )
+              );
+              processImage(firstItem.uri, firstItem.id);
+            }, 50);
+          }
+          
+          return updatedQueue;
+        });
+        
+        // Show caption modal for the first image
+        if (result.assets.length > 0 && scanItems.length > 0) {
+          setPendingImageUri(result.assets[0].uri);
+          currentScanIdRef.current = scanItems[0].scanId;
+          setTimeout(() => {
+            console.log('📝 Showing caption modal');
+            setShowCaptionModal(true);
+          }, 100);
+        }
       }
     } catch (error) {
       console.error(' Error picking image:', error);
@@ -1483,8 +1820,8 @@ export const ScansTab: React.FC = () => {
           <View style={[styles.cameraTipBanner, { marginTop: insets.top + 55 }]}>
             <Text style={styles.cameraTipText}>
               {orientation === 'landscape' 
-                ? 'Better lighting = better accuracy'
-                : 'Better lighting and smaller area = better accuracy'}
+                ? 'Better lighting = better accuracy • Tap × to close'
+                : 'Better lighting = better accuracy • Tap × to close • Take multiple photos'}
             </Text>
           </View>
         
@@ -1525,7 +1862,17 @@ export const ScansTab: React.FC = () => {
   // Sticky toolbar at bottom - always visible when there are pending books
   // Position it directly above the React Navigation tab bar with zero gap
   // React Navigation handles tab bar safe area, so we position at 0 and let it sit below
-  const stickyBottomPosition = 0; // Directly at bottom, no gap
+  // Calculate sticky toolbar position - above scanning notification if it's visible
+  // Notification is at: insets.bottom + tabBarHeight (~49-56px)
+  // Position toolbar as low as possible - use minimal height to eliminate gap
+  const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
+  // To eliminate gap: notification is at bottom: insets.bottom + tabBarHeight
+  // Toolbar should be positioned so its bottom touches notification's top
+  // Subtract significantly more to move toolbar DOWN and eliminate gap completely
+  const notificationHeight = scanProgress ? 75 : 0; // Actual measured height
+  const stickyBottomPosition = scanProgress 
+    ? insets.bottom + tabBarHeight + notificationHeight - 75 // Subtract 75px to move toolbar down and eliminate gap
+    : 0; // Directly at bottom when no notification
 
   return (
     <View style={styles.safeContainer}>
@@ -1582,19 +1929,39 @@ export const ScansTab: React.FC = () => {
             </View>
           </View>
 
+          <View>
+            {groupedPendingBooks.map((group, groupIndex) => {
+              const photo = photos.find(p => p.id === group.photoId);
+              
+              return (
+                <View key={`group_${group.photoId}`} style={styles.photoGroup}>
+                  {/* Separator line between photo groups - show after first group */}
+                  {groupIndex > 0 && (
+                    <View style={styles.photoSeparator}>
+                      <View style={styles.separatorLine} />
+                      <Text style={styles.separatorText}>
+                        {photo?.caption ? `From: ${photo.caption}` : `Scan ${groupIndex + 1}`}
+                      </Text>
+                      <View style={styles.separatorLine} />
+                    </View>
+                  )}
+                  
+                  {/* Books from this photo - in grid layout */}
           <View style={styles.booksGrid}>
-            {sortedPendingBooks.map((book) => (
+                    {group.books.map((book, bookIndex) => {
+                      const uniqueKey = book.id 
+                        ? `${book.id}_${groupIndex}_${bookIndex}` 
+                        : `book_${groupIndex}_${bookIndex}_${(book.title || 'unknown').substring(0, 20)}`;
+                      return (
               <TouchableOpacity 
-                key={book.id} 
+                          key={uniqueKey} 
                 style={[
                   styles.pendingBookCard,
-                  selectedBooks.has(book.id) && styles.selectedBookCard
+                            selectedBooks.has(book.id || '') && styles.selectedBookCard
                 ]}
-                onPress={() => toggleBookSelection(book.id)}
+                          onPress={() => toggleBookSelection(book.id || '')}
                 activeOpacity={0.7}
               >
-              {/* Header removed: no circular selection indicator */}
-
               {/* Cover area: show cover or placeholder with title text; author below */}
               <View style={styles.bookTopSection}>
                 {getBookCoverUri(book) ? (
@@ -1617,9 +1984,13 @@ export const ScansTab: React.FC = () => {
                   )}
                 </View>
               </View>
-              
             </TouchableOpacity>
-          ))}
+                      );
+                    })}
+                  </View>
+                </View>
+              );
+            })}
           </View>
         </View>
       )}
@@ -1628,9 +1999,9 @@ export const ScansTab: React.FC = () => {
       {photos.length > 0 && (
         <View style={styles.recentSection}>
           <Text style={styles.sectionTitle}>Recent Scans</Text>
-          {photos.slice(-3).reverse().map((photo) => (
+          {photos.slice(-3).reverse().map((photo, photoIndex) => (
       <TouchableOpacity 
-              key={photo.id} 
+              key={photo.id || `photo_${photoIndex}_${photo.timestamp}`} 
               style={styles.photoCard}
               onPress={() => openScanModal(photo)}
             >
@@ -2498,21 +2869,50 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 15,
   },
+  photoGroup: {
+    width: '100%',
+  },
   booksGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    justifyContent: 'space-between', // Evenly distribute space
+    width: '100%',
+  },
+  photoSeparator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 20,
+    marginHorizontal: 0,
+    width: '100%',
+    paddingHorizontal: 0,
+  },
+  separatorLine: {
+    flex: 1,
+    height: 1.5,
+    backgroundColor: '#9ca3af', // Slightly darker for better visibility
+  },
+  separatorText: {
+    marginHorizontal: 12,
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   pendingBookCard: {
     backgroundColor: 'transparent',
     borderRadius: 8,
     padding: 0,
     marginBottom: 12,
-    marginHorizontal: 4,
+    marginHorizontal: 0, // No horizontal margins, use space-between for even spacing
     flexDirection: 'column',
     borderWidth: 0.5,
     borderColor: '#e5e7eb', // Subtle gray border
-    width: (screenWidth - 94) / 4,
+    // Calculate width: screenWidth - section margins (15*2) - section padding (20*2) = screenWidth - 70
+    // For 3 columns with space-between: divide by 3, accounting for 2 gaps
+    // Using space-between means gaps are automatically even, so we just need to account for available width
+    // Subtract more to create more spacing between books
+    width: (screenWidth - 70) / 3 - 12, // Subtract 12px to create more spacing between 3 items
     alignItems: 'center',
     shadowColor: 'transparent',
     shadowOffset: { width: 0, height: 0 },

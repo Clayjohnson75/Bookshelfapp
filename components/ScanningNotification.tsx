@@ -11,45 +11,41 @@ export const ScanningNotification: React.FC = () => {
   const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
   const bottomPosition = insets.bottom + tabBarHeight;
 
+  // Debug logging - must be before any conditional returns
+  React.useEffect(() => {
+    if (scanProgress) {
+      console.log('📊 ScanningNotification: scanProgress detected', scanProgress);
+    } else {
+      console.log('📊 ScanningNotification: No scanProgress');
+    }
+  }, [scanProgress]);
 
+  // Early return after all hooks
   if (!scanProgress) {
     return null;
   }
 
-  // Calculate overall percentage
-  const calculatePercentage = (): number => {
-    const { totalScans, completedScans, failedScans, currentStep, totalSteps } = scanProgress;
-    
-    if (totalScans === 0) return 0;
-    
-    // Calculate progress from completed scans
-    const completedProgress = completedScans + failedScans;
-    
-    // Calculate progress from current scan (if processing)
-    let currentScanProgress = 0;
-    if (scanProgress.currentScanId && currentStep > 0 && totalSteps > 0) {
-      currentScanProgress = Math.min(currentStep / totalSteps, 1); // Ensure it doesn't exceed 1
-    }
-    
-    // Overall progress = (completed + current scan progress) / total
-    const overallProgress = (completedProgress + currentScanProgress) / totalScans;
-    
-    return Math.min(Math.max(overallProgress * 100, 0), 100);
-  };
+  // Extract totalScans directly from scanProgress, with explicit fallback
+  const totalScans = (scanProgress as any)?.totalScans ?? 0;
+  const completedScans = (scanProgress as any)?.completedScans ?? 0;
+  const failedScans = (scanProgress as any)?.failedScans ?? 0;
+  const currentScanId = (scanProgress as any)?.currentScanId;
+  const isCompleted = totalScans > 0 && (completedScans + failedScans) >= totalScans && !currentScanId;
+  
+  // Debug logging - show exactly what we're getting
+  console.log('📊 ScanningNotification render:', {
+    totalScans,
+    completedScans,
+    failedScans,
+    currentScanId,
+    'scanProgress?.totalScans': scanProgress?.totalScans,
+    'typeof totalScans': typeof totalScans,
+    'totalScans > 0': totalScans > 0,
+    'Will show text': totalScans > 0 ? `Scanning ${totalScans} ${totalScans === 1 ? 'image' : 'images'}` : 'Scanning...',
+    scanProgressKeys: Object.keys(scanProgress || {})
+  });
 
-  const percentage = calculatePercentage();
-  const { totalScans, completedScans, failedScans, currentScanId, startTimestamp } = scanProgress as any;
-  const isCompleted = (completedScans + failedScans) >= totalScans && !currentScanId;
-
-  // Estimate remaining time (ETA) from startTimestamp and percentage
-  const renderEta = () => {
-    if (!startTimestamp || percentage <= 0 || percentage >= 100) return null;
-    const elapsedMs = Date.now() - startTimestamp;
-    const remainingMs = elapsedMs * (100 / percentage - 1);
-    const secs = Math.max(1, Math.round(remainingMs / 1000));
-    const label = secs > 60 ? `${Math.ceil(secs / 60)} min` : `${secs} sec`;
-    return <Text style={styles.eta}>{`~ ${label} remaining`}</Text>;
-  };
+  // Removed ETA calculation - no longer needed
 
   if (isCompleted) {
     // Hide after completion
@@ -59,19 +55,35 @@ export const ScanningNotification: React.FC = () => {
   return (
     <View style={[styles.container, { bottom: bottomPosition }]}>
       <View style={styles.content}>
-        <View style={styles.progressBarContainer}>
-          <View style={[styles.progressBarFill, { width: `${percentage}%` }]} />
-        </View>
         <View style={styles.textContainer}>
-          <Text style={styles.title}>Scanning...</Text>
+          <Text style={styles.title}>
+            {(() => {
+              // Get totalScans directly from scanProgress to ensure we have latest value
+              const actualTotalScans = (scanProgress as any)?.totalScans ?? 0;
+              const displayText = actualTotalScans > 0 
+                ? `Scanning ${actualTotalScans} ${actualTotalScans === 1 ? 'image' : 'images'}`
+                : 'Scanning...';
+              console.log('📊 Notification title render:', {
+                totalScans,
+                actualTotalScans,
+                'actualTotalScans > 0': actualTotalScans > 0,
+                displayText,
+                'scanProgress?.totalScans': (scanProgress as any)?.totalScans,
+                'scanProgress object': scanProgress
+              });
+              return displayText;
+            })()}
+          </Text>
         </View>
-        {renderEta()}
+        {totalScans > 0 && (
+          <Text style={styles.eta}>Approx 1 minute per image</Text>
+        )}
         <Text style={styles.subtitle}>
-          {currentScanId && totalScans > 0
-            ? `Processing scan ${completedScans + failedScans + 1} of ${totalScans}`
-            : totalScans > 0
-            ? `${completedScans + failedScans} of ${totalScans} completed`
-            : 'Preparing to scan...'}
+          {totalScans > 0
+            ? currentScanId 
+              ? `Processing scan ${completedScans + failedScans + 1}/${totalScans}`
+              : `${completedScans + failedScans}/${totalScans} completed`
+            : ''}
         </Text>
       </View>
     </View>
@@ -97,18 +109,6 @@ const styles = StyleSheet.create({
   },
   content: {
     width: '100%',
-  },
-  progressBarContainer: {
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 10,
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#007AFF',
-    borderRadius: 3,
   },
   textContainer: {
     marginBottom: 4,
