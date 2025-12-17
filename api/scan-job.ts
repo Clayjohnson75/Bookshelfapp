@@ -58,20 +58,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Start processing asynchronously (don't wait for it)
       // Note: In Vercel, the function may terminate after response is sent,
       // but we'll try to ensure processing starts
-      const processingPromise = processScanJob(finalJobId, imageDataURL, userId).catch(err => {
+      const processingPromise = processScanJob(finalJobId, imageDataURL, userId).catch(async (err) => {
         console.error('[API] Background scan job failed:', err);
         // Update job status to failed in database
-        supabase
-          .from('scan_jobs')
-          .update({ 
-            status: 'failed',
-            error: err?.message || String(err),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', finalJobId)
-          .catch(updateErr => {
-            console.error('[API] Failed to update job status after error:', updateErr);
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const errorSupabase = createClient(supabaseUrl, supabaseServiceKey, {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false
+            }
           });
+          await errorSupabase
+            .from('scan_jobs')
+            .update({ 
+              status: 'failed',
+              error: err?.message || String(err),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', finalJobId);
+        } catch (updateErr) {
+          console.error('[API] Failed to update job status after error:', updateErr);
+        }
       });
       
       // Give the processing a moment to start before returning
