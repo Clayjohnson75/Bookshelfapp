@@ -55,58 +55,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: 'Failed to create scan job' });
       }
       
-      // Process the scan job synchronously to ensure it completes
-      // Vercel serverless functions terminate when response is sent,
-      // so we need to wait for processing to complete
-      console.log(`[API] Starting synchronous processing of scan job ${finalJobId}...`);
+      // Start processing asynchronously - this will continue even if client disconnects
+      // If the function terminates early, a cron job will pick up pending jobs
+      console.log(`[API] Starting background processing of scan job ${finalJobId}...`);
       
-      try {
-        await processScanJob(finalJobId, imageDataURL, userId);
-        
-        // Get the final job status
-        const { data: jobData, error: fetchError } = await supabase
-          .from('scan_jobs')
-          .select('status, books, error')
-          .eq('id', finalJobId)
-          .single();
-        
-        if (fetchError || !jobData) {
-          console.error('[API] Error fetching job status:', fetchError);
-          return res.status(500).json({ error: 'Failed to fetch job status' });
+      // Start processing but don't wait for it - return immediately
+      // This allows the function to work even if the app is closed
+      processScanJob(finalJobId, imageDataURL, userId).catch(async (err) => {
+        console.error('[API] Background scan job failed:', err);
+        // Update job status to failed in database
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const errorSupabase = createClient(supabaseUrl, supabaseServiceKey, {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false
+            }
+          });
+          await errorSupabase
+            .from('scan_jobs')
+            .update({ 
+              status: 'failed',
+              error: err?.message || String(err),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', finalJobId);
+        } catch (updateErr) {
+          console.error('[API] Failed to update job status after error:', updateErr);
         }
-        
-        // Return the completed job status
-        return res.status(200).json({ 
-          jobId: finalJobId,
-          status: jobData.status,
-          books: jobData.books || [],
-          error: jobData.error || null,
-          message: jobData.status === 'completed' 
-            ? 'Scan job completed successfully' 
-            : jobData.status === 'failed'
-            ? 'Scan job failed'
-            : 'Scan job processed'
-        });
-      } catch (processingError: any) {
-        console.error('[API] Error processing scan job:', processingError);
-        
-        // Update job status to failed
-        await supabase
-          .from('scan_jobs')
-          .update({ 
-            status: 'failed',
-            error: processingError?.message || String(processingError),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', finalJobId);
-        
-        return res.status(500).json({ 
-          jobId: finalJobId,
-          status: 'failed',
-          error: processingError?.message || String(processingError),
-          message: 'Scan job failed during processing'
-        });
-      }
+      });
+      
+      // Return immediately - processing continues in background
+      // Works whether app is open or closed
+      return res.status(202).json({ 
+        jobId: finalJobId,
+        status: 'pending',
+        message: 'Scan job created, processing in background. Results will be available when you reopen the app.'
+      });
       
     } catch (e: any) {
       console.error('[API] Error creating scan job:', e);
@@ -163,7 +148,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   
   // Handle processing pending jobs (can be called by cron or manually)
-  if (req.method === 'PUT' && req.query?.action === 'process-pending') {
+  // Cron job calls this endpoint every minute to process pending jobs
+  if ((req.method === 'PUT' || req.method === 'GET') && req.query?.action === 'process-pending') {
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

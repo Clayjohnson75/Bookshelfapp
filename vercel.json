@@ -1,0 +1,9 @@
+{
+  "crons": [
+    {
+      "path": "/api/scan-job?action=process-pending",
+      "schedule": "* * * * *"
+    }
+  ]
+}
+
