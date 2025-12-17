@@ -280,12 +280,14 @@ export const ScansTab: React.FC = () => {
   useEffect(() => {
     if (user) {
       loadUserData();
-      syncBackgroundScans();
     }
   }, [user]);
   
-  // Sync background scans when app opens
+  // Background scan syncing disabled - scans work synchronously
+  // This function is kept but not called to avoid breaking anything
   const syncBackgroundScans = async () => {
+    // Disabled - no background jobs
+    return;
     if (!user) {
       console.log('⏭️ Skipping background scan sync: no user');
       return;
@@ -994,14 +996,7 @@ export const ScansTab: React.FC = () => {
   };
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string, useBackground: boolean = false, scanId?: string, photoId?: string): Promise<{ books: Book[], fromVercel: boolean, jobId?: string }> => {
-    // If background mode, submit as job and return immediately
-    if (useBackground && scanId && photoId) {
-      const jobId = await submitBackgroundScanJob(primaryDataURL, scanId, photoId);
-      if (jobId) {
-        return { books: [], fromVercel: true, jobId };
-      }
-      // If job submission fails, fall through to regular scan
-    }
+    // Background mode disabled - always scan directly
     
     console.log('🚀 Starting AI scan via server API...');
     const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
@@ -1186,36 +1181,10 @@ export const ScansTab: React.FC = () => {
       // Generate photo ID for this scan
       const photoId = `photo_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       
-      // Use background scanning for multiple images (queue length > 1)
-      const useBackground = currentQueueLength > 1;
-      const scanResult = await scanImageWithAI(imageDataURL, fallbackDataURL, useBackground, scanId, photoId);
+      // Scan directly - no background jobs, just wait for results
+      const scanResult = await scanImageWithAI(imageDataURL, fallbackDataURL, false, scanId, photoId);
       const detectedBooks = scanResult.books;
       const cameFromVercel = scanResult.fromVercel;
-      const jobId = scanResult.jobId;
-      
-      // If background job was submitted, the API now processes it synchronously
-      // So we'll get the results back immediately
-      if (jobId && useBackground && cameFromVercel) {
-        console.log(`📤 Background scan job completed: ${jobId}`);
-        // The job was processed synchronously, so we have the results
-        // But we still need to process the books like a regular scan
-        // Continue with normal processing below
-      } else if (jobId && useBackground) {
-        // Job was submitted but processing failed or timed out
-        console.log(`⚠️ Background scan job submitted but may not have completed: ${jobId}`);
-        // Update queue status to processing
-        setScanQueue(prev => prev.map(item => 
-          item.id === scanId ? { ...item, status: 'processing' } : item
-        ));
-        // Update progress
-        updateProgress({ 
-          currentStep: 5, 
-          totalScans: totalScans,
-          completedScans: currentCompletedCount
-        });
-        // Don't process books here - they'll be synced when app reopens
-        return;
-      }
       
       console.log(`📚 AI scan completed: ${detectedBooks.length} books detected (${cameFromVercel ? 'from Vercel API, already validated' : 'from client-side, needs validation'})`);
       
