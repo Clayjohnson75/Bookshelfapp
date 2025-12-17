@@ -56,11 +56,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       
       // Start processing asynchronously (don't wait for it)
-      processScanJob(finalJobId, imageDataURL, userId).catch(err => {
+      // Note: In Vercel, the function may terminate after response is sent,
+      // but we'll try to ensure processing starts
+      const processingPromise = processScanJob(finalJobId, imageDataURL, userId).catch(err => {
         console.error('[API] Background scan job failed:', err);
+        // Update job status to failed in database
+        supabase
+          .from('scan_jobs')
+          .update({ 
+            status: 'failed',
+            error: err?.message || String(err),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', finalJobId)
+          .catch(updateErr => {
+            console.error('[API] Failed to update job status after error:', updateErr);
+          });
       });
       
-      // Return immediately with job ID
+      // Give the processing a moment to start before returning
+      // This helps ensure the async function starts executing
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Return immediately with job ID (don't wait for processing to complete)
       return res.status(202).json({ 
         jobId: finalJobId,
         status: 'pending',
@@ -121,6 +139,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
   
+  // Handle processing pending jobs (can be called by cron or manually)
+  if (req.method === 'PUT' && req.query?.action === 'process-pending') {
+    try {
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (!supabaseUrl || !supabaseServiceKey) {
+        return res.status(500).json({ error: 'Database not configured' });
+      }
+      
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      
+      // Get pending jobs
+      const { data: pendingJobs, error } = await supabase
+        .from('scan_jobs')
+        .select('*')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .limit(10); // Process up to 10 at a time
+      
+      if (error) {
+        console.error('[API] Error fetching pending jobs:', error);
+        return res.status(500).json({ error: 'Failed to fetch pending jobs' });
+      }
+      
+      if (!pendingJobs || pendingJobs.length === 0) {
+        return res.status(200).json({ message: 'No pending jobs to process', processed: 0 });
+      }
+      
+      console.log(`[API] Processing ${pendingJobs.length} pending scan jobs...`);
+      
+      // Process each pending job
+      const results = await Promise.allSettled(
+        pendingJobs.map(job => 
+          processScanJob(job.id, job.image_data, job.user_id || undefined)
+        )
+      );
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      
+      return res.status(200).json({ 
+        message: `Processed ${pendingJobs.length} jobs`,
+        processed: successful,
+        failed: failed
+      });
+      
+    } catch (e: any) {
+      console.error('[API] Error processing pending jobs:', e);
+      return res.status(500).json({ error: 'process_failed', detail: e?.message || String(e) });
+    }
+  }
+  
   return res.status(405).json({ error: 'Method not allowed' });
 }
 
@@ -152,10 +229,16 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       .eq('id', jobId);
     
     // Call the scan API endpoint to process the image
-    // Determine the base URL - use Vercel URL if available, otherwise use environment variable
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : (process.env.EXPO_PUBLIC_API_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000');
+    // Determine the base URL - Vercel provides VERCEL_URL but it might not have https://
+    // Also check VERCEL_BRANCH_URL for preview deployments
+    let baseUrl = process.env.VERCEL_URL 
+      ? (process.env.VERCEL_URL.startsWith('http') ? process.env.VERCEL_URL : `https://${process.env.VERCEL_URL}`)
+      : (process.env.EXPO_PUBLIC_API_BASE_URL || process.env.API_BASE_URL || 'https://bookshelfapp-five.vercel.app');
+    
+    // Fallback to hardcoded URL if we can't determine it
+    if (!baseUrl || baseUrl === 'http://localhost:3000') {
+      baseUrl = 'https://bookshelfapp-five.vercel.app';
+    }
     
     console.log(`[API] Processing scan job ${jobId} via scan API at ${baseUrl}/api/scan`);
     
