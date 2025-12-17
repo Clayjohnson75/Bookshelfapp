@@ -1,0 +1,202 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+// This endpoint creates a scan job that will be processed asynchronously
+// The scan will continue even if the client disconnects
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Add CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  if (req.method === 'POST') {
+    try {
+      const { imageDataURL, userId, jobId } = req.body || {};
+      if (!imageDataURL || typeof imageDataURL !== 'string') {
+        return res.status(400).json({ error: 'imageDataURL required' });
+      }
+      
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (!supabaseUrl || !supabaseServiceKey) {
+        return res.status(500).json({ error: 'Database not configured' });
+      }
+      
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      
+      // Generate job ID if not provided
+      const finalJobId = jobId || `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      
+      // Create job record in database
+      const { error: insertError } = await supabase
+        .from('scan_jobs')
+        .insert({
+          id: finalJobId,
+          user_id: userId || null,
+          image_data: imageDataURL,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      
+      if (insertError) {
+        console.error('[API] Error creating scan job:', insertError);
+        return res.status(500).json({ error: 'Failed to create scan job' });
+      }
+      
+      // Start processing asynchronously (don't wait for it)
+      processScanJob(finalJobId, imageDataURL, userId).catch(err => {
+        console.error('[API] Background scan job failed:', err);
+      });
+      
+      // Return immediately with job ID
+      return res.status(202).json({ 
+        jobId: finalJobId,
+        status: 'pending',
+        message: 'Scan job created, processing in background'
+      });
+      
+    } catch (e: any) {
+      console.error('[API] Error creating scan job:', e);
+      return res.status(500).json({ error: 'scan_job_failed', detail: e?.message || String(e) });
+    }
+  }
+  
+  if (req.method === 'GET') {
+    // Check status of a scan job
+    try {
+      const { jobId } = req.query;
+      if (!jobId || typeof jobId !== 'string') {
+        return res.status(400).json({ error: 'jobId required' });
+      }
+      
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (!supabaseUrl || !supabaseServiceKey) {
+        return res.status(500).json({ error: 'Database not configured' });
+      }
+      
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      
+      const { data, error } = await supabase
+        .from('scan_jobs')
+        .select('*')
+        .eq('id', jobId)
+        .single();
+      
+      if (error || !data) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      
+      return res.status(200).json({
+        jobId: data.id,
+        status: data.status,
+        books: data.books || [],
+        error: data.error || null,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at
+      });
+      
+    } catch (e: any) {
+      console.error('[API] Error checking scan job status:', e);
+      return res.status(500).json({ error: 'status_check_failed', detail: e?.message || String(e) });
+    }
+  }
+  
+  return res.status(405).json({ error: 'Method not allowed' });
+}
+
+// Background processing function
+async function processScanJob(jobId: string, imageDataURL: string, userId: string | undefined) {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error('Database not configured');
+  }
+  
+  const { createClient } = await import('@supabase/supabase-js');
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+  
+  try {
+    // Update status to processing
+    await supabase
+      .from('scan_jobs')
+      .update({ 
+        status: 'processing',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    
+    // Call the scan API endpoint to process the image
+    // Determine the base URL - use Vercel URL if available, otherwise use environment variable
+    const baseUrl = process.env.VERCEL_URL 
+      ? `https://${process.env.VERCEL_URL}` 
+      : (process.env.EXPO_PUBLIC_API_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000');
+    
+    console.log(`[API] Processing scan job ${jobId} via scan API at ${baseUrl}/api/scan`);
+    
+    const scanResponse = await fetch(`${baseUrl}/api/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageDataURL, userId })
+    });
+    
+    if (!scanResponse.ok) {
+      const errorText = await scanResponse.text().catch(() => '');
+      throw new Error(`Scan API returned ${scanResponse.status}: ${errorText.substring(0, 200)}`);
+    }
+    
+    const scanData = await scanResponse.json();
+    const books = Array.isArray(scanData.books) ? scanData.books : [];
+    
+    // Update job with results
+    await supabase
+      .from('scan_jobs')
+      .update({ 
+        status: 'completed',
+        books: books,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    
+    console.log(`[API] Scan job ${jobId} completed with ${books.length} books`);
+    
+  } catch (error: any) {
+    console.error(`[API] Scan job ${jobId} failed:`, error);
+    
+    // Update job with error
+    await supabase
+      .from('scan_jobs')
+      .update({ 
+        status: 'failed',
+        error: error?.message || String(error),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+  }
+}
+
