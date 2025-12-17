@@ -15,19 +15,21 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Book, Photo, UserProfile, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
+import { LibraryView } from '../screens/LibraryView';
 
 const { width: screenWidth } = Dimensions.get('window');
 
 export const MyLibraryTab: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const navigation = useNavigation();
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -48,6 +50,7 @@ export const MyLibraryTab: React.FC = () => {
   const [bookSearchLoading, setBookSearchLoading] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   const [showFolderView, setShowFolderView] = useState(false);
+  const [showLibraryView, setShowLibraryView] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const [booksSectionY, setBooksSectionY] = useState(0);
@@ -712,21 +715,8 @@ export const MyLibraryTab: React.FC = () => {
             <TouchableOpacity 
               style={styles.statCard}
               onPress={() => {
-                // Scroll to "My Library" section
-                const scrollToBooksSection = () => {
-                  if (booksSectionY > 0) {
-                    scrollViewRef.current?.scrollTo({ y: booksSectionY - 20, animated: true });
-                  } else {
-                    // Measure and scroll if Y not available
-                    booksSectionRef.current?.measure((x, y, width, height, pageX, pageY) => {
-                      scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 20), animated: true });
-                    });
-                  }
-                };
-                
-                // Try immediately, then with a delay as fallback
-                scrollToBooksSection();
-                setTimeout(scrollToBooksSection, 100);
+                // Navigate to dedicated library view
+                setShowLibraryView(true);
               }}
               activeOpacity={0.8}
             >
@@ -788,7 +778,7 @@ export const MyLibraryTab: React.FC = () => {
                   }}
                 >
                   <View style={styles.folderIcon}>
-                    <Ionicons name="folder" size={32} color="#007AFF" />
+                    <Ionicons name="folder" size={32} color="#0056CC" />
                   </View>
                   <Text style={styles.folderName} numberOfLines={1}>
                     {folder.name}
@@ -1124,7 +1114,7 @@ export const MyLibraryTab: React.FC = () => {
                   }}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="folder-outline" size={20} color="#007AFF" style={{ marginRight: 8 }} />
+                  <Ionicons name="folder-outline" size={20} color="#0056CC" style={{ marginRight: 8 }} />
                   <Text style={styles.addToFolderButtonTextLarge}>Add to Folder</Text>
                 </TouchableOpacity>
               </View>
@@ -1535,7 +1525,7 @@ export const MyLibraryTab: React.FC = () => {
                     }}
                     activeOpacity={0.7}
                   >
-                    <Ionicons name="folder" size={24} color="#007AFF" style={{ marginRight: 12 }} />
+                    <Ionicons name="folder" size={24} color="#0056CC" style={{ marginRight: 12 }} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.folderItemName}>{folder.name}</Text>
                       <Text style={styles.folderItemCount}>
@@ -1549,6 +1539,16 @@ export const MyLibraryTab: React.FC = () => {
             )}
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      {/* Library View Modal */}
+      <Modal
+        visible={showLibraryView}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setShowLibraryView(false)}
+      >
+        <LibraryView onClose={() => setShowLibraryView(false)} />
       </Modal>
       
     </SafeAreaView>
@@ -2099,14 +2099,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#f7fafc',
     borderWidth: 1,
-    borderColor: '#007AFF',
+    borderColor: '#0056CC',
     borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 20,
   },
   addToFolderButtonTextLarge: {
     fontSize: 15,
-    color: '#007AFF',
+    color: '#0056CC',
     fontWeight: '700',
     letterSpacing: 0.3,
   },
@@ -2201,7 +2201,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   addBooksSearchButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 10,
@@ -2461,7 +2461,7 @@ const styles = StyleSheet.create({
     color: '#1a202c',
   },
   createFolderButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
     paddingVertical: 14,
     paddingHorizontal: 20,
     borderRadius: 12,

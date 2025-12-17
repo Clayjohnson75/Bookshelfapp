@@ -427,7 +427,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
             )}
           </View>
 
-          {/* Scan Photo */}
+          {/* Scan Photo - Below Description, Above Remove Button */}
           {photo && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>From Scan</Text>

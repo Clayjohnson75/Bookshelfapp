@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,16 @@ import {
   TouchableWithoutFeedback,
   Image,
   Dimensions,
+  Alert,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Book } from '../types/BookTypes';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -49,11 +53,38 @@ export const ExploreTab: React.FC = () => {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [searchType, setSearchType] = useState<'all' | 'users' | 'books' | 'authors'>('all');
+  const searchInputRef = useRef<TextInput>(null);
+  const [bookPage, setBookPage] = useState(0);
+  const [hasMoreBooks, setHasMoreBooks] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  const loadBooks = async (query: string, page: number, isAuthorSearch: boolean = false) => {
+    try {
+      const startIndex = page * 20;
+      const queryParam = isAuthorSearch 
+        ? `inauthor:${encodeURIComponent(query)}`
+        : encodeURIComponent(query);
+      const response = await fetch(
+        `https://www.googleapis.com/books/v1/volumes?q=${queryParam}&maxResults=20&startIndex=${startIndex}&orderBy=relevance`
+      );
+      const data = await response.json();
+      return {
+        items: data.items || [],
+        totalItems: data.totalItems || 0,
+        hasMore: (data.items?.length || 0) === 20 && (startIndex + 20) < (data.totalItems || 0)
+      };
+    } catch (error) {
+      console.error('Book search failed:', error);
+      return { items: [], totalItems: 0, hasMore: false };
+    }
+  };
 
   useEffect(() => {
     const delayedSearch = setTimeout(async () => {
       if (searchQuery.length >= 2) {
         setLoading(true);
+        setBookPage(0);
+        setHasMoreBooks(true);
         const results: SearchResult[] = [];
         
         // Search users if searchType is 'all' or 'users'
@@ -64,38 +95,24 @@ export const ExploreTab: React.FC = () => {
         
         // Search books if searchType is 'all' or 'books'
         if (searchType === 'all' || searchType === 'books') {
-          try {
-            const response = await fetch(
-              `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(searchQuery)}&maxResults=10`
-            );
-            const data = await response.json();
-            if (data.items) {
-              results.push(...data.items.map((book: BookResult) => ({ type: 'book' as const, data: book })));
-            }
-          } catch (error) {
-            console.error('Book search failed:', error);
-          }
+          const bookData = await loadBooks(searchQuery, 0, false);
+          results.push(...bookData.items.map((book: BookResult) => ({ type: 'book' as const, data: book })));
+          setHasMoreBooks(bookData.hasMore);
         }
         
-        // Search authors if searchType is 'all' or 'authors'
-        if (searchType === 'all' || searchType === 'authors') {
-          try {
-            const response = await fetch(
-              `https://www.googleapis.com/books/v1/volumes?q=inauthor:${encodeURIComponent(searchQuery)}&maxResults=10`
-            );
-            const data = await response.json();
-            if (data.items) {
-              results.push(...data.items.map((book: BookResult) => ({ type: 'book' as const, data: book })));
-            }
-          } catch (error) {
-            console.error('Author search failed:', error);
-          }
+        // Search authors if searchType is 'authors' (not 'all' to avoid duplicate books)
+        if (searchType === 'authors') {
+          const bookData = await loadBooks(searchQuery, 0, true);
+          results.push(...bookData.items.map((book: BookResult) => ({ type: 'book' as const, data: book })));
+          setHasMoreBooks(bookData.hasMore);
         }
         
         setSearchResults(results);
         setLoading(false);
       } else {
         setSearchResults([]);
+        setBookPage(0);
+        setHasMoreBooks(true);
       }
     }, 300);
 
@@ -133,6 +150,79 @@ export const ExploreTab: React.FC = () => {
     </TouchableOpacity>
   );
 
+  const handleBookPress = async (book: BookResult) => {
+    if (!currentUser) {
+      Alert.alert('Error', 'You must be logged in to add books to your library.');
+      return;
+    }
+
+    const vi = book.volumeInfo;
+    const title = vi.title || 'Unknown Title';
+    const author = (vi.authors && vi.authors[0]) || 'Unknown Author';
+    const coverUrl = vi.imageLinks?.thumbnail?.replace('http:', 'https:');
+    
+    // Check if book already exists in library
+    try {
+      const userApprovedKey = `approved_books_${currentUser.uid}`;
+      const storedApproved = await AsyncStorage.getItem(userApprovedKey);
+      const approvedBooks: Book[] = storedApproved ? JSON.parse(storedApproved) : [];
+      
+      // Normalize for comparison
+      const normalize = (s?: string) => {
+        if (!s) return '';
+        return s.trim().toLowerCase().replace(/[.,;:!?]/g, '').replace(/\s+/g, ' ');
+      };
+      const normalizeTitle = (t?: string) => normalize(t).replace(/^(the|a|an)\s+/, '').trim();
+      const normalizeAuthor = (a?: string) => normalize(a).replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+      const makeKey = (b: Book) => `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
+      
+      const newBookKey = `${normalizeTitle(title)}|${normalizeAuthor(author)}`;
+      const alreadyExists = approvedBooks.some(b => makeKey(b) === newBookKey);
+      
+      if (alreadyExists) {
+        Alert.alert('Duplicate Book', `"${title}" is already in your library.`);
+        return;
+      }
+      
+      Alert.alert(
+        title,
+        `Author: ${author}\n\nWould you like to add this book to your library?`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+          {
+            text: 'Add to Library',
+            onPress: async () => {
+              try {
+                const newBook: Book = {
+                  id: `explore_${book.id}_${Date.now()}`,
+                  title,
+                  author,
+                  status: 'approved',
+                  scannedAt: Date.now(),
+                  coverUrl: coverUrl,
+                  googleBooksId: book.id,
+                } as Book;
+
+                const updatedApproved = [...approvedBooks, newBook];
+                await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedApproved));
+                Alert.alert('Success', `"${title}" has been added to your library!`);
+              } catch (error) {
+                console.error('Error adding book to library:', error);
+                Alert.alert('Error', 'Failed to add book to library. Please try again.');
+              }
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      console.error('Error checking library:', error);
+      Alert.alert('Error', 'Failed to check library. Please try again.');
+    }
+  };
+
   const renderBookItem = ({ item }: { item: BookResult }) => {
     const vi = item.volumeInfo;
     const title = vi.title || 'Unknown Title';
@@ -140,7 +230,11 @@ export const ExploreTab: React.FC = () => {
     const coverUrl = vi.imageLinks?.thumbnail?.replace('http:', 'https:');
     
     return (
-      <TouchableOpacity style={styles.bookGridCard} activeOpacity={0.7}>
+      <TouchableOpacity 
+        style={styles.bookGridCard} 
+        activeOpacity={0.7}
+        onPress={() => handleBookPress(item)}
+      >
         {coverUrl ? (
           <Image source={{ uri: coverUrl }} style={styles.bookGridCover} />
         ) : (
@@ -158,80 +252,6 @@ export const ExploreTab: React.FC = () => {
     );
   };
 
-  const renderHeader = () => (
-    <>
-      <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
-      <View style={styles.header}>
-        <Text style={styles.title}>Explore</Text>
-        <Text style={styles.subtitle}>Search for users, books, or authors</Text>
-      </View>
-
-      <View style={styles.searchTypeContainer}>
-        <TouchableOpacity
-          style={[styles.searchTypeButton, searchType === 'all' && styles.searchTypeButtonActive]}
-          onPress={() => {
-            setSearchType('all');
-            setSearchResults([]);
-          }}
-        >
-          <Text style={[styles.searchTypeText, searchType === 'all' && styles.searchTypeTextActive]}>All</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.searchTypeButton, searchType === 'users' && styles.searchTypeButtonActive]}
-          onPress={() => {
-            setSearchType('users');
-            setSearchResults([]);
-          }}
-        >
-          <Text style={[styles.searchTypeText, searchType === 'users' && styles.searchTypeTextActive]}>Users</Text>
-        </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.searchTypeButton, searchType === 'books' && styles.searchTypeButtonActive]}
-            onPress={() => {
-              setSearchType('books');
-              setSearchResults([]);
-            }}
-          >
-            <Text style={[styles.searchTypeText, searchType === 'books' && styles.searchTypeTextActive]}>Books</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.searchTypeButton, searchType === 'authors' && styles.searchTypeButtonActive]}
-            onPress={() => {
-              setSearchType('authors');
-              setSearchResults([]);
-            }}
-          >
-            <Text style={[styles.searchTypeText, searchType === 'authors' && styles.searchTypeTextActive]}>Authors</Text>
-          </TouchableOpacity>
-        </View>
-
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search users, books, or authors..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-            onSubmitEditing={Keyboard.dismiss}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity
-              style={styles.clearButton}
-              onPress={() => {
-                setSearchQuery('');
-                Keyboard.dismiss();
-              }}
-            >
-              <Ionicons name="close-circle" size={24} color="#718096" />
-            </TouchableOpacity>
-          )}
-        </View>
-      </TouchableWithoutFeedback>
-    </>
-  );
 
   const renderContent = () => {
     if (loading) {
@@ -265,7 +285,7 @@ export const ExploreTab: React.FC = () => {
       <View style={{ flex: 1 }}>
         {users.length > 0 && (
           <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Users ({users.length})</Text>
+            <Text style={styles.sectionTitle}>Users</Text>
             {users.map((user) => (
               <View key={user.uid}>
                 {renderUserItem({ item: user })}
@@ -276,7 +296,7 @@ export const ExploreTab: React.FC = () => {
         
         {books.length > 0 && (
           <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Books ({books.length})</Text>
+            <Text style={styles.sectionTitle}>Books</Text>
             <View style={styles.bookGridContainer}>
               {Array.from({ length: Math.ceil(books.length / 3) }).map((_, rowIndex) => {
                 const startIndex = rowIndex * 3;
@@ -296,6 +316,34 @@ export const ExploreTab: React.FC = () => {
                 );
               })}
             </View>
+            {hasMoreBooks && (searchType === 'books' || searchType === 'authors' || searchType === 'all') && (
+              <TouchableOpacity
+                style={styles.loadMoreButton}
+                onPress={async () => {
+                  if (isLoadingMore) return;
+                  setIsLoadingMore(true);
+                  const nextPage = bookPage + 1;
+                  const isAuthorSearch = searchType === 'authors';
+                  const bookData = await loadBooks(searchQuery, nextPage, isAuthorSearch);
+                  if (bookData.items.length > 0) {
+                    const newBooks = bookData.items.map((book: BookResult) => ({ type: 'book' as const, data: book }));
+                    setSearchResults(prev => [...prev, ...newBooks]);
+                    setBookPage(nextPage);
+                    setHasMoreBooks(bookData.hasMore);
+                  } else {
+                    setHasMoreBooks(false);
+                  }
+                  setIsLoadingMore(false);
+                }}
+                disabled={isLoadingMore}
+              >
+                {isLoadingMore ? (
+                  <ActivityIndicator size="small" color="#007AFF" />
+                ) : (
+                  <Text style={styles.loadMoreText}>Load More Books</Text>
+                )}
+              </TouchableOpacity>
+            )}
           </View>
         )}
       </View>
@@ -305,16 +353,87 @@ export const ExploreTab: React.FC = () => {
   return (
     <View style={styles.safeContainer}>
       <SafeAreaView style={{ flex: 1 }} edges={['left','right']}>
-        <FlatList
-          data={[]}
-          renderItem={() => null}
-          ListHeaderComponent={renderHeader}
-          ListFooterComponent={renderContent}
-          keyboardShouldPersistTaps="handled"
-          onScrollBeginDrag={Keyboard.dismiss}
-          style={styles.container}
-          contentContainerStyle={{ flexGrow: 1 }}
-        />
+        <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
+        <View style={styles.header}>
+          <Text style={styles.title}>Explore</Text>
+          <Text style={styles.subtitle}>Search for users, books, or authors</Text>
+        </View>
+
+        <View style={styles.searchTypeContainer}>
+          <TouchableOpacity
+            style={[styles.searchTypeButton, searchType === 'all' && styles.searchTypeButtonActive]}
+            onPress={() => {
+              setSearchType('all');
+              setSearchResults([]);
+            }}
+          >
+            <Text style={[styles.searchTypeText, searchType === 'all' && styles.searchTypeTextActive]}>All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.searchTypeButton, searchType === 'users' && styles.searchTypeButtonActive]}
+            onPress={() => {
+              setSearchType('users');
+              setSearchResults([]);
+            }}
+          >
+            <Text style={[styles.searchTypeText, searchType === 'users' && styles.searchTypeTextActive]}>Users</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.searchTypeButton, searchType === 'books' && styles.searchTypeButtonActive]}
+            onPress={() => {
+              setSearchType('books');
+              setSearchResults([]);
+            }}
+          >
+            <Text style={[styles.searchTypeText, searchType === 'books' && styles.searchTypeTextActive]}>Books</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.searchTypeButton, searchType === 'authors' && styles.searchTypeButtonActive]}
+            onPress={() => {
+              setSearchType('authors');
+              setSearchResults([]);
+            }}
+          >
+            <Text style={[styles.searchTypeText, searchType === 'authors' && styles.searchTypeTextActive]}>Authors</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.searchContainer}>
+          <TextInput
+            ref={searchInputRef}
+            style={styles.searchInput}
+            placeholder="Search users, books, or authors..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            onSubmitEditing={() => Keyboard.dismiss()}
+            blurOnSubmit={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity
+              style={styles.clearButton}
+              onPress={() => {
+                setSearchQuery('');
+                searchInputRef.current?.focus();
+              }}
+            >
+              <Ionicons name="close-circle" size={24} color="#718096" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            style={styles.container}
+            contentContainerStyle={{ flexGrow: 1 }}
+          >
+            {renderContent()}
+          </ScrollView>
+        </TouchableWithoutFeedback>
       </SafeAreaView>
       <UserProfileModal
         visible={showProfileModal}
@@ -546,5 +665,21 @@ const styles = StyleSheet.create({
     color: '#718096',
     textAlign: 'center',
     lineHeight: 14,
+  },
+  loadMoreButton: {
+    marginTop: 20,
+    marginBottom: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: '#007AFF',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  loadMoreText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

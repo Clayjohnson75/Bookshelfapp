@@ -2563,7 +2563,7 @@ export const ScansTab: React.FC = () => {
                     <Ionicons 
                       name={selectedFolderId === folder.id ? "folder" : "folder-outline"} 
                       size={24} 
-                      color={selectedFolderId === folder.id ? "#007AFF" : "#4a5568"} 
+                      color={selectedFolderId === folder.id ? "#0056CC" : "#4a5568"} 
                       style={{ marginRight: 12 }}
                     />
                     <View style={{ flex: 1 }}>
@@ -2578,7 +2578,7 @@ export const ScansTab: React.FC = () => {
                       </Text>
                     </View>
                     {selectedFolderId === folder.id && (
-                      <Ionicons name="checkmark-circle" size={24} color="#007AFF" />
+                      <Ionicons name="checkmark-circle" size={24} color="#0056CC" />
                     )}
                   </TouchableOpacity>
                 ))}
@@ -3081,7 +3081,7 @@ const styles = StyleSheet.create({
   },
   tapToView: {
     fontSize: 11,
-    color: '#007AFF',
+    color: '#0056CC',
     marginTop: 4,
     fontStyle: 'italic',
     fontWeight: '600',
@@ -3193,7 +3193,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff3cd',
   },
   editButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
@@ -3330,7 +3330,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   modalCloseButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 10,
@@ -3573,7 +3573,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#007AFF',
+    borderColor: '#0056CC',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
@@ -3762,7 +3762,7 @@ const styles = StyleSheet.create({
   },
   scanningInBackgroundHint: {
     fontSize: 14,
-    color: '#007AFF',
+    color: '#0056CC',
     marginBottom: 16,
     fontWeight: '600',
     textAlign: 'center',
@@ -3899,7 +3899,7 @@ const styles = StyleSheet.create({
     color: '#1a202c',
   },
   createFolderButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
     paddingVertical: 14,
     paddingHorizontal: 20,
     borderRadius: 12,
@@ -3946,7 +3946,7 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   folderItemSelected: {
-    borderColor: '#007AFF',
+    borderColor: '#0056CC',
     backgroundColor: '#f0f8ff',
   },
   folderItemName: {
@@ -3956,7 +3956,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   folderItemNameSelected: {
-    color: '#007AFF',
+    color: '#0056CC',
   },
   folderItemCount: {
     fontSize: 13,
@@ -3988,7 +3988,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   folderConfirmButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#0056CC',
   },
   folderConfirmButtonDisabled: {
     backgroundColor: '#cbd5e0',
