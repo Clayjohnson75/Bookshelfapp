@@ -59,9 +59,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // If the function terminates early, a cron job will pick up pending jobs
       console.log(`[API] Starting background processing of scan job ${finalJobId}...`);
       
+      // Get the host from the request to use for calling the scan API
+      const requestHost = req.headers.host || req.headers['x-forwarded-host'] || undefined;
+      
       // Start processing but don't wait for it - return immediately
       // This allows the function to work even if the app is closed
-      processScanJob(finalJobId, imageDataURL, userId).catch(async (err) => {
+      processScanJob(finalJobId, imageDataURL, userId, requestHost).catch(async (err) => {
         console.error('[API] Background scan job failed:', err);
         // Update job status to failed in database
         try {
@@ -186,9 +189,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[API] Processing ${pendingJobs.length} pending scan jobs...`);
       
       // Process each pending job
+      // Use production URL for cron jobs (no request host available)
       const results = await Promise.allSettled(
         pendingJobs.map(job => 
-          processScanJob(job.id, job.image_data, job.user_id || undefined)
+          processScanJob(job.id, job.image_data, job.user_id || undefined, undefined)
         )
       );
       
@@ -211,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 // Background processing function
-async function processScanJob(jobId: string, imageDataURL: string, userId: string | undefined) {
+async function processScanJob(jobId: string, imageDataURL: string, userId: string | undefined, requestHost?: string) {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   
@@ -237,19 +241,22 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       })
       .eq('id', jobId);
     
-    // Call the scan API endpoint to process the image
-    // Use environment variable set in Vercel project settings
-    // Never use VERCEL_URL as it's often a preview deployment URL that requires auth
-    let baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL;
+    // Determine the base URL for calling the scan API
+    // Use the request host if available (from the original request)
+    // Otherwise fall back to production URL or environment variable
+    let baseUrl: string;
     
-    // If no environment variable is set, throw error (should be set in Vercel project settings)
-    if (!baseUrl) {
-      throw new Error('API_BASE_URL environment variable is not set. Please configure it in Vercel project settings (Settings → Environment Variables).');
-    }
-    
-    // Ensure it's a full URL with https
-    if (!baseUrl.startsWith('http')) {
-      baseUrl = `https://${baseUrl}`;
+    if (requestHost) {
+      // Use the host from the original request
+      baseUrl = `https://${requestHost}`;
+    } else {
+      // Fallback: use production URL (never use VERCEL_URL as it might be preview)
+      baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app';
+      
+      // Ensure it's a full URL with https
+      if (!baseUrl.startsWith('http')) {
+        baseUrl = `https://${baseUrl}`;
+      }
     }
     
     console.log(`[API] Processing scan job ${jobId} via scan API at ${baseUrl}/api/scan`);
