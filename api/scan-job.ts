@@ -238,13 +238,13 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       .eq('id', jobId);
     
     // Call the scan API endpoint to process the image
-    // Always use the production URL to avoid authentication issues with preview deployments
-    // VERCEL_URL is often a preview deployment URL which may require auth
-    let baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || process.env.API_BASE_URL;
+    // Use environment variable set in Vercel project settings
+    // Never use VERCEL_URL as it's often a preview deployment URL that requires auth
+    let baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL;
     
-    // Fallback to production URL - never use VERCEL_URL as it might be a preview deployment
-    if (!baseUrl || baseUrl === 'http://localhost:3000' || baseUrl.includes('vercel.app') && !baseUrl.includes('bookshelfapp-five')) {
-      baseUrl = 'https://bookshelfapp-five.vercel.app';
+    // If no environment variable is set, throw error (should be set in Vercel project settings)
+    if (!baseUrl) {
+      throw new Error('API_BASE_URL environment variable is not set. Please configure it in Vercel project settings (Settings → Environment Variables).');
     }
     
     // Ensure it's a full URL with https
