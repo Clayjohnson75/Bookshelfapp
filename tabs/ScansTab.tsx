@@ -93,6 +93,9 @@ export const ScansTab: React.FC = () => {
   const [rejectedBooks, setRejectedBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   
+  // Background scan jobs
+  const [backgroundScanJobs, setBackgroundScanJobs] = useState<Map<string, { jobId: string, scanId: string, photoId: string }>>(new Map());
+  
   // Modal states
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [showScanModal, setShowScanModal] = useState(false);
@@ -277,8 +280,166 @@ export const ScansTab: React.FC = () => {
   useEffect(() => {
     if (user) {
       loadUserData();
+      syncBackgroundScans();
     }
   }, [user]);
+  
+  // Sync background scans when app opens
+  const syncBackgroundScans = async () => {
+    if (!user) {
+      console.log('⏭️ Skipping background scan sync: no user');
+      return;
+    }
+    
+    try {
+      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+      if (!baseUrl) {
+        console.warn('⚠️ Cannot sync background scans: EXPO_PUBLIC_API_BASE_URL not configured');
+        return;
+      }
+      
+      // Get last sync time from storage
+      const lastSyncKey = `last_scan_sync_${user.uid}`;
+      const lastSyncTime = await AsyncStorage.getItem(lastSyncKey);
+      const since = lastSyncTime || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(); // Default to 7 days ago
+      
+      const syncUrl = `${baseUrl}/api/sync-scans?userId=${user.uid}&since=${encodeURIComponent(since)}`;
+      console.log(`🔄 Syncing background scans from ${baseUrl}...`);
+      
+      // Fetch completed scan jobs
+      const response = await fetch(syncUrl);
+      if (!response.ok) {
+        let errorMessage = `Failed to sync background scans: ${response.status} ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          errorMessage += ` - ${errorData.error || errorData.detail || JSON.stringify(errorData)}`;
+        } catch (e) {
+          try {
+            const errorText = await response.text();
+            if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
+          } catch (e2) {
+            // Ignore parsing errors
+          }
+        }
+        console.error(errorMessage);
+        return;
+      }
+      
+      const data = await response.json();
+      const completedJobs = data.jobs || [];
+      
+      if (completedJobs.length === 0) {
+        // Update last sync time
+        await AsyncStorage.setItem(lastSyncKey, new Date().toISOString());
+        return;
+      }
+      
+      console.log(`📥 Syncing ${completedJobs.length} completed background scans...`);
+      
+      // Collect all pending books from all scans to fetch covers for them
+      const allSyncedPendingBooks: Book[] = [];
+      
+      // Process each completed job
+      for (const job of completedJobs) {
+        if (job.status === 'completed' && job.books && job.books.length > 0) {
+          // Get the photo ID associated with this job
+          const jobKey = `scan_job_${job.jobId}`;
+          const jobData = await AsyncStorage.getItem(jobKey);
+          
+          if (jobData) {
+            const { scanId, photoId } = JSON.parse(jobData);
+            
+            // Create photo if it doesn't exist
+            let photo = photos.find(p => p.id === photoId);
+            if (!photo) {
+              photo = {
+                id: photoId,
+                uri: '', // We don't store the image URI in background jobs
+                timestamp: new Date(job.createdAt).getTime(),
+                books: []
+              };
+            }
+            
+            // Convert job books to Book format
+            const bookTimestamp = Date.now();
+            const scanRandomSuffix = Math.random().toString(36).substring(2, 9);
+            const newBooks: Book[] = job.books.map((book: any, index: number) => ({
+              id: `book_${bookTimestamp}_${index}_${scanRandomSuffix}_${Math.random().toString(36).substring(2, 7)}`,
+              title: book.title,
+              author: book.author || 'Unknown Author',
+              isbn: book.isbn || '',
+              confidence: book.confidence || 'medium',
+              status: 'pending' as const,
+              scannedAt: new Date(job.createdAt).getTime(),
+            }));
+            
+            // Separate complete and incomplete
+            const newPendingBooks = newBooks.filter(book => !isIncompleteBook(book));
+            const newIncompleteBooks = newBooks.filter(book => isIncompleteBook(book)).map(book => ({
+              ...book,
+              status: 'incomplete' as const
+            }));
+            
+            // Collect all pending books for cover fetching
+            allSyncedPendingBooks.push(...newPendingBooks);
+            
+            // Update photo with books
+            const updatedPhoto: Photo = {
+              ...photo,
+              books: [
+                ...newPendingBooks.map(book => ({ ...book, status: 'pending' as const })),
+                ...newIncompleteBooks.map(book => ({ ...book, status: 'incomplete' as const }))
+              ]
+            };
+            
+            // Add books to pending using deduplicateBooks
+            setPendingBooks(prev => {
+              const deduped = deduplicateBooks(prev, newPendingBooks);
+              const userPendingKey = `pending_books_${user.uid}`;
+              AsyncStorage.setItem(userPendingKey, JSON.stringify(deduped));
+              return deduped;
+            });
+            
+            // Update photos
+            setPhotos(prev => {
+              const existing = prev.find(p => p.id === photoId);
+              const updated = existing
+                ? prev.map(p => p.id === photoId ? updatedPhoto : p)
+                : [...prev, updatedPhoto];
+              const userPhotosKey = `photos_${user.uid}`;
+              AsyncStorage.setItem(userPhotosKey, JSON.stringify(updated));
+              return updated;
+            });
+            
+            // Remove job tracking
+            await AsyncStorage.removeItem(jobKey);
+          }
+        }
+      }
+      
+      // Update last sync time
+      await AsyncStorage.setItem(lastSyncKey, new Date().toISOString());
+      
+      console.log(`✅ Synced ${completedJobs.length} background scans`);
+      
+      // Fetch covers for all synced books (not just the first scan)
+      if (allSyncedPendingBooks.length > 0) {
+        console.log(`🖼️ Fetching covers for ${allSyncedPendingBooks.length} books from synced background scans...`);
+        // Use setTimeout to ensure state updates are complete
+        setTimeout(() => {
+          fetchCoversForBooks(allSyncedPendingBooks).catch(error => {
+            console.error('❌ Error fetching covers for synced books:', error);
+          });
+        }, 100);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error 
+        ? `Error syncing background scans: ${error.message}${error.stack ? `\n${error.stack}` : ''}`
+        : `Error syncing background scans: ${String(error)}`;
+      console.error(errorMessage);
+    }
+  };
 
   const loadUserData = async () => {
     if (!user) return;
@@ -757,7 +918,91 @@ export const ScansTab: React.FC = () => {
     return final;
   };
 
-  const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string): Promise<{ books: Book[], fromVercel: boolean }> => {
+  // Submit scan as background job (continues even if app closes)
+  const submitBackgroundScanJob = async (imageDataURL: string, scanId: string, photoId: string): Promise<string | null> => {
+    const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    if (!baseUrl) {
+      console.error('❌ No API base URL configured');
+      return null;
+    }
+    
+    try {
+      const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      
+      const resp = await fetch(`${baseUrl}/api/scan-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageDataURL,
+          userId: user?.uid,
+          jobId
+        })
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        const finalJobId = data.jobId || jobId;
+        
+        // Check if job was completed synchronously
+        if (data.status === 'completed' && data.books) {
+          console.log(`✅ Background scan job completed synchronously: ${finalJobId} with ${data.books.length} books`);
+          // Job completed immediately, return the jobId so caller knows it's done
+          // The books will be processed by the sync function when app reopens
+          // For now, just store the job info
+          const jobKey = `scan_job_${finalJobId}`;
+          await AsyncStorage.setItem(jobKey, JSON.stringify({
+            jobId: finalJobId,
+            scanId,
+            photoId,
+            createdAt: new Date().toISOString(),
+            completed: true,
+            books: data.books
+          }));
+          return finalJobId;
+        } else if (data.status === 'failed') {
+          console.error(`❌ Background scan job failed: ${finalJobId} - ${data.error}`);
+          return null;
+        } else {
+          // Job is still processing or pending
+          console.log(`⏳ Background scan job submitted: ${finalJobId} (status: ${data.status})`);
+          // Store job tracking info
+          const jobKey = `scan_job_${finalJobId}`;
+          await AsyncStorage.setItem(jobKey, JSON.stringify({
+            jobId: finalJobId,
+            scanId,
+            photoId,
+            createdAt: new Date().toISOString()
+          }));
+          
+          // Track in state
+          setBackgroundScanJobs(prev => {
+            const newMap = new Map(prev);
+            newMap.set(finalJobId, { jobId: finalJobId, scanId, photoId });
+            return newMap;
+          });
+          
+          return finalJobId;
+        }
+      } else {
+        console.error(`❌ Failed to submit background scan job: ${resp.status}`);
+        return null;
+      }
+    } catch (error) {
+      console.error('❌ Error submitting background scan job:', error);
+      return null;
+    }
+  };
+
+  const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string, useBackground: boolean = false, scanId?: string, photoId?: string): Promise<{ books: Book[], fromVercel: boolean, jobId?: string }> => {
+    // If background mode, submit as job and return immediately
+    if (useBackground && scanId && photoId) {
+      const jobId = await submitBackgroundScanJob(primaryDataURL, scanId, photoId);
+      if (jobId) {
+        return { books: [], fromVercel: true, jobId };
+      }
+      // If job submission fails, fall through to regular scan
+    }
+    
     console.log('🚀 Starting AI scan via server API...');
     const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
     
@@ -937,9 +1182,40 @@ export const ScansTab: React.FC = () => {
       // Step 3: Scanning with AI (40%)
       const fallbackDataURL = await fallbackPromise || imageDataURL;
       console.log('📸 Starting AI scan...');
-      const scanResult = await scanImageWithAI(imageDataURL, fallbackDataURL);
+      
+      // Generate photo ID for this scan
+      const photoId = `photo_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      
+      // Use background scanning for multiple images (queue length > 1)
+      const useBackground = currentQueueLength > 1;
+      const scanResult = await scanImageWithAI(imageDataURL, fallbackDataURL, useBackground, scanId, photoId);
       const detectedBooks = scanResult.books;
       const cameFromVercel = scanResult.fromVercel;
+      const jobId = scanResult.jobId;
+      
+      // If background job was submitted, the API now processes it synchronously
+      // So we'll get the results back immediately
+      if (jobId && useBackground && cameFromVercel) {
+        console.log(`📤 Background scan job completed: ${jobId}`);
+        // The job was processed synchronously, so we have the results
+        // But we still need to process the books like a regular scan
+        // Continue with normal processing below
+      } else if (jobId && useBackground) {
+        // Job was submitted but processing failed or timed out
+        console.log(`⚠️ Background scan job submitted but may not have completed: ${jobId}`);
+        // Update queue status to processing
+        setScanQueue(prev => prev.map(item => 
+          item.id === scanId ? { ...item, status: 'processing' } : item
+        ));
+        // Update progress
+        updateProgress({ 
+          currentStep: 5, 
+          totalScans: totalScans,
+          completedScans: currentCompletedCount
+        });
+        // Don't process books here - they'll be synced when app reopens
+        return;
+      }
       
       console.log(`📚 AI scan completed: ${detectedBooks.length} books detected (${cameFromVercel ? 'from Vercel API, already validated' : 'from client-side, needs validation'})`);
       
@@ -1021,7 +1297,7 @@ export const ScansTab: React.FC = () => {
       
       // Save results
       const newPhoto: Photo = {
-        id: scanId,
+        id: photoId || scanId, // Use photoId if available (for background jobs), otherwise use scanId
         uri,
         books: photoBooks, // Store all books with correct statuses for scan modal
         timestamp: Date.now(),
