@@ -152,7 +152,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   
   // Handle processing pending jobs (can be called by cron or manually)
   // Cron job calls this endpoint every minute to process pending jobs
-  if ((req.method === 'PUT' || req.method === 'GET') && req.query?.action === 'process-pending') {
+  // Vercel cron jobs send GET requests, check for action in query or use special header
+  const isCronRequest = req.headers['user-agent']?.includes('vercel-cron') || 
+                        req.headers['x-vercel-cron'] === '1' ||
+                        req.query?.action === 'process-pending';
+  
+  if ((req.method === 'PUT' || req.method === 'GET') && isCronRequest) {
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

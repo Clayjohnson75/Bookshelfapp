@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/scan-job?action=process-pending",
+      "path": "/api/scan-job",
       "schedule": "* * * * *"
     }
   ]
