@@ -208,44 +208,120 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return;
       }
       
-      const { data } = await supabase.auth.getSession();
-      const sessionUser = data.session?.user;
-      if (sessionUser) {
-        const profile = await fetchUserProfile(sessionUser.id);
-        const userData: User = {
-          uid: sessionUser.id,
-          email: sessionUser.email || '',
-          username: profile.username,
-          displayName: profile.displayName,
-          photoURL: profile.photoURL,
-        };
-        setUser(userData);
-        await saveUserToStorage(userData);
-      } else {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        
+        // If there's an error with refresh token, clear the session and load from storage
+        if (error) {
+          console.warn('Session error (likely invalid refresh token):', error.message);
+          // Clear invalid session
+          await supabase.auth.signOut().catch(() => {});
+          // Clear any stored Supabase session data - find and remove all Supabase keys
+          try {
+            const allKeys = await AsyncStorage.getAllKeys();
+            const supabaseKeys = allKeys.filter(key => 
+              key.includes('supabase') || 
+              key.includes('sb-') || 
+              key.includes('auth-token')
+            );
+            if (supabaseKeys.length > 0) {
+              await AsyncStorage.multiRemove(supabaseKeys);
+            }
+          } catch (clearError) {
+            // Ignore errors when clearing
+          }
+          await loadUserFromStorage();
+          setLoading(false);
+          return;
+        }
+        
+        const sessionUser = data.session?.user;
+        if (sessionUser) {
+          const profile = await fetchUserProfile(sessionUser.id);
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: profile.username,
+            displayName: profile.displayName,
+            photoURL: profile.photoURL,
+          };
+          setUser(userData);
+          await saveUserToStorage(userData);
+        } else {
+          await loadUserFromStorage();
+        }
+      } catch (error: any) {
+        // Catch any errors during session loading
+        console.warn('Error loading session:', error?.message || error);
+        // Clear potentially invalid session
+        if (supabase) {
+          await supabase.auth.signOut().catch(() => {});
+        }
         await loadUserFromStorage();
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     init();
 
     if (!supabase) return;
     
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const sUser = session?.user;
-      if (sUser) {
-        const profile = await fetchUserProfile(sUser.id);
-        const userData: User = {
-          uid: sUser.id,
-          email: sUser.email || '',
-          username: profile.username,
-          displayName: profile.displayName,
-          photoURL: profile.photoURL,
-        };
-        setUser(userData);
-        await saveUserToStorage(userData);
-      } else {
-        setUser(null);
-        await AsyncStorage.removeItem('user');
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      try {
+        // Handle token refresh errors
+        if (event === 'TOKEN_REFRESHED' && !session) {
+          console.warn('Token refresh failed, signing out');
+          setUser(null);
+          await AsyncStorage.removeItem('user');
+          return;
+        }
+        
+        // Handle SIGNED_OUT event (which can happen on token refresh errors)
+        if (event === 'SIGNED_OUT') {
+          setUser(null);
+          await AsyncStorage.removeItem('user');
+          return;
+        }
+        
+        const sUser = session?.user;
+        if (sUser) {
+          try {
+            const profile = await fetchUserProfile(sUser.id);
+            const userData: User = {
+              uid: sUser.id,
+              email: sUser.email || '',
+              username: profile.username,
+              displayName: profile.displayName,
+              photoURL: profile.photoURL,
+            };
+            setUser(userData);
+            await saveUserToStorage(userData);
+          } catch (error) {
+            console.error('Error fetching user profile:', error);
+            // If profile fetch fails, still set basic user data
+            const userData: User = {
+              uid: sUser.id,
+              email: sUser.email || '',
+              username: sUser.email?.split('@')[0] || 'user',
+            };
+            setUser(userData);
+            await saveUserToStorage(userData);
+          }
+        } else {
+          setUser(null);
+          await AsyncStorage.removeItem('user');
+        }
+      } catch (error: any) {
+        // Catch any errors in auth state change handler (like refresh token errors)
+        console.warn('Error in auth state change:', error?.message || error);
+        // If it's a token error, clear the session
+        if (error?.message?.includes('refresh token') || error?.message?.includes('Refresh Token')) {
+          setUser(null);
+          await AsyncStorage.removeItem('user');
+          if (supabase) {
+            await supabase.auth.signOut().catch(() => {});
+          }
+        }
       }
     });
 
