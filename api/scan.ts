@@ -522,6 +522,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'imageDataURL required' });
     }
 
+    // Check scan limit (server-side validation)
+    if (userId && typeof userId === 'string') {
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (supabaseUrl && supabaseServiceKey) {
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false
+            }
+          });
+
+          const { data: canScan, error: checkError } = await supabase.rpc('can_user_scan', {
+            user_uuid: userId
+          });
+
+          if (!checkError && canScan === false) {
+            return res.status(403).json({ 
+              error: 'scan_limit_reached',
+              message: 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.'
+            });
+          }
+        } catch (checkErr) {
+          console.error('[API] Error checking scan limit:', checkErr);
+          // Continue with scan if check fails (don't block users)
+        }
+      }
+    }
+
     // Track scan asynchronously (don't wait for it)
     if (userId && typeof userId === 'string') {
       trackScan(userId).catch(err => {

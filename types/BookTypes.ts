@@ -10,6 +10,16 @@ export interface Book {
   localCoverPath?: string; // Local cached path for offline access
   googleBooksId?: string;
   description?: string; // Book description from Google Books API
+  // Google Books API stats fields
+  pageCount?: number; // Total number of pages
+  categories?: string[]; // Genres/categories
+  publisher?: string; // Publisher name
+  publishedDate?: string; // Publication date (e.g., "2023" or "2023-01-15")
+  language?: string; // Language code (e.g., "en")
+  averageRating?: number; // Average rating (0-5)
+  ratingsCount?: number; // Total number of ratings
+  subtitle?: string; // Book subtitle
+  printType?: string; // Print type (e.g., "BOOK")
 }
 
 export interface Photo {

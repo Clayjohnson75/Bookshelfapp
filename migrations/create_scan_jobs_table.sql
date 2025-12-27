@@ -29,3 +29,4 @@ CREATE INDEX IF NOT EXISTS idx_scan_jobs_user_status ON scan_jobs(user_id, statu
 COMMENT ON TABLE scan_jobs IS 'Stores background scan jobs that continue processing even when the app is closed';
 
 
+

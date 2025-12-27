@@ -425,6 +425,73 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
             ) : (
               <Text style={styles.noDescription}>No description available</Text>
             )}
+            
+            {/* Book Stats - At bottom of description section */}
+            {(book.pageCount || book.categories || book.publisher || book.publishedDate || 
+              book.language || book.averageRating || book.ratingsCount || book.subtitle || book.printType) && (
+              <View style={styles.statsContainer}>
+                <Text style={styles.statsTitle}>Book Information</Text>
+                <View style={styles.statsGrid}>
+                  {book.pageCount && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Pages</Text>
+                      <Text style={styles.statValue}>{book.pageCount.toLocaleString()}</Text>
+                    </View>
+                  )}
+                  {book.publishedDate && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Published</Text>
+                      <Text style={styles.statValue}>{book.publishedDate}</Text>
+                    </View>
+                  )}
+                  {book.publisher && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Publisher</Text>
+                      <Text style={styles.statValue} numberOfLines={2}>{book.publisher}</Text>
+                    </View>
+                  )}
+                  {book.language && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Language</Text>
+                      <Text style={styles.statValue}>{book.language.toUpperCase()}</Text>
+                    </View>
+                  )}
+                  {book.averageRating && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Rating</Text>
+                      <Text style={styles.statValue}>
+                        {book.averageRating.toFixed(1)} ⭐
+                        {book.ratingsCount && ` (${book.ratingsCount.toLocaleString()} reviews)`}
+                      </Text>
+                    </View>
+                  )}
+                  {book.printType && (
+                    <View style={styles.statItem}>
+                      <Text style={styles.statLabel}>Type</Text>
+                      <Text style={styles.statValue}>{book.printType}</Text>
+                    </View>
+                  )}
+                </View>
+                {book.subtitle && (
+                  <View style={styles.subtitleContainer}>
+                    <Text style={styles.subtitleLabel}>Subtitle</Text>
+                    <Text style={styles.subtitleText}>{book.subtitle}</Text>
+                  </View>
+                )}
+                {book.categories && book.categories.length > 0 && (
+                  <View style={styles.categoriesContainer}>
+                    <Text style={styles.categoriesLabel}>Genres</Text>
+                    <View style={styles.categoriesList}>
+                      {book.categories.map((category, index) => (
+                        <View key={index} style={styles.categoryTag}>
+                          <Text style={styles.categoryText}>{category}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
           </View>
 
           {/* Scan Photo - Below Description, Above Remove Button */}
@@ -664,6 +731,88 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     marginTop: 4,
     opacity: 0.9,
+    fontWeight: '500',
+  },
+  statsContainer: {
+    marginTop: 24,
+    paddingTop: 24,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  statsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 16,
+    letterSpacing: 0.2,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 16,
+  },
+  statItem: {
+    width: '50%',
+    marginBottom: 16,
+    paddingRight: 12,
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#718096',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 15,
+    color: '#2d3748',
+    fontWeight: '500',
+  },
+  subtitleContainer: {
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  subtitleLabel: {
+    fontSize: 12,
+    color: '#718096',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  subtitleText: {
+    fontSize: 15,
+    color: '#4a5568',
+    fontStyle: 'italic',
+    fontWeight: '500',
+  },
+  categoriesContainer: {
+    marginTop: 8,
+  },
+  categoriesLabel: {
+    fontSize: 12,
+    color: '#718096',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  categoriesList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  categoryTag: {
+    backgroundColor: '#edf2f7',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  categoryText: {
+    fontSize: 13,
+    color: '#2d3748',
     fontWeight: '500',
   },
 });

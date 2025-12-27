@@ -30,6 +30,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/SimpleAuthContext';
 import { useScanning } from '../contexts/ScanningContext';
 import { Book, Photo, Folder } from '../types/BookTypes';
+import {
+  loadBooksFromSupabase,
+  loadPhotosFromSupabase,
+  saveBookToSupabase,
+  savePhotoToSupabase,
+  deletePhotoFromSupabase,
+  deleteBookFromSupabase,
+} from '../services/supabaseSync';
+import { canUserScan, getUserScanUsage, ScanUsage } from '../services/subscriptionService';
+import { ScanLimitBanner } from '../components/ScanLimitBanner';
+import { UpgradeModal } from '../components/UpgradeModal';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -112,8 +123,27 @@ export const ScansTab: React.FC = () => {
   // Smart search for editing incomplete books: auto-search as user types title/author
   // Show caption modal when image is ready (either from camera or picker)
   // Start scanning immediately when image is ready, show caption modal after
-  const handleImageSelected = (uri: string) => {
-    console.log('🖼️ Image selected, starting scan and showing caption modal', uri);
+  const handleImageSelected = async (uri: string) => {
+    console.log('🖼️ Image selected, checking scan limit...', uri);
+    
+    // Check if user can scan
+    if (user) {
+      const canScan = await canUserScan(user.uid);
+      if (!canScan) {
+        // Limit reached, show upgrade modal
+        Alert.alert(
+          'Scan Limit Reached',
+          'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
+          ]
+        );
+        return;
+      }
+    }
+    
+    console.log('🖼️ Scan limit check passed, starting scan...');
     
     // Generate unique scanId with counter to prevent duplicates when multiple images selected quickly
     scanIdCounterRef.current += 1;
@@ -126,6 +156,11 @@ export const ScansTab: React.FC = () => {
     
     // Start scanning IMMEDIATELY - this will trigger the notification
     addImageToQueue(uri, undefined, scanId);
+    
+    // Refresh scan usage after starting scan
+    if (user) {
+      loadScanUsage();
+    }
     
     // Show caption modal after a brief delay to ensure scanning has started
     setTimeout(() => {
@@ -179,6 +214,10 @@ export const ScansTab: React.FC = () => {
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+
+  // Subscription and scan limit state
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [scanUsage, setScanUsage] = useState<ScanUsage | null>(null);
 
   // Orientation state for camera tip
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
@@ -280,8 +319,16 @@ export const ScansTab: React.FC = () => {
   useEffect(() => {
     if (user) {
       loadUserData();
+      loadScanUsage();
     }
   }, [user]);
+
+  // Load scan usage when user changes
+  const loadScanUsage = async () => {
+    if (!user) return;
+    const usage = await getUserScanUsage(user.uid);
+    setScanUsage(usage);
+  };
   
   // Background scan syncing disabled - scans work synchronously
   // This function is kept but not called to avoid breaking anything
@@ -447,102 +494,48 @@ export const ScansTab: React.FC = () => {
     if (!user) return;
     
     try {
-      const userPendingKey = `pending_books_${user.uid}`;
-      const userApprovedKey = `approved_books_${user.uid}`;
-      const userRejectedKey = `rejected_books_${user.uid}`;
-      const userIncompleteKey = `incomplete_books_${user.uid}`;
-      const userPhotosKey = `photos_${user.uid}`;
-      const userFoldersKey = `folders_${user.uid}`;
+      console.log('📥 Loading user data from Supabase...');
       
-      // Load all data in parallel for faster initial load
-      const [savedPending, savedApproved, savedRejected, savedPhotos, savedFolders] = await Promise.all([
-        AsyncStorage.getItem(userPendingKey),
-        AsyncStorage.getItem(userApprovedKey),
-        AsyncStorage.getItem(userRejectedKey),
-        AsyncStorage.getItem(userPhotosKey),
-        AsyncStorage.getItem(userFoldersKey),
+      // Load from Supabase first (primary source of truth)
+      const [supabaseBooks, supabasePhotos] = await Promise.all([
+        loadBooksFromSupabase(user.uid),
+        loadPhotosFromSupabase(user.uid),
       ]);
       
-      // Parse and set data with deduplication
-      if (savedPending) {
-        try {
-          const parsed = JSON.parse(savedPending);
-          // Deduplicate by ID
-          const seen = new Map<string, Book>();
-          const deduplicated = parsed.filter((book: Book) => {
-            if (!book.id) return false;
-            if (seen.has(book.id)) {
-              console.warn(`Duplicate book ID found: ${book.id}, keeping first occurrence`);
-              return false;
-            }
-            seen.set(book.id, book);
-            return true;
-          });
-          setPendingBooks(deduplicated);
-        } catch (e) {
-          console.error('Error parsing pending books:', e);
+      // Set books from Supabase
+      if (supabaseBooks) {
+        setPendingBooks(supabaseBooks.pending || []);
+        setApprovedBooks(supabaseBooks.approved || []);
+        setRejectedBooks(supabaseBooks.rejected || []);
+        console.log(`✅ Loaded ${supabaseBooks.pending.length} pending, ${supabaseBooks.approved.length} approved, ${supabaseBooks.rejected.length} rejected books from Supabase`);
+        
+        // Fetch covers for all books that don't have covers yet (all statuses)
+        const allBooks = [
+          ...(supabaseBooks.pending || []),
+          ...(supabaseBooks.approved || []),
+          ...(supabaseBooks.rejected || [])
+        ];
+        const booksNeedingCovers = allBooks.filter(book => !book.coverUrl && !book.localCoverPath);
+        if (booksNeedingCovers.length > 0) {
+          console.log(`🖼️ Fetching covers for ${booksNeedingCovers.length} books without covers...`);
+          // Use setTimeout to ensure state is set first
+          setTimeout(() => {
+            fetchCoversForBooks(booksNeedingCovers).catch(error => {
+              console.error('Error fetching covers for loaded books:', error);
+            });
+          }, 500);
         }
       }
-      if (savedApproved) {
-        try {
-          const parsed = JSON.parse(savedApproved);
-          // Deduplicate by ID
-          const seen = new Map<string, Book>();
-          const deduplicated = parsed.filter((book: Book) => {
-            if (!book.id) return false;
-            if (seen.has(book.id)) {
-              console.warn(`Duplicate approved book ID found: ${book.id}, keeping first occurrence`);
-              return false;
-            }
-            seen.set(book.id, book);
-            return true;
-          });
-          setApprovedBooks(deduplicated);
-        } catch (e) {
-          console.error('Error parsing approved books:', e);
-        }
+      
+      // Set photos from Supabase
+      if (supabasePhotos && supabasePhotos.length > 0) {
+        setPhotos(supabasePhotos);
+        console.log(`✅ Loaded ${supabasePhotos.length} photos from Supabase`);
       }
-      if (savedRejected) {
-        try {
-          const parsed = JSON.parse(savedRejected);
-          // Deduplicate by ID
-          const seen = new Map<string, Book>();
-          const deduplicated = parsed.filter((book: Book) => {
-            if (!book.id) return false;
-            if (seen.has(book.id)) {
-              console.warn(`Duplicate rejected book ID found: ${book.id}, keeping first occurrence`);
-              return false;
-            }
-            seen.set(book.id, book);
-            return true;
-          });
-          setRejectedBooks(deduplicated);
-        } catch (e) {
-          console.error('Error parsing rejected books:', e);
-        }
-      }
-      if (savedPhotos) {
-        try {
-          const parsed = JSON.parse(savedPhotos);
-          // Deduplicate photos by ID
-          const seen = new Map<string, Photo>();
-          const deduplicated = parsed.filter((photo: Photo) => {
-            if (!photo.id) {
-              // Generate a unique ID for photos without one
-              photo.id = `photo_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-            }
-            if (seen.has(photo.id)) {
-              console.warn(`Duplicate photo ID found: ${photo.id}, keeping first occurrence`);
-              return false;
-            }
-            seen.set(photo.id, photo);
-            return true;
-          });
-          setPhotos(deduplicated);
-        } catch (e) {
-          console.error('Error parsing photos:', e);
-        }
-      }
+      
+      // Also load folders from AsyncStorage (folders not yet in Supabase)
+      const userFoldersKey = `folders_${user.uid}`;
+      const savedFolders = await AsyncStorage.getItem(userFoldersKey);
       if (savedFolders) {
         try {
           const parsed = JSON.parse(savedFolders);
@@ -562,9 +555,106 @@ export const ScansTab: React.FC = () => {
           console.error('Error parsing folders:', e);
         }
       }
+      
+      // Also cache to AsyncStorage for offline access
+      const userPendingKey = `pending_books_${user.uid}`;
+      const userApprovedKey = `approved_books_${user.uid}`;
+      const userRejectedKey = `rejected_books_${user.uid}`;
+      const userPhotosKey = `photos_${user.uid}`;
+      
+      if (supabaseBooks) {
+        await Promise.all([
+          AsyncStorage.setItem(userPendingKey, JSON.stringify(supabaseBooks.pending || [])),
+          AsyncStorage.setItem(userApprovedKey, JSON.stringify(supabaseBooks.approved || [])),
+          AsyncStorage.setItem(userRejectedKey, JSON.stringify(supabaseBooks.rejected || [])),
+        ]);
+      }
+      
+      if (supabasePhotos) {
+        await AsyncStorage.setItem(userPhotosKey, JSON.stringify(supabasePhotos));
+      }
+      
     } catch (error) {
-      console.error('Error loading user data:', error);
-      // Don't crash the app if loading fails, just log the error
+      console.error('Error loading user data from Supabase, falling back to AsyncStorage:', error);
+      
+      // Fallback to AsyncStorage if Supabase fails
+      try {
+        const userPendingKey = `pending_books_${user.uid}`;
+        const userApprovedKey = `approved_books_${user.uid}`;
+        const userRejectedKey = `rejected_books_${user.uid}`;
+        const userPhotosKey = `photos_${user.uid}`;
+        const userFoldersKey = `folders_${user.uid}`;
+        
+        const [savedPending, savedApproved, savedRejected, savedPhotos, savedFolders] = await Promise.all([
+          AsyncStorage.getItem(userPendingKey),
+          AsyncStorage.getItem(userApprovedKey),
+          AsyncStorage.getItem(userRejectedKey),
+          AsyncStorage.getItem(userPhotosKey),
+          AsyncStorage.getItem(userFoldersKey),
+        ]);
+        
+        let loadedPending: Book[] = [];
+        let loadedApproved: Book[] = [];
+        let loadedRejected: Book[] = [];
+        
+        if (savedPending) {
+          try {
+            const parsed = JSON.parse(savedPending);
+            loadedPending = parsed;
+            setPendingBooks(parsed);
+          } catch (e) {
+            console.error('Error parsing pending books:', e);
+          }
+        }
+        if (savedApproved) {
+          try {
+            const parsed = JSON.parse(savedApproved);
+            loadedApproved = parsed;
+            setApprovedBooks(parsed);
+          } catch (e) {
+            console.error('Error parsing approved books:', e);
+          }
+        }
+        if (savedRejected) {
+          try {
+            const parsed = JSON.parse(savedRejected);
+            loadedRejected = parsed;
+            setRejectedBooks(parsed);
+          } catch (e) {
+            console.error('Error parsing rejected books:', e);
+          }
+        }
+        if (savedPhotos) {
+          try {
+            const parsed = JSON.parse(savedPhotos);
+            setPhotos(parsed);
+          } catch (e) {
+            console.error('Error parsing photos:', e);
+          }
+        }
+        if (savedFolders) {
+          try {
+            const parsed = JSON.parse(savedFolders);
+            setFolders(parsed);
+          } catch (e) {
+            console.error('Error parsing folders:', e);
+          }
+        }
+        
+        // Fetch covers for all books that don't have covers yet (from AsyncStorage fallback)
+        const allFallbackBooks = [...loadedPending, ...loadedApproved, ...loadedRejected];
+        const fallbackBooksNeedingCovers = allFallbackBooks.filter(book => !book.coverUrl && !book.localCoverPath);
+        if (fallbackBooksNeedingCovers.length > 0) {
+          console.log(`🖼️ Fetching covers for ${fallbackBooksNeedingCovers.length} books without covers (from AsyncStorage)...`);
+          setTimeout(() => {
+            fetchCoversForBooks(fallbackBooksNeedingCovers).catch(error => {
+              console.error('Error fetching covers for fallback books:', error);
+            });
+          }, 500);
+        }
+      } catch (fallbackError) {
+        console.error('Error loading from AsyncStorage fallback:', fallbackError);
+      }
     }
   };
 
@@ -572,15 +662,32 @@ export const ScansTab: React.FC = () => {
     if (!user) return;
     
     try {
+      // Save to AsyncStorage for offline access (fast, local)
       const userPendingKey = `pending_books_${user.uid}`;
       const userApprovedKey = `approved_books_${user.uid}`;
       const userRejectedKey = `rejected_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
       
-      await AsyncStorage.setItem(userPendingKey, JSON.stringify(newPending));
-      await AsyncStorage.setItem(userApprovedKey, JSON.stringify(newApproved));
-      await AsyncStorage.setItem(userRejectedKey, JSON.stringify(newRejected));
-      await AsyncStorage.setItem(userPhotosKey, JSON.stringify(newPhotos));
+      await Promise.all([
+        AsyncStorage.setItem(userPendingKey, JSON.stringify(newPending)),
+        AsyncStorage.setItem(userApprovedKey, JSON.stringify(newApproved)),
+        AsyncStorage.setItem(userRejectedKey, JSON.stringify(newRejected)),
+        AsyncStorage.setItem(userPhotosKey, JSON.stringify(newPhotos)),
+      ]);
+      
+      // Save to Supabase for permanent cloud storage (async, don't block)
+      Promise.all([
+        // Save all books to Supabase
+        ...newPending.map(book => saveBookToSupabase(user.uid, book, 'pending')),
+        ...newApproved.map(book => saveBookToSupabase(user.uid, book, 'approved')),
+        ...newRejected.map(book => saveBookToSupabase(user.uid, book, 'rejected')),
+        // Save all photos to Supabase
+        ...newPhotos.map(photo => savePhotoToSupabase(user.uid, photo)),
+      ]).catch(error => {
+        console.error('Error saving to Supabase (non-blocking):', error);
+        // Don't throw - AsyncStorage save succeeded, Supabase is just for sync
+      });
+      
     } catch (error) {
       console.error('Error saving user data:', error);
     }
@@ -745,10 +852,22 @@ export const ScansTab: React.FC = () => {
             // Download and cache the cover (non-blocking)
             const localPath = await downloadAndCacheCover(coverData.coverUrl, coverData.googleBooksId);
             
+            // Include all stats data from Google Books API
             const updatedBook = {
               coverUrl: coverData.coverUrl,
               googleBooksId: coverData.googleBooksId,
-              ...(localPath && { localCoverPath: localPath })
+              ...(localPath && { localCoverPath: localPath }),
+              // Include all stats fields
+              ...(coverData.pageCount !== undefined && { pageCount: coverData.pageCount }),
+              ...(coverData.categories && { categories: coverData.categories }),
+              ...(coverData.publisher && { publisher: coverData.publisher }),
+              ...(coverData.publishedDate && { publishedDate: coverData.publishedDate }),
+              ...(coverData.language && { language: coverData.language }),
+              ...(coverData.averageRating !== undefined && { averageRating: coverData.averageRating }),
+              ...(coverData.ratingsCount !== undefined && { ratingsCount: coverData.ratingsCount }),
+              ...(coverData.subtitle && { subtitle: coverData.subtitle }),
+              ...(coverData.printType && { printType: coverData.printType }),
+              ...(coverData.description && { description: coverData.description }),
             };
 
             // Update the book in pending state
@@ -798,7 +917,20 @@ export const ScansTab: React.FC = () => {
     );
   };
 
-  const fetchBookCover = async (title: string, author?: string): Promise<{coverUrl?: string, googleBooksId?: string}> => {
+  const fetchBookCover = async (title: string, author?: string): Promise<{
+    coverUrl?: string;
+    googleBooksId?: string;
+    pageCount?: number;
+    categories?: string[];
+    publisher?: string;
+    publishedDate?: string;
+    language?: string;
+    averageRating?: number;
+    ratingsCount?: number;
+    subtitle?: string;
+    printType?: string;
+    description?: string;
+  }> => {
     try {
       
       // Clean up the title for better search results
@@ -818,17 +950,30 @@ export const ScansTab: React.FC = () => {
         const book = data.items[0];
         const volumeInfo = book.volumeInfo;
         
+        // Extract cover URL
+        let coverUrl: string | undefined;
         if (volumeInfo.imageLinks) {
           // Prefer larger thumbnail, fallback to smaller one
-          const coverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+          const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
           // Convert to HTTPS for better compatibility
-          const httpsUrl = coverUrl?.replace('http:', 'https:');
-          
-          return {
-            coverUrl: httpsUrl,
-            googleBooksId: book.id
-          };
+          coverUrl = rawCoverUrl?.replace('http:', 'https:');
         }
+        
+        // Extract all stats data
+        return {
+          coverUrl,
+          googleBooksId: book.id,
+          pageCount: volumeInfo.pageCount || undefined,
+          categories: volumeInfo.categories || undefined,
+          publisher: volumeInfo.publisher || undefined,
+          publishedDate: volumeInfo.publishedDate || undefined,
+          language: volumeInfo.language || undefined,
+          averageRating: volumeInfo.averageRating || undefined,
+          ratingsCount: volumeInfo.ratingsCount || undefined,
+          subtitle: volumeInfo.subtitle || undefined,
+          printType: volumeInfo.printType || undefined,
+          description: volumeInfo.description || undefined,
+        };
       }
       
       return {};
@@ -1050,6 +1195,29 @@ export const ScansTab: React.FC = () => {
           const errorText = await resp.text().catch(() => '');
         console.error(`❌ Server API error: ${resp.status} - ${errorText.substring(0, 200)}`);
         
+        // Check if it's a scan limit error
+        if (resp.status === 403) {
+          try {
+            const errorData = JSON.parse(errorText);
+            if (errorData.error === 'scan_limit_reached') {
+              Alert.alert(
+                'Scan Limit Reached',
+                errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
+                [
+                  { text: 'OK', onPress: () => setShowUpgradeModal(true) }
+                ]
+              );
+              // Refresh scan usage
+              if (user) {
+                loadScanUsage();
+              }
+              return { books: [], fromVercel: false };
+            }
+          } catch (e) {
+            // Not JSON, continue with normal error handling
+          }
+        }
+        
         // If server returns 0 books, try with fallback image
         if (resp.status === 200) {
           // Status 200 but might have returned empty array, try fallback
@@ -1242,6 +1410,54 @@ export const ScansTab: React.FC = () => {
         scannedAt: Date.now(),
       }));
       
+      // Check if no books were found - don't save the photo if so
+      if (allBooks.length === 0) {
+        console.error('❌ No books detected from scan - not saving photo');
+        
+        // Determine failure reason
+        let failureReason = 'No books were detected in the image.';
+        let failureDetails = '';
+        
+        if (!cameFromVercel) {
+          failureReason = 'Unable to connect to scan server.';
+          failureDetails = 'Please check your internet connection and try again.';
+        } else if (detectedBooks.length === 0) {
+          failureReason = 'No books detected in the image.';
+          failureDetails = 'Possible reasons:\n• Image quality is too low\n• No books are visible in the photo\n• Books are too blurry or obscured\n• Try taking a clearer photo with better lighting';
+        }
+        
+        // Mark scan as failed in queue
+        setScanQueue(prev => prev.map(item => 
+          item.id === scanId ? { ...item, status: 'failed' as const } : item
+        ));
+        
+        // Clear current scan state
+        setCurrentScan(null);
+        
+        // Update progress to show failed scan
+        const currentFailedCount = scanProgress?.failedScans || 0;
+        updateProgress({
+          currentScanId: null,
+          currentStep: 0,
+          failedScans: currentFailedCount + 1,
+          totalScans: totalScans,
+        });
+        
+        // Show alert with failure reason
+        Alert.alert(
+          'Failed to Find Books',
+          `${failureReason}\n\n${failureDetails}`,
+          [{ text: 'OK' }]
+        );
+        
+        // Clean up caption ref
+        scanCaptionsRef.current.delete(scanId);
+        
+        // Don't save the photo - just return
+        // The photo won't appear in recent scans since it's never added to the photos array
+        return;
+      }
+      
       // Separate complete and incomplete books
       const newPendingBooks = allBooks.filter(book => !isIncompleteBook(book));
       const newIncompleteBooks: Book[] = allBooks.filter(book => isIncompleteBook(book)).map(book => ({
@@ -1265,13 +1481,22 @@ export const ScansTab: React.FC = () => {
       scanCaptionsRef.current.delete(scanId);
       
       // Save results
+      const finalPhotoId = photoId || scanId;
       const newPhoto: Photo = {
-        id: photoId || scanId, // Use photoId if available (for background jobs), otherwise use scanId
+        id: finalPhotoId, // Use photoId if available (for background jobs), otherwise use scanId
         uri,
         books: photoBooks, // Store all books with correct statuses for scan modal
         timestamp: Date.now(),
         caption: finalCaption, // Include caption if provided
       };
+      
+      // Upload photo to Supabase Storage in the background (don't block UI)
+      if (user) {
+        savePhotoToSupabase(user.uid, newPhoto).catch(error => {
+          console.error('Error uploading photo to Supabase (non-blocking):', error);
+          // Don't throw - photo is saved locally, Supabase upload can retry later
+        });
+      }
       
       // Use functional updates to ensure we have the latest state
       // This prevents books from previous scans from being lost
@@ -1479,6 +1704,13 @@ export const ScansTab: React.FC = () => {
     setPendingBooks(updatedPending);
     setApprovedBooks(updatedApproved);
     await saveUserData(updatedPending, updatedApproved, rejectedBooks, photos);
+    
+    // Fetch cover if not already loaded
+    if (!approvedBook.coverUrl && !approvedBook.localCoverPath) {
+      fetchCoversForBooks([approvedBook]).catch(error => {
+        console.error('Error fetching cover for approved book:', error);
+      });
+    }
   };
 
   const rejectBook = async (bookId: string) => {
@@ -1513,6 +1745,17 @@ export const ScansTab: React.FC = () => {
       // Remove the photo (which contains all its books including incomplete ones)
       const photoToDelete = photos.find(photo => photo.id === photoId);
       if (!photoToDelete) return;
+
+      // Delete from Supabase (storage and database)
+      if (user) {
+        await deletePhotoFromSupabase(user.uid, photoId);
+        // Also delete books associated with this photo
+        for (const book of photoToDelete.books) {
+          await deleteBookFromSupabase(user.uid, book).catch(err => {
+            console.warn('Error deleting book from Supabase:', err);
+          });
+        }
+      }
 
       // Remove the photo completely (including all incomplete books)
       const updatedPhotos = photos.filter(photo => photo.id !== photoId);
@@ -1576,6 +1819,14 @@ export const ScansTab: React.FC = () => {
     setPendingBooks(remainingPending);
     setSelectedBooks(new Set());
     await saveUserData(remainingPending, updatedApproved, rejectedBooks, photos);
+    
+    // Fetch covers for all approved books that don't have covers yet
+    const booksNeedingCovers = approvedBooksData.filter(book => !book.coverUrl && !book.localCoverPath);
+    if (booksNeedingCovers.length > 0) {
+      fetchCoversForBooks(booksNeedingCovers).catch(error => {
+        console.error('Error fetching covers for approved books:', error);
+      });
+    }
     
     Alert.alert('Success', `Added ${addedCount} book${addedCount !== 1 ? 's' : ''} to your library!`);
   };
@@ -1655,6 +1906,14 @@ export const ScansTab: React.FC = () => {
     setApprovedBooks(updatedApproved);
     setSelectedBooks(new Set());
     await saveUserData(remainingBooks, updatedApproved, rejectedBooks, photos);
+    
+    // Fetch covers for all selected books that don't have covers yet
+    const booksNeedingCovers = newApprovedBooks.filter(book => !book.coverUrl && !book.localCoverPath);
+    if (booksNeedingCovers.length > 0) {
+      fetchCoversForBooks(booksNeedingCovers).catch(error => {
+        console.error('Error fetching covers for selected books:', error);
+      });
+    }
   };
 
   const rejectSelectedBooks = async () => {
@@ -2136,6 +2395,13 @@ export const ScansTab: React.FC = () => {
         <Text style={styles.subtitle}>Scan your bookshelf to build your library</Text>
       </View>
 
+      {/* Scan Limit Banner */}
+      {user && (
+        <ScanLimitBanner
+          onUpgradePress={() => setShowUpgradeModal(true)}
+        />
+      )}
+
       {/* Scan Options */}
       <View style={styles.scanOptions}>
         <TouchableOpacity style={styles.scanButton} onPress={handleStartCamera}>
@@ -2458,6 +2724,7 @@ export const ScansTab: React.FC = () => {
                       let googleBooksId = editingBook.googleBooksId;
                       let localCoverPath = editingBook.localCoverPath;
                       
+                      let statsData: any = {};
                       try {
                         const query = `${manualTitle.trim()} ${manualAuthor.trim()}`;
                         const response = await fetch(
@@ -2474,6 +2741,19 @@ export const ScansTab: React.FC = () => {
                               localCoverPath = await downloadAndCacheCover(coverUrl, book.id);
                             }
                           }
+                          // Extract all stats data
+                          statsData = {
+                            ...(volumeInfo.pageCount && { pageCount: volumeInfo.pageCount }),
+                            ...(volumeInfo.categories && { categories: volumeInfo.categories }),
+                            ...(volumeInfo.publisher && { publisher: volumeInfo.publisher }),
+                            ...(volumeInfo.publishedDate && { publishedDate: volumeInfo.publishedDate }),
+                            ...(volumeInfo.language && { language: volumeInfo.language }),
+                            ...(volumeInfo.averageRating && { averageRating: volumeInfo.averageRating }),
+                            ...(volumeInfo.ratingsCount && { ratingsCount: volumeInfo.ratingsCount }),
+                            ...(volumeInfo.subtitle && { subtitle: volumeInfo.subtitle }),
+                            ...(volumeInfo.printType && { printType: volumeInfo.printType }),
+                            ...(volumeInfo.description && { description: volumeInfo.description }),
+                          };
                         }
                       } catch (error) {
                         console.warn('Failed to fetch cover, using existing or none');
@@ -2488,6 +2768,7 @@ export const ScansTab: React.FC = () => {
                               coverUrl: coverUrl || b.coverUrl,
                               googleBooksId: googleBooksId || b.googleBooksId,
                               ...(localCoverPath && { localCoverPath }),
+                              ...statsData, // Include all stats data
                               status: 'pending' as const, // Change from incomplete to pending
                             }
                           : b
@@ -2604,6 +2885,17 @@ export const ScansTab: React.FC = () => {
                                     coverUrl: coverUrl || b.coverUrl,
                                     googleBooksId: item.id,
                                     ...(localCoverPath && { localCoverPath }),
+                                    // Include all stats from Google Books API
+                                    ...(volumeInfo.pageCount && { pageCount: volumeInfo.pageCount }),
+                                    ...(volumeInfo.categories && { categories: volumeInfo.categories }),
+                                    ...(volumeInfo.publisher && { publisher: volumeInfo.publisher }),
+                                    ...(volumeInfo.publishedDate && { publishedDate: volumeInfo.publishedDate }),
+                                    ...(volumeInfo.language && { language: volumeInfo.language }),
+                                    ...(volumeInfo.averageRating && { averageRating: volumeInfo.averageRating }),
+                                    ...(volumeInfo.ratingsCount && { ratingsCount: volumeInfo.ratingsCount }),
+                                    ...(volumeInfo.subtitle && { subtitle: volumeInfo.subtitle }),
+                                    ...(volumeInfo.printType && { printType: volumeInfo.printType }),
+                                    ...(volumeInfo.description && { description: volumeInfo.description }),
                                     status: 'pending' as const, // Change from incomplete to pending
                                   }
                                 : b
@@ -2893,6 +3185,19 @@ export const ScansTab: React.FC = () => {
           </View>
         </View>
       )}
+
+      {/* Upgrade Modal */}
+      <UpgradeModal
+        visible={showUpgradeModal}
+        onClose={() => {
+          setShowUpgradeModal(false);
+          loadScanUsage(); // Refresh usage after closing
+        }}
+        onUpgradeComplete={() => {
+          setShowUpgradeModal(false);
+          loadScanUsage(); // Refresh usage after upgrade
+        }}
+      />
     </View>
   );
 };
