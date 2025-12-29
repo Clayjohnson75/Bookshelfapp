@@ -16,39 +16,38 @@ Implement a freemium model with:
 
 ### Step 2: Payment Processing Setup
 
-#### Option A: Stripe (Recommended)
-1. **Create Stripe Account**
-   - Sign up at https://stripe.com
-   - Get API keys (publishable key + secret key)
-   - Set up webhook endpoint for subscription events
+#### Apple In-App Purchases (IAP)
+1. **Set up in App Store Connect**
+   - Go to https://appstoreconnect.apple.com
+   - Navigate to your app → Features → In-App Purchases
+   - Create a "Pro Monthly Subscription" product
+   - Set price (e.g., $4.99/month)
+   - Get the product ID (e.g., `com.bookshelfscanner.pro.monthly`)
 
-2. **Create Stripe Products**
-   - Create a "Pro Subscription" product
-   - Set up monthly recurring price (e.g., $4.99/month)
-   - Get product and price IDs
-
-3. **Environment Variables**
-   Add to Vercel environment variables:
+2. **Environment Variables**
+   Add to your app config:
    ```
-   STRIPE_SECRET_KEY=sk_live_...
-   STRIPE_PUBLISHABLE_KEY=pk_live_...
-   STRIPE_WEBHOOK_SECRET=whsec_...
-   STRIPE_PRICE_ID=price_...
+   IAP_PRODUCT_ID=com.bookshelfscanner.pro.monthly
    ```
 
-#### Option B: RevenueCat (Easier for Mobile)
-- Handles iOS/Android in-app purchases
-- Manages subscriptions across platforms
-- Simpler setup but less control
+3. **Apple IAP Service**
+   - Already implemented in `services/appleIAPService.ts`
+   - Uses `react-native-iap` package
+   - Handles purchase flow and receipt validation
 
-### Step 3: Create API Endpoints
+### Step 3: Apple IAP Integration
 
-#### `/api/create-checkout-session.ts`
-- Creates Stripe checkout session
-- Returns session URL for user to complete payment
+#### Purchase Flow
+- User taps "Upgrade to Pro" in `UpgradeModal`
+- Calls `purchaseProSubscription()` from `appleIAPService.ts`
+- Validates receipt with Apple
+- Updates user's `subscription_tier` to 'pro' in Supabase
+- Stores Apple transaction IDs in `profiles` table
 
-#### `/api/stripe-webhook.ts`
-- Handles Stripe webhook events
+#### Receipt Validation
+- Validate receipts server-side for security
+- Create `/api/validate-apple-receipt.ts` endpoint
+- Updates subscription status based on Apple's response
 - Updates subscription status in Supabase
 - Handles: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
 
@@ -106,8 +105,9 @@ Implement a freemium model with:
 ### `profiles` table additions:
 - `subscription_tier`: 'free' | 'pro'
 - `subscription_status`: 'active' | 'cancelled' | 'past_due' | 'trialing'
-- `stripe_customer_id`: Stripe customer ID
-- `stripe_subscription_id`: Stripe subscription ID
+- `apple_transaction_id`: Apple IAP transaction ID
+- `apple_original_transaction_id`: Original transaction ID (persists across renewals)
+- `apple_product_id`: Apple IAP product ID
 - `subscription_started_at`: When subscription started
 - `subscription_ends_at`: When subscription ends
 

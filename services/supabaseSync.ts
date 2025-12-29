@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabaseClient';
 import { Book, Photo } from '../types/BookTypes';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { Platform } from 'react-native';
 
 /**
  * Upload a photo to Supabase Storage and return the public URL
@@ -25,8 +26,110 @@ export async function uploadPhotoToStorage(
   }
 
   try {
+    // Check if file exists first
+    let fileInfo = await FileSystem.getInfoAsync(localUri);
+    if (!fileInfo.exists) {
+      console.warn(`Photo file does not exist: ${localUri}`);
+      return null;
+    }
+    
+    // Always copy/convert to a permanent location to avoid temporary file cleanup issues
+    // This is especially important for iOS ImagePicker and Camera files
+    let imageUri = localUri;
+    const isTemporaryPath = localUri.includes('ImagePicker') || localUri.includes('Camera') || localUri.includes('tmp');
+    const isHeic = localUri.toLowerCase().endsWith('.heic');
+    
+    if (Platform.OS === 'ios' && (isTemporaryPath || isHeic)) {
+      try {
+        // Ensure document directory exists
+        if (!FileSystem.documentDirectory) {
+          console.error('Document directory not available');
+          return null;
+        }
+        
+        // Create photos directory if it doesn't exist
+        const photosDir = `${FileSystem.documentDirectory}photos/`;
+        const dirInfo = await FileSystem.getInfoAsync(photosDir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(photosDir, { intermediates: true });
+        }
+        
+        // Use ImageManipulator to convert to JPEG and save to a permanent location
+        const permanentPath = `${photosDir}${photoId}_${Date.now()}.jpg`;
+        const manipulated = await ImageManipulator.manipulateAsync(
+          localUri,
+          [], // No transformations, just conversion
+          {
+            compress: 0.9,
+            format: ImageManipulator.SaveFormat.JPEG,
+          }
+        );
+        
+        // Copy the manipulated file to our permanent location
+        await FileSystem.copyAsync({
+          from: manipulated.uri,
+          to: permanentPath,
+        });
+        
+        imageUri = permanentPath;
+        
+        // Verify the file exists
+        fileInfo = await FileSystem.getInfoAsync(imageUri);
+        if (!fileInfo.exists) {
+          console.warn(`Permanent photo file does not exist after copy: ${imageUri}`);
+          return null;
+        }
+      } catch (convertError) {
+        console.warn('Error converting/copying image:', convertError);
+        // If conversion fails, try to use original if it still exists
+        fileInfo = await FileSystem.getInfoAsync(localUri);
+        if (!fileInfo.exists) {
+          console.warn(`Original photo file does not exist: ${localUri}`);
+          return null;
+        }
+        // Use original if it exists
+        imageUri = localUri;
+      }
+    } else if (isTemporaryPath) {
+      // For non-iOS temporary files, copy to permanent location
+      try {
+        if (!FileSystem.documentDirectory) {
+          console.error('Document directory not available');
+          return null;
+        }
+        
+        const photosDir = `${FileSystem.documentDirectory}photos/`;
+        const dirInfo = await FileSystem.getInfoAsync(photosDir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(photosDir, { intermediates: true });
+        }
+        
+        const permanentPath = `${photosDir}${photoId}_${Date.now()}.jpg`;
+        await FileSystem.copyAsync({
+          from: localUri,
+          to: permanentPath,
+        });
+        
+        imageUri = permanentPath;
+        fileInfo = await FileSystem.getInfoAsync(imageUri);
+        if (!fileInfo.exists) {
+          console.warn(`Permanent photo file does not exist after copy: ${imageUri}`);
+          return null;
+        }
+      } catch (copyError) {
+        console.warn('Error copying temporary file:', copyError);
+        // Try to use original
+        fileInfo = await FileSystem.getInfoAsync(localUri);
+        if (!fileInfo.exists) {
+          console.warn(`Original photo file does not exist: ${localUri}`);
+          return null;
+        }
+        imageUri = localUri;
+      }
+    }
+    
     // Read the file as base64
-    const base64 = await FileSystem.readAsStringAsync(localUri, {
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
 
@@ -111,6 +214,12 @@ export async function downloadPhotoFromStorage(
     return null;
   }
 
+  // Validate storageUrl
+  if (!storageUrl || typeof storageUrl !== 'string' || !storageUrl.trim()) {
+    console.warn('Invalid storage URL provided for photo download:', storageUrl);
+    return null;
+  }
+
   try {
     // Create photos directory if it doesn't exist
     const photosDirPath = `${FileSystem.documentDirectory}photos/`;
@@ -155,12 +264,18 @@ export async function savePhotoToSupabase(
   }
 
   try {
+    // Validate photo.uri
+    if (!photo.uri || typeof photo.uri !== 'string') {
+      console.error('Invalid photo URI:', photo.uri);
+      return false;
+    }
+
     // Upload photo to storage
     let storagePath = '';
     let storageUrl = '';
 
     // Check if photo.uri is already a storage URL
-    if (photo.uri.startsWith('http') && photo.uri.includes('supabase.co')) {
+    if (photo.uri && photo.uri.startsWith('http') && photo.uri.includes('supabase.co')) {
       // Already uploaded, extract path from URL
       storageUrl = photo.uri;
       const urlParts = photo.uri.split('/');
@@ -168,35 +283,78 @@ export async function savePhotoToSupabase(
       if (pathIndex !== -1) {
         storagePath = urlParts.slice(pathIndex).join('/');
       }
-    } else {
-      // Upload to storage
+    } else if (photo.uri && !photo.uri.startsWith('http')) {
+      // Only upload if it's a local file path (not already a URL)
+      // Skip upload if file doesn't exist (old temporary files)
       const uploadResult = await uploadPhotoToStorage(userId, photo.id, photo.uri);
       if (!uploadResult) {
-        console.error('Failed to upload photo to storage');
-        return false;
+        // If upload fails (e.g., file doesn't exist), but photo already has books,
+        // we can still save the metadata if it's already in Supabase
+        console.warn(`Failed to upload photo ${photo.id} to storage, but continuing with metadata save`);
+        // Try to get existing storage info from database
+        const { data: existingPhoto } = await supabase
+          .from('photos')
+          .select('storage_path, storage_url')
+          .eq('id', photo.id)
+          .single();
+        
+        if (existingPhoto?.storage_path && existingPhoto?.storage_url) {
+          storagePath = existingPhoto.storage_path;
+          storageUrl = existingPhoto.storage_url;
+        } else {
+          // No existing storage info and upload failed - skip saving
+          console.error(`Cannot save photo ${photo.id}: no storage path and upload failed`);
+          return false;
+        }
+      } else {
+        storagePath = uploadResult.storagePath;
+        storageUrl = uploadResult.storageUrl;
       }
-      storagePath = uploadResult.storagePath;
-      storageUrl = uploadResult.storageUrl;
+    } else {
+      // Photo has no valid URI - skip saving
+      console.warn(`Photo ${photo.id} has no valid URI, skipping save`);
+      return false;
     }
 
     // Save photo metadata to database
+    // Note: If you get "Could not find the 'storage_path' column" error,
+    // you need to run the migration: supabase-migration-add-photos-table.sql
+    const photoData: any = {
+      id: photo.id,
+      user_id: userId,
+      storage_path: storagePath,
+      storage_url: storageUrl,
+      books: photo.books,
+      timestamp: photo.timestamp,
+      caption: photo.caption || null,
+      updated_at: new Date().toISOString(),
+    };
+    
+    // If uri column exists (legacy), set it to storage_url for compatibility
+    // The uri column might exist from an older schema
+    if (photo.uri) {
+      photoData.uri = photo.uri;
+    } else if (storageUrl) {
+      // Use storage_url as uri if uri column exists but we don't have a local uri
+      photoData.uri = storageUrl;
+    }
+    
     const { error } = await supabase
       .from('photos')
-      .upsert({
-        id: photo.id,
-        user_id: userId,
-        storage_path: storagePath,
-        storage_url: storageUrl,
-        books: photo.books,
-        timestamp: photo.timestamp,
-        caption: photo.caption || null,
-        updated_at: new Date().toISOString(),
-      }, {
+      .upsert(photoData, {
         onConflict: 'id',
       });
 
     if (error) {
-      console.error('Error saving photo to database:', error);
+      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      console.error('Error saving photo to database:', errorMessage);
+      
+      // If the error is about missing column, provide helpful message
+      if (errorMessage.includes('storage_path') || errorMessage.includes('column')) {
+        console.error('⚠️ Database schema issue: The photos table may be missing columns.');
+        console.error('⚠️ Please run the migration: supabase-migration-add-photos-table.sql');
+      }
+      
       return false;
     }
 
@@ -233,20 +391,57 @@ export async function loadPhotosFromSupabase(userId: string): Promise<Photo[]> {
     }
 
     // Convert Supabase data to Photo objects
-    const photos: Photo[] = await Promise.all(
-      data.map(async (row) => {
-        // Download photo to local cache for offline access
-        const localPath = await downloadPhotoFromStorage(row.storage_url, row.id);
-        
+    // OPTIMIZATION: Don't download photos immediately - use cloud URLs directly
+    // Photos will be cached lazily when viewed
+    // Only include photos with valid storage URLs (already uploaded to Supabase)
+    // Filter out photos with only local file paths (those are temporary and shouldn't be loaded)
+    const photos: Photo[] = data
+      .filter((row) => {
+        // Only include photos that have a valid storage URL (already uploaded to Supabase)
+        // Filter out photos with only local file paths (those are temporary and shouldn't be loaded)
+        const hasStorageUrl = row.storage_url && typeof row.storage_url === 'string' && row.storage_url.startsWith('http');
+        if (!hasStorageUrl) {
+          console.warn(`Photo ${row.id} has no valid storage URL, skipping (may be old temporary file)`);
+        }
+        return hasStorageUrl;
+      })
+      .map((row) => {
+        // Use cloud URL directly for faster loading
+        // Photo will be cached when actually viewed
+        const photoUri = row.storage_url; // Always use storage_url for loaded photos
         return {
           id: row.id,
-          uri: localPath ? `${FileSystem.documentDirectory}${localPath}` : row.storage_url,
+          uri: photoUri, // Use cloud URL directly
           books: (row.books || []) as Book[],
           timestamp: row.timestamp,
           caption: row.caption || undefined,
         };
-      })
-    );
+      });
+
+    // OPTIMIZATION: Download photos in background (non-blocking)
+    // Only download if they're not already cached and have valid URLs
+    Promise.all(
+      data
+        .filter((row) => row.storage_url && typeof row.storage_url === 'string') // Only process valid URLs
+        .map(async (row) => {
+          try {
+            // Check if already cached
+            if (!FileSystem.documentDirectory) return;
+            const cachePath = `${FileSystem.documentDirectory}photos/${row.id}.jpg`;
+            const fileInfo = await FileSystem.getInfoAsync(cachePath);
+            if (!fileInfo.exists && row.storage_url) {
+              // Download in background (don't await)
+              downloadPhotoFromStorage(row.storage_url, row.id).catch(() => {
+                // Silently fail - will retry when photo is viewed
+              });
+            }
+          } catch (error) {
+            // Ignore errors - photo will load from cloud URL
+          }
+        })
+    ).catch(() => {
+      // Ignore background download errors
+    });
 
     return photos;
   } catch (error) {
@@ -295,6 +490,7 @@ export async function saveBookToSupabase(
     };
 
     // Use upsert to insert or update based on user_id + title + author
+    // First try to find existing book to avoid duplicate key errors
     const authorForQuery = book.author || '';
     const { data: existingBook, error: findError } = await supabase
       .from('books')
@@ -317,17 +513,58 @@ export async function saveBookToSupabase(
         .eq('id', existingBook.id);
 
       if (updateError) {
-        console.error('Error updating book in Supabase:', updateError);
+        const errorMessage = updateError?.message || updateError?.code || JSON.stringify(updateError) || String(updateError);
+        console.error('Error updating book in Supabase:', errorMessage);
+        console.error('Book data:', JSON.stringify(bookData, null, 2));
         return false;
       }
     } else {
-      // Insert new book
+      // Insert new book - catch duplicate key errors and retry as update
       const { error: insertError } = await supabase
         .from('books')
         .insert(bookData);
 
       if (insertError) {
-        console.error('Error inserting book to Supabase:', insertError);
+        // If we get a duplicate key error, the book exists but our query didn't find it
+        // (could be due to race condition or case sensitivity issues)
+        // Try to find and update it
+        if (insertError.code === '23505' || insertError.message?.includes('duplicate key') || insertError.message?.includes('idx_books_user_title_author_unique')) {
+          console.warn('Duplicate key error on insert, attempting to find and update existing book...');
+          
+          const { data: existingBookRetry, error: findErrorRetry } = await supabase
+            .from('books')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('title', book.title)
+            .eq('author', authorForQuery)
+            .maybeSingle();
+
+          if (findErrorRetry && findErrorRetry.code !== 'PGRST116') {
+            const errorMessage = findErrorRetry?.message || findErrorRetry?.code || JSON.stringify(findErrorRetry) || String(findErrorRetry);
+            console.error('Error finding existing book after duplicate key error:', errorMessage);
+            return false;
+          }
+
+          if (existingBookRetry) {
+            // Update existing book
+            const { error: updateErrorRetry } = await supabase
+              .from('books')
+              .update(bookData)
+              .eq('id', existingBookRetry.id);
+
+            if (updateErrorRetry) {
+              const errorMessage = updateErrorRetry?.message || updateErrorRetry?.code || JSON.stringify(updateErrorRetry) || String(updateErrorRetry);
+              console.error('Error updating book after duplicate key error:', errorMessage);
+              console.error('Book data:', JSON.stringify(bookData, null, 2));
+              return false;
+            }
+            return true;
+          }
+        }
+        
+        const errorMessage = insertError?.message || insertError?.code || JSON.stringify(insertError) || String(insertError);
+        console.error('Error inserting book to Supabase:', errorMessage);
+        console.error('Book data:', JSON.stringify(bookData, null, 2));
         return false;
       }
     }
@@ -355,6 +592,8 @@ export async function loadBooksFromSupabase(
   }
 
   try {
+    // Fetch ALL books for the user (no limit - users should be able to have unlimited books)
+    // Add index on user_id + scanned_at for better performance
     const { data, error } = await supabase
       .from('books')
       .select('*')
@@ -371,8 +610,9 @@ export async function loadBooksFromSupabase(
     }
 
     // Convert Supabase data to Book objects and group by status
+    // Use the database UUID as the ID to ensure uniqueness
     const books: Book[] = data.map((row) => ({
-      id: `${row.title}_${row.author || ''}_${row.scanned_at || ''}`,
+      id: row.id || `${row.title}_${row.author || ''}_${row.scanned_at || Date.now()}`,
       title: row.title,
       author: row.author || undefined,
       isbn: row.isbn || undefined,

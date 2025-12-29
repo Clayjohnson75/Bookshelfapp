@@ -202,55 +202,99 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   useEffect(() => {
     // Load any persisted session on mount and subscribe to auth changes
     const init = async () => {
-      if (!supabase) {
-        await loadUserFromStorage();
+      // Set a timeout to prevent infinite loading
+      const timeoutId = setTimeout(() => {
+        console.warn('Auth initialization timeout, loading from storage');
+        loadUserFromStorage();
         setLoading(false);
-        return;
-      }
-      
+      }, 5000); // 5 second timeout
+
       try {
-        const { data, error } = await supabase.auth.getSession();
-        
-        // If there's an error with refresh token, clear the session and load from storage
-        if (error) {
-          console.warn('Session error (likely invalid refresh token):', error.message);
-          // Clear invalid session
-          await supabase.auth.signOut().catch(() => {});
-          // Clear any stored Supabase session data - find and remove all Supabase keys
-          try {
-            const allKeys = await AsyncStorage.getAllKeys();
-            const supabaseKeys = allKeys.filter(key => 
-              key.includes('supabase') || 
-              key.includes('sb-') || 
-              key.includes('auth-token')
-            );
-            if (supabaseKeys.length > 0) {
-              await AsyncStorage.multiRemove(supabaseKeys);
-            }
-          } catch (clearError) {
-            // Ignore errors when clearing
-          }
+        if (!supabase) {
+          clearTimeout(timeoutId);
           await loadUserFromStorage();
           setLoading(false);
           return;
         }
         
-        const sessionUser = data.session?.user;
-        if (sessionUser) {
-          const profile = await fetchUserProfile(sessionUser.id);
-          const userData: User = {
-            uid: sessionUser.id,
-            email: sessionUser.email || '',
-            username: profile.username,
-            displayName: profile.displayName,
-            photoURL: profile.photoURL,
-          };
-          setUser(userData);
-          await saveUserToStorage(userData);
-        } else {
+        try {
+          // Add timeout to getSession call
+          const sessionPromise = supabase.auth.getSession();
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Session timeout')), 3000)
+          );
+          
+          const { data, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
+          
+          clearTimeout(timeoutId);
+          
+          // If there's an error with refresh token, clear the session and load from storage
+          if (error) {
+            console.warn('Session error (likely invalid refresh token):', error.message);
+            // Clear invalid session
+            await supabase.auth.signOut().catch(() => {});
+            // Clear any stored Supabase session data - find and remove all Supabase keys
+            try {
+              const allKeys = await AsyncStorage.getAllKeys();
+              const supabaseKeys = allKeys.filter(key => 
+                key.includes('supabase') || 
+                key.includes('sb-') || 
+                key.includes('auth-token')
+              );
+              if (supabaseKeys.length > 0) {
+                await AsyncStorage.multiRemove(supabaseKeys);
+              }
+            } catch (clearError) {
+              // Ignore errors when clearing
+            }
+            await loadUserFromStorage();
+            setLoading(false);
+            return;
+          }
+          
+          const sessionUser = data?.session?.user;
+          if (sessionUser) {
+            // Add timeout to fetchUserProfile (increased to 3 seconds for slower networks)
+            try {
+              const profilePromise = fetchUserProfile(sessionUser.id);
+              const profileTimeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Profile fetch timeout')), 3000)
+              );
+              const profile = await Promise.race([profilePromise, profileTimeoutPromise]) as any;
+              
+              const userData: User = {
+                uid: sessionUser.id,
+                email: sessionUser.email || '',
+                username: profile?.username || '',
+                displayName: profile?.displayName,
+                photoURL: profile?.photoURL,
+              };
+              setUser(userData);
+              await saveUserToStorage(userData);
+            } catch (profileError) {
+              console.warn('Profile fetch error, using session data:', profileError);
+              // Use session data even if profile fetch fails
+              const userData: User = {
+                uid: sessionUser.id,
+                email: sessionUser.email || '',
+                username: sessionUser.email?.split('@')[0] || '',
+                displayName: undefined,
+                photoURL: undefined,
+              };
+              setUser(userData);
+              await saveUserToStorage(userData);
+            }
+          } else {
+            await loadUserFromStorage();
+          }
+        } catch (sessionError: any) {
+          clearTimeout(timeoutId);
+          console.warn('Session loading error:', sessionError?.message || sessionError);
+          // If it's a timeout or network error, just load from storage
           await loadUserFromStorage();
         }
       } catch (error: any) {
+        clearTimeout(timeoutId);
         // Catch any errors during session loading
         console.warn('Error loading session:', error?.message || error);
         // Clear potentially invalid session
@@ -259,6 +303,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
         await loadUserFromStorage();
       } finally {
+        clearTimeout(timeoutId);
         setLoading(false);
       }
     };

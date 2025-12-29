@@ -183,28 +183,33 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
     publishedDate?: string;
     publisherLocation?: string;
   }> => {
-    if (!book.googleBooksId) {
-      return {};
+    // If book already has publisher data, return it (no API call needed)
+    if (book.publisher && book.publishedDate) {
+      return {
+        publisher: book.publisher,
+        publishedDate: book.publishedDate,
+        publisherLocation: undefined, // Not stored in book object
+      };
     }
 
-    try {
-      const response = await fetch(
-        `https://www.googleapis.com/books/v1/volumes/${book.googleBooksId}`
-      );
-      if (!response.ok) return {};
-      
-      const data = await response.json();
-      const volumeInfo = data.volumeInfo || {};
-      
-      return {
-        publisher: volumeInfo.publisher,
-        publishedDate: volumeInfo.publishedDate,
-        publisherLocation: volumeInfo.publisherLocation || volumeInfo.publishedLocation,
-      };
-    } catch (error) {
-      console.warn('Error fetching book details:', error);
-      return {};
+    // If we have googleBooksId, use centralized service
+    if (book.googleBooksId) {
+      try {
+        const { fetchBookData } = await import('../services/googleBooksService');
+        const bookData = await fetchBookData(book.title, book.author, book.googleBooksId);
+        
+        return {
+          publisher: bookData.publisher,
+          publishedDate: bookData.publishedDate,
+          publisherLocation: undefined, // Not available in Google Books API
+        };
+      } catch (error) {
+        console.warn('Error fetching book details:', error);
+        return {};
+      }
     }
+
+    return {};
   };
 
   const formatAuthorName = (author: string, format: 'MLA' | 'APA' | 'Chicago'): string => {
@@ -671,6 +676,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
         onClose={() => {
           setShowBookDetail(false);
           setSelectedBook(null);
+        }}
+        onBookUpdate={(updatedBook) => {
+          // Update the book in state when description/stats are fetched
+          setBooks(prev => prev.map(b => 
+            b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+              ? updatedBook
+              : b
+          ));
+          setSelectedBook(updatedBook); // Update the selected book too
         }}
         onDeleteBook={async (book) => {
           if (!user) return;

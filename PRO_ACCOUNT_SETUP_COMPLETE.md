@@ -117,3 +117,4 @@ WHERE user_id = 'USER_UUID_HERE';
 - Pro users have **unlimited scans** (no tracking)
 - System is ready for Apple IAP integration later
 
+

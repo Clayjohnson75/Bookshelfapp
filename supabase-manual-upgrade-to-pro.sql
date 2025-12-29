@@ -41,3 +41,4 @@ WHERE u.email = 'USER_EMAIL_HERE';
 --   SELECT id FROM auth.users WHERE email = 'USER_EMAIL_HERE'
 -- );
 
+

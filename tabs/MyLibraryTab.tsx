@@ -51,6 +51,8 @@ export const MyLibraryTab: React.FC = () => {
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   const [showFolderView, setShowFolderView] = useState(false);
   const [showLibraryView, setShowLibraryView] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const [booksSectionY, setBooksSectionY] = useState(0);
@@ -174,6 +176,17 @@ export const MyLibraryTab: React.FC = () => {
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
       
+      // Fetch covers for books that don't have them
+      const booksNeedingCovers = loadedBooks.filter(book => !getBookCoverUri(book));
+      if (booksNeedingCovers.length > 0) {
+        console.log(`🖼️ Fetching covers for ${booksNeedingCovers.length} books without covers in library...`);
+        setTimeout(() => {
+          fetchCoversForBooks(booksNeedingCovers).catch(error => {
+            console.error('Error fetching covers for library books:', error);
+          });
+        }, 500);
+      }
+      
       // Helper to normalize strings for comparison (local to this function)
       const normalizeString = (str: string | undefined): string => {
         if (!str) return '';
@@ -239,6 +252,129 @@ export const MyLibraryTab: React.FC = () => {
       }
     }
     return book.coverUrl;
+  };
+
+  // Download and cache cover image
+  const downloadAndCacheCover = async (coverUrl: string, googleBooksId: string): Promise<string | null> => {
+    if (!FileSystem.documentDirectory) return null;
+    
+    try {
+      const filename = `cover_${googleBooksId}.jpg`;
+      const localPath = `${FileSystem.documentDirectory}${filename}`;
+      
+      // Check if already cached
+      const fileInfo = await FileSystem.getInfoAsync(localPath);
+      if (fileInfo.exists) {
+        return filename; // Return relative path
+      }
+      
+      // Download and save
+      const downloadResult = await FileSystem.downloadAsync(coverUrl, localPath);
+      if (downloadResult.uri) {
+        return filename; // Return relative path
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error downloading cover:', error);
+      return null;
+    }
+  };
+
+  // Fetch covers for books that don't have them
+  const fetchCoversForBooks = async (booksToFetch: Book[]) => {
+    if (!user) return;
+    
+    // Import the centralized service
+    const { fetchBookData } = await import('../services/googleBooksService');
+    
+    const bookUpdates = new Map<string, Book>(); // Track updates by book ID
+    
+    // Process books sequentially (service handles rate limiting)
+    for (const book of booksToFetch) {
+      try {
+        // Skip if already has all data and local cache
+        if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
+          try {
+            const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            if (fileInfo.exists && book.coverUrl) {
+              continue; // Already has everything, skip
+            }
+          } catch (error) {
+            // File doesn't exist, continue to fetch
+          }
+        }
+
+        // Use centralized service - it will use googleBooksId if available (much faster!)
+        const bookData = await fetchBookData(
+          book.title,
+          book.author,
+          book.googleBooksId // If we already have the ID, use it instead of searching
+        );
+        
+        if (bookData.coverUrl && bookData.googleBooksId) {
+          // Download and cache the cover
+          const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
+          
+          // Update the book with cover data
+          const updatedBook: Book = {
+            ...book,
+            coverUrl: bookData.coverUrl,
+            googleBooksId: bookData.googleBooksId,
+            ...(localPath && { localCoverPath: localPath }),
+            // Include all stats fields
+            ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
+            ...(bookData.categories && { categories: bookData.categories }),
+            ...(bookData.publisher && { publisher: bookData.publisher }),
+            ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
+            ...(bookData.language && { language: bookData.language }),
+            ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
+            ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
+            ...(bookData.subtitle && { subtitle: bookData.subtitle }),
+            ...(bookData.printType && { printType: bookData.printType }),
+            ...(bookData.description && { description: bookData.description }),
+          };
+
+          // Store update
+          bookUpdates.set(book.id || `${book.title}_${book.author}`, updatedBook);
+        }
+      } catch (error) {
+        console.error(`Error fetching data for ${book.title}:`, error);
+      }
+      
+      // Service handles rate limiting, but we add a small delay between books
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Apply all updates at once
+    if (bookUpdates.size > 0) {
+      setBooks(prev => {
+        const updated = prev.map(b => {
+          const update = bookUpdates.get(b.id || `${b.title}_${b.author}`);
+          return update || b;
+        });
+        
+        // Save to AsyncStorage
+        const userApprovedKey = `approved_books_${user.uid}`;
+        AsyncStorage.setItem(userApprovedKey, JSON.stringify(updated)).catch(error => {
+          console.error('Error saving updated books:', error);
+        });
+        
+        return updated;
+      });
+      
+      // Also update photos if any books are in photos
+      setPhotos(prev =>
+        prev.map(photo => ({
+          ...photo,
+          books: photo.books.map(photoBook => {
+            const update = bookUpdates.get(photoBook.id || `${photoBook.title}_${photoBook.author}`);
+            return update || photoBook;
+          })
+        }))
+      );
+    }
   };
 
   // Find which photo/scan the book came from
@@ -375,38 +511,76 @@ export const MyLibraryTab: React.FC = () => {
   };
 
   const handleBookPress = (book: Book) => {
-    const photo = findBookPhoto(book);
-    setSelectedBook(book);
-    setSelectedPhoto(photo);
-    setShowBookDetail(true);
+    if (isSelectionMode) {
+      // In selection mode, toggle selection instead of opening detail
+      toggleBookSelection(book.id || '');
+    } else {
+      // Normal mode, open book detail
+      const photo = findBookPhoto(book);
+      setSelectedBook(book);
+      setSelectedPhoto(photo);
+      setShowBookDetail(true);
+    }
   };
 
-  const renderBook = ({ item, index }: { item: Book; index: number }) => (
-    <TouchableOpacity
-      style={styles.bookCard}
-      onPress={() => handleBookPress(item)}
-      activeOpacity={0.7}
-    >
-      {getBookCoverUri(item) ? (
-        <Image 
-          source={{ uri: getBookCoverUri(item) }} 
-          style={styles.bookCover}
-          resizeMode="cover"
-        />
-      ) : (
-        <View style={[styles.bookCover, styles.placeholderCover]}>
-          <Text style={styles.placeholderText} numberOfLines={3}>
-            {item.title}
+  const toggleBookSelection = (bookId: string) => {
+    setSelectedBooks(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(bookId)) {
+        newSet.delete(bookId);
+      } else {
+        newSet.add(bookId);
+      }
+      return newSet;
+    });
+  };
+
+  const renderBook = ({ item, index }: { item: Book; index: number }) => {
+    const bookId = item.id || `${item.title}_${item.author || ''}`;
+    const isSelected = selectedBooks.has(bookId);
+    
+    return (
+      <TouchableOpacity
+        style={[
+          styles.bookCard,
+          isSelectionMode && isSelected && styles.selectedBookCard
+        ]}
+        onPress={() => handleBookPress(item)}
+        activeOpacity={0.7}
+      >
+        {isSelectionMode && (
+          <View style={styles.selectionOverlay}>
+            {isSelected && (
+              <View style={styles.selectionCheckmark}>
+                <Ionicons name="checkmark-circle" size={24} color="#4299e1" />
+              </View>
+            )}
+          </View>
+        )}
+        {getBookCoverUri(item) ? (
+          <Image 
+            source={{ uri: getBookCoverUri(item) }} 
+            style={[
+              styles.bookCover,
+              isSelectionMode && isSelected && styles.selectedBookCover
+            ]}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={[styles.bookCover, styles.placeholderCover]}>
+            <Text style={styles.placeholderText} numberOfLines={3}>
+              {item.title}
+            </Text>
+          </View>
+        )}
+        {item.author && (
+          <Text style={styles.bookAuthor} numberOfLines={2}>
+            {item.author}
           </Text>
-        </View>
-      )}
-      {item.author && (
-        <Text style={styles.bookAuthor} numberOfLines={2}>
-          {item.author}
-        </Text>
-      )}
-    </TouchableOpacity>
-  );
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   // Helper function to normalize strings for comparison
   const normalizeString = (str: string | undefined): string => {
@@ -803,9 +977,42 @@ export const MyLibraryTab: React.FC = () => {
         }}
       >
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>My Library</Text>
-          <Text style={styles.sectionSubtitle}>{sortedDisplayedBooks.length} {sortedDisplayedBooks.length === 1 ? 'book' : 'books'}</Text>
+          <View style={styles.sectionHeaderLeft}>
+            <Text style={styles.sectionTitle}>My Library</Text>
+            <Text style={styles.sectionSubtitle}>{sortedDisplayedBooks.length} {sortedDisplayedBooks.length === 1 ? 'book' : 'books'}</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.selectButton}
+            onPress={() => {
+              setIsSelectionMode(!isSelectionMode);
+              if (isSelectionMode) {
+                setSelectedBooks(new Set());
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.selectButtonText}>
+              {isSelectionMode ? 'Cancel' : 'Select'}
+            </Text>
+          </TouchableOpacity>
         </View>
+        
+        {/* Selection Mode Indicator */}
+        {isSelectionMode && selectedBooks.size > 0 && (
+          <View style={styles.selectionBar}>
+            <Text style={styles.selectionCount}>
+              {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'} selected
+            </Text>
+            <TouchableOpacity
+              style={styles.clearSelectionButton}
+              onPress={() => setSelectedBooks(new Set())}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.clearSelectionText}>Clear</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        
         {/* Library Search Bar */}
         <View style={styles.librarySearchContainer}>
           <TextInput
@@ -888,6 +1095,15 @@ export const MyLibraryTab: React.FC = () => {
         }}
         onRemove={() => {
           loadUserData(); // Refresh library after removal
+        }}
+        onBookUpdate={(updatedBook) => {
+          // Update the book in state when description/stats are fetched
+          setBooks(prev => prev.map(b => 
+            b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+              ? updatedBook
+              : b
+          ));
+          setSelectedBook(updatedBook); // Update the selected book too
         }}
       />
 
@@ -1781,11 +1997,57 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'flex-start',
     marginBottom: 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+  },
+  sectionHeaderLeft: {
+    flex: 1,
+  },
+  selectButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#4299e1',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  selectButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  selectionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#e6f2ff',
+    marginBottom: 12,
+    borderRadius: 8,
+    marginHorizontal: 15,
+  },
+  selectionCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4299e1',
+  },
+  clearSelectionButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#ffffff',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#4299e1',
+  },
+  clearSelectionText: {
+    color: '#4299e1',
+    fontSize: 12,
+    fontWeight: '600',
   },
   librarySearchContainer: {
     flexDirection: 'row',
@@ -1880,6 +2142,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
     marginHorizontal: 4,
+    position: 'relative',
+  },
+  selectedBookCard: {
+    borderWidth: 2,
+    borderColor: '#4299e1',
+    borderRadius: 8,
+    padding: 2,
+  },
+  selectionOverlay: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    zIndex: 10,
+  },
+  selectionCheckmark: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 12,
+    padding: 2,
   },
   bookCover: {
     width: '100%',
@@ -1892,6 +2172,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  selectedBookCover: {
+    opacity: 0.7,
   },
   placeholderCover: {
     justifyContent: 'center',

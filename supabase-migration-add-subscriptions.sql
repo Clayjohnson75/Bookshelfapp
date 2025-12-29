@@ -3,6 +3,7 @@
 -- ============================================================
 -- Copy and paste this entire file into your Supabase SQL Editor
 -- This creates the subscription system for pro accounts
+-- Uses Apple In-App Purchases (IAP) for payment processing
 -- ============================================================
 
 -- Add subscription fields to profiles table
@@ -11,12 +12,13 @@ ALTER TABLE public.profiles
   ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'active' CHECK (subscription_status IN ('active', 'cancelled', 'past_due', 'trialing')),
   ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT,
-  ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+  ADD COLUMN IF NOT EXISTS apple_transaction_id TEXT,
+  ADD COLUMN IF NOT EXISTS apple_original_transaction_id TEXT,
+  ADD COLUMN IF NOT EXISTS apple_product_id TEXT;
 
 -- Create index for faster subscription queries
 CREATE INDEX IF NOT EXISTS idx_profiles_subscription_tier ON public.profiles(subscription_tier);
-CREATE INDEX IF NOT EXISTS idx_profiles_stripe_customer_id ON public.profiles(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_apple_transaction_id ON public.profiles(apple_transaction_id);
 
 -- Update user_stats to track monthly scans
 ALTER TABLE public.user_stats
@@ -106,6 +108,7 @@ RETURNS TABLE(
 DECLARE
   user_tier TEXT;
   monthly_count INTEGER;
+  reset_at TIMESTAMPTZ;
   free_limit INTEGER := 5;
 BEGIN
   -- Reset monthly scans if needed
@@ -122,22 +125,20 @@ BEGIN
   FROM public.user_stats
   WHERE user_id = user_uuid;
   
-  -- Return usage info
-  RETURN QUERY SELECT
-    COALESCE(user_tier, 'free')::TEXT,
-    monthly_count,
-    CASE WHEN user_tier = 'pro' THEN NULL ELSE free_limit END,
-    CASE 
-      WHEN user_tier = 'pro' THEN NULL 
-      ELSE GREATEST(0, free_limit - monthly_count)
-    END,
-    COALESCE(reset_at, DATE_TRUNC('month', NOW()) + INTERVAL '1 month')
-  FROM public.user_stats
-  WHERE user_id = user_uuid
-  LIMIT 1;
-  
-  -- If no stats record exists, return defaults
-  IF NOT FOUND THEN
+  -- Return usage info using variables (not selecting from tables)
+  -- This avoids ambiguous column references
+  IF monthly_count IS NOT NULL THEN
+    RETURN QUERY SELECT
+      COALESCE(user_tier, 'free')::TEXT,
+      monthly_count,
+      CASE WHEN COALESCE(user_tier, 'free') = 'pro' THEN NULL ELSE free_limit END,
+      CASE 
+        WHEN COALESCE(user_tier, 'free') = 'pro' THEN NULL 
+        ELSE GREATEST(0, free_limit - monthly_count)
+      END,
+      COALESCE(reset_at, DATE_TRUNC('month', NOW()) + INTERVAL '1 month');
+  ELSE
+    -- If no stats record exists, return defaults
     RETURN QUERY SELECT
       COALESCE(user_tier, 'free')::TEXT,
       0,
@@ -155,8 +156,8 @@ GRANT EXECUTE ON FUNCTION public.get_user_scan_usage(UUID) TO authenticated;
 -- Add comments
 COMMENT ON COLUMN public.profiles.subscription_tier IS 'User subscription tier: free or pro';
 COMMENT ON COLUMN public.profiles.subscription_status IS 'Subscription status: active, cancelled, past_due, trialing';
-COMMENT ON COLUMN public.profiles.stripe_customer_id IS 'Stripe customer ID for payment processing';
-COMMENT ON COLUMN public.profiles.stripe_subscription_id IS 'Stripe subscription ID';
+COMMENT ON COLUMN public.profiles.apple_transaction_id IS 'Apple IAP transaction ID for the current subscription';
+COMMENT ON COLUMN public.profiles.apple_original_transaction_id IS 'Apple IAP original transaction ID (persists across renewals)';
+COMMENT ON COLUMN public.profiles.apple_product_id IS 'Apple IAP product ID (e.g., com.bookshelfscanner.pro.monthly)';
 COMMENT ON COLUMN public.user_stats.monthly_scans IS 'Number of scans this month (resets monthly)';
 COMMENT ON COLUMN public.user_stats.monthly_reset_at IS 'Timestamp when monthly scans reset';
-

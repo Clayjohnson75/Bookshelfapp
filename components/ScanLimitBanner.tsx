@@ -31,8 +31,8 @@ export const ScanLimitBanner: React.FC<ScanLimitBannerProps> = ({ onUpgradePress
     return null;
   }
 
-  // Don't show banner for pro users
-  if (usage.subscriptionTier === 'pro') {
+  // Don't show banner for pro or owner users
+  if (usage.subscriptionTier === 'pro' || usage.subscriptionTier === 'owner') {
     return null;
   }
 

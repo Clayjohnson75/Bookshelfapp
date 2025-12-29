@@ -104,8 +104,8 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   if (currentTier === 'pro') {
     return (
       <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
-        <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-          <View style={styles.header}>
+        <SafeAreaView style={styles.container} edges={['bottom']}>
+          <View style={[styles.header, { paddingTop: Math.max(insets.top, 20) + 16 }]}>
             <Text style={styles.headerTitle}>Pro Account Active</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
               <Text style={styles.closeButtonText}>✕</Text>
@@ -127,8 +127,8 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <View style={styles.header}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 20) + 16 }]}>
           <Text style={styles.headerTitle}>Upgrade to Pro</Text>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <Text style={styles.closeButtonText}>✕</Text>
@@ -198,7 +198,7 @@ const styles = StyleSheet.create({
   },
   header: {
     backgroundColor: '#2d3748',
-    paddingVertical: 16,
+    paddingBottom: 16,
     paddingHorizontal: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',

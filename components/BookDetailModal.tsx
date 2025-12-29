@@ -23,6 +23,7 @@ interface BookDetailModalProps {
   photo: Photo | null;
   onClose: () => void;
   onRemove?: () => void; // Callback to refresh library after removal
+  onBookUpdate?: (updatedBook: Book) => void; // Callback to update book data (e.g., when description is fetched)
 }
 
 const BookDetailModal: React.FC<BookDetailModalProps> = ({
@@ -31,6 +32,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   photo,
   onClose,
   onRemove,
+  onBookUpdate,
 }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -79,18 +81,24 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     if (visible && book) {
       loadReadStatus();
       
-      // If book has description already, use it
+      // If book has description already, use it (don't fetch again)
       if (book.description) {
         setDescription(cleanDescription(book.description));
+        setLoadingDescription(false);
       } else if (book.googleBooksId) {
-        // Fetch description from Google Books API
-        fetchBookDescription(book.googleBooksId);
+        // Only fetch if we don't have description yet
+        // Check if description is already being loaded (avoid duplicate requests)
+        if (!loadingDescription) {
+          fetchBookDescription(book.googleBooksId);
+        }
       } else {
         setDescription(null);
+        setLoadingDescription(false);
       }
     } else {
       setDescription(null);
       setIsRead(false);
+      setLoadingDescription(false);
     }
   }, [visible, book, user]);
 
@@ -306,18 +314,59 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   };
 
   const fetchBookDescription = async (googleBooksId: string) => {
+    if (!book || !user) return;
+    
     setLoadingDescription(true);
     try {
-      const response = await fetch(
-        `https://www.googleapis.com/books/v1/volumes/${googleBooksId}`
-      );
-      if (!response.ok) {
-        throw new Error('Failed to fetch book description');
-      }
-      const data = await response.json();
-      const desc = data.volumeInfo?.description;
-      if (desc) {
-        setDescription(cleanDescription(desc));
+      // Use centralized service - it handles rate limiting and caching
+      const { fetchBookData } = await import('../services/googleBooksService');
+      const bookData = await fetchBookData(book.title, book.author, googleBooksId);
+      
+      if (bookData.description) {
+        const cleanedDesc = cleanDescription(bookData.description);
+        setDescription(cleanedDesc);
+        
+        // Save the description to the book object and persist it
+        const updatedBook: Book = {
+          ...book,
+          description: bookData.description, // Save raw description (with HTML) for future use
+          // Also update any other missing stats
+          ...(bookData.pageCount !== undefined && !book.pageCount && { pageCount: bookData.pageCount }),
+          ...(bookData.categories && !book.categories && { categories: bookData.categories }),
+          ...(bookData.publisher && !book.publisher && { publisher: bookData.publisher }),
+          ...(bookData.publishedDate && !book.publishedDate && { publishedDate: bookData.publishedDate }),
+          ...(bookData.language && !book.language && { language: bookData.language }),
+          ...(bookData.averageRating !== undefined && book.averageRating === undefined && { averageRating: bookData.averageRating }),
+          ...(bookData.ratingsCount !== undefined && book.ratingsCount === undefined && { ratingsCount: bookData.ratingsCount }),
+          ...(bookData.subtitle && !book.subtitle && { subtitle: bookData.subtitle }),
+          ...(bookData.printType && !book.printType && { printType: bookData.printType }),
+        };
+        
+        // Save to Supabase
+        const { saveBookToSupabase } = await import('../services/supabaseSync');
+        await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+        
+        // Save to AsyncStorage
+        try {
+          const userApprovedKey = `approved_books_${user.uid}`;
+          const storedApproved = await AsyncStorage.getItem(userApprovedKey);
+          const approvedBooks: Book[] = storedApproved ? JSON.parse(storedApproved) : [];
+          
+          const updatedBooks = approvedBooks.map(b => 
+            (b.id === book.id || (b.title === book.title && b.author === book.author))
+              ? updatedBook
+              : b
+          );
+          
+          await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+        } catch (storageError) {
+          console.error('Error saving description to AsyncStorage:', storageError);
+        }
+        
+        // Notify parent component if callback provided
+        if (onBookUpdate) {
+          onBookUpdate(updatedBook);
+        }
       } else {
         setDescription(null);
       }

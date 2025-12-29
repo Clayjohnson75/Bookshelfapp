@@ -61,17 +61,73 @@ export const ExploreTab: React.FC = () => {
   const loadBooks = async (query: string, page: number, isAuthorSearch: boolean = false) => {
     try {
       const startIndex = page * 20;
-      const queryParam = isAuthorSearch 
-        ? `inauthor:${encodeURIComponent(query)}`
-        : encodeURIComponent(query);
+      let queryParam: string;
+      
+      if (isAuthorSearch) {
+        queryParam = `inauthor:${encodeURIComponent(query)}`;
+      } else {
+        // For book searches, try to find popular editions by searching for the title
+        // and prioritizing books with ratings and more metadata
+        queryParam = `intitle:${encodeURIComponent(query)}`;
+      }
+      
+      // Use 'newest' orderBy first to get more complete/popular editions, 
+      // but we'll also try 'relevance' as a fallback
+      // Actually, 'relevance' should work better for popular books, but let's add langRestrict for English
       const response = await fetch(
-        `https://www.googleapis.com/books/v1/volumes?q=${queryParam}&maxResults=20&startIndex=${startIndex}&orderBy=relevance`
+        `https://www.googleapis.com/books/v1/volumes?q=${queryParam}&maxResults=20&startIndex=${startIndex}&orderBy=relevance&langRestrict=en`
       );
+      
+      if (!response.ok) {
+        console.error(`Google Books API error: ${response.status} ${response.statusText}`);
+        return { items: [], totalItems: 0, hasMore: false };
+      }
+      
       const data = await response.json();
+      
+      // Sort results to prioritize popular books (those with ratings, descriptions, etc.)
+      let items = data.items || [];
+      if (items.length > 0 && !isAuthorSearch) {
+        // Sort by: has rating > has description > has more metadata
+        items.sort((a: BookResult, b: BookResult) => {
+          const aRating = a.volumeInfo?.averageRating || 0;
+          const bRating = b.volumeInfo?.averageRating || 0;
+          const aHasDesc = a.volumeInfo?.description ? 1 : 0;
+          const bHasDesc = b.volumeInfo?.description ? 1 : 0;
+          const aHasImage = a.volumeInfo?.imageLinks ? 1 : 0;
+          const bHasImage = b.volumeInfo?.imageLinks ? 1 : 0;
+          
+          // Prioritize books with ratings
+          if (aRating > 0 && bRating === 0) return -1;
+          if (bRating > 0 && aRating === 0) return 1;
+          if (aRating > 0 && bRating > 0) {
+            // If both have ratings, sort by rating count or rating value
+            const aRatingsCount = a.volumeInfo?.ratingsCount || 0;
+            const bRatingsCount = b.volumeInfo?.ratingsCount || 0;
+            if (aRatingsCount !== bRatingsCount) {
+              return bRatingsCount - aRatingsCount; // More ratings = more popular
+            }
+            return bRating - aRating; // Higher rating = better
+          }
+          
+          // Then prioritize books with descriptions
+          if (aHasDesc !== bHasDesc) {
+            return bHasDesc - aHasDesc;
+          }
+          
+          // Then prioritize books with images
+          if (aHasImage !== bHasImage) {
+            return bHasImage - aHasImage;
+          }
+          
+          return 0;
+        });
+      }
+      
       return {
-        items: data.items || [],
+        items: items,
         totalItems: data.totalItems || 0,
-        hasMore: (data.items?.length || 0) === 20 && (startIndex + 20) < (data.totalItems || 0)
+        hasMore: (items.length === 20 && (startIndex + 20) < (data.totalItems || 0))
       };
     } catch (error) {
       console.error('Book search failed:', error);

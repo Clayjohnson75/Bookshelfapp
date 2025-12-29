@@ -7,10 +7,10 @@
 import { supabase } from '../lib/supabaseClient';
 
 export interface ScanUsage {
-  subscriptionTier: 'free' | 'pro';
+  subscriptionTier: 'free' | 'pro' | 'owner';
   monthlyScans: number;
-  monthlyLimit: number | null; // null for pro (unlimited)
-  scansRemaining: number | null; // null for pro (unlimited)
+  monthlyLimit: number | null; // null for pro/owner (unlimited)
+  scansRemaining: number | null; // null for pro/owner (unlimited)
   resetAt: Date;
 }
 
@@ -55,7 +55,8 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
     });
 
     if (error) {
-      console.error('Error getting scan usage:', error);
+      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      console.error('Error getting scan usage:', errorMessage);
       return null;
     }
 
@@ -78,8 +79,8 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
       scansRemaining: usage.scans_remaining,
       resetAt: new Date(usage.reset_at),
     };
-  } catch (error) {
-    console.error('Error getting scan usage:', error);
+  } catch (error: any) {
+    console.error('Error getting scan usage:', error?.message || error);
     return null;
   }
 }
@@ -87,7 +88,7 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
 /**
  * Get user's subscription tier
  */
-export async function getUserSubscriptionTier(userId: string): Promise<'free' | 'pro'> {
+export async function getUserSubscriptionTier(userId: string): Promise<'free' | 'pro' | 'owner'> {
   if (!supabase) {
     return 'free';
   }
@@ -103,7 +104,7 @@ export async function getUserSubscriptionTier(userId: string): Promise<'free' | 
       return 'free';
     }
 
-    return (data.subscription_tier as 'free' | 'pro') || 'free';
+    return (data.subscription_tier as 'free' | 'pro' | 'owner') || 'free';
   } catch (error) {
     console.error('Error getting subscription tier:', error);
     return 'free';
