@@ -385,9 +385,20 @@ export const ScansTab: React.FC = () => {
     const usage = await getUserScanUsage(user.uid);
     setScanUsage(usage);
     
-    // Check if user can scan
-    const userCanScan = await canUserScan(user.uid);
-    setCanScan(userCanScan);
+    // Determine if user can scan based on usage data
+    // Only disable if user is free tier AND has used all 5 scans
+    if (usage) {
+      const isFreeTier = usage.subscriptionTier === 'free';
+      const hasScansRemaining = usage.scansRemaining !== null && usage.scansRemaining > 0;
+      const userCanScan = !isFreeTier || hasScansRemaining;
+      setCanScan(userCanScan);
+      
+      console.log(`📊 Scan usage: tier=${usage.subscriptionTier}, scans=${usage.monthlyScans}/${usage.monthlyLimit}, remaining=${usage.scansRemaining}, canScan=${userCanScan}`);
+    } else {
+      // If we can't get usage, default to allowing scans (don't block users)
+      console.warn('⚠️ Could not load scan usage, allowing scans by default');
+      setCanScan(true);
+    }
   };
   
   // Background scan syncing disabled - scans work synchronously

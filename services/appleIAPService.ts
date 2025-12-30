@@ -9,7 +9,8 @@ import { Platform, Alert } from 'react-native';
 import { supabase } from '../lib/supabaseClient';
 
 // Product ID - Update this to match your App Store Connect product ID
-const PRO_SUBSCRIPTION_PRODUCT_ID = 'com.bookshelfscanner.pro.monthly'; // TODO: Update this!
+// IMPORTANT: This must match EXACTLY what you set in App Store Connect
+const PRO_SUBSCRIPTION_PRODUCT_ID = 'com.bookshelfscanner.pro.monthly';
 
 let purchaseUpdateSubscription: any = null;
 let purchaseErrorSubscription: any = null;
