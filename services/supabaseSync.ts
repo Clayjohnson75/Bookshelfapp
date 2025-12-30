@@ -471,7 +471,7 @@ export async function saveBookToSupabase(
       isbn: book.isbn || null,
       confidence: book.confidence || null,
       status: status,
-      scanned_at: book.scannedAt || null,
+      scanned_at: book.scannedAt ? new Date(book.scannedAt).toISOString() : null,
       cover_url: book.coverUrl || null,
       local_cover_path: book.localCoverPath || null,
       google_books_id: book.googleBooksId || null,

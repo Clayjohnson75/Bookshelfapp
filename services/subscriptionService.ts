@@ -86,6 +86,32 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
 }
 
 /**
+ * Increment user's scan count (client-side fallback)
+ * This ensures the count updates even if the API uses a different database
+ */
+export async function incrementScanCount(userId: string): Promise<boolean> {
+  if (!supabase) {
+    return false;
+  }
+
+  try {
+    const { error } = await supabase.rpc('increment_user_scan_count', {
+      user_uuid: userId,
+    });
+
+    if (error) {
+      console.error('Error incrementing scan count:', error);
+      return false;
+    }
+
+    return true;
+  } catch (error: any) {
+    console.error('Error incrementing scan count:', error?.message || error);
+    return false;
+  }
+}
+
+/**
  * Get user's subscription tier
  */
 export async function getUserSubscriptionTier(userId: string): Promise<'free' | 'pro' | 'owner'> {

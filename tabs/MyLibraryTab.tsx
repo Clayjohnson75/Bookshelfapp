@@ -23,6 +23,7 @@ import { useAuth } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
 import { LibraryView } from '../screens/LibraryView';
+import { loadBooksFromSupabase } from '../services/supabaseSync';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -160,6 +161,18 @@ export const MyLibraryTab: React.FC = () => {
     if (!user) return;
     
     try {
+      console.log('📥 Loading user data from Supabase...');
+      
+      // Load from Supabase first (primary source of truth for books with cover data)
+      let supabaseBooks = null;
+      try {
+        supabaseBooks = await loadBooksFromSupabase(user.uid);
+      } catch (error) {
+        console.error('❌ Error loading books from Supabase:', error);
+        // Continue with local data if Supabase fails
+      }
+      
+      // Also load from AsyncStorage for backwards compatibility
       const userApprovedKey = `approved_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
       const userFoldersKey = `folders_${user.uid}`;
@@ -168,16 +181,49 @@ export const MyLibraryTab: React.FC = () => {
       const photosData = await AsyncStorage.getItem(userPhotosKey);
       const foldersData = await AsyncStorage.getItem(userFoldersKey);
       
-      const loadedBooks: Book[] = approvedData ? JSON.parse(approvedData) : [];
+      const localBooks: Book[] = approvedData ? JSON.parse(approvedData) : [];
       const loadedPhotos: Photo[] = photosData ? JSON.parse(photosData) : [];
       const loadedFolders: Folder[] = foldersData ? JSON.parse(foldersData) : [];
       
-      setBooks(loadedBooks);
+      // Merge Supabase books (which have cover data) with local books
+      // Prefer Supabase books as they have the latest cover data
+      let mergedBooks: Book[] = [];
+      if (supabaseBooks && supabaseBooks.approved && supabaseBooks.approved.length > 0) {
+        // Use Supabase books as primary source (they have cover data from database)
+        mergedBooks = supabaseBooks.approved;
+        console.log(`📚 Loaded ${mergedBooks.length} approved books from Supabase`);
+        
+        // Merge in any local books that aren't in Supabase (for backwards compatibility)
+        // Match by both ID and title+author to catch duplicates
+        const supabaseBookIds = new Set(mergedBooks.map(b => b.id).filter(Boolean));
+        const supabaseBookKeys = new Set(
+          mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
+        );
+        
+        const localOnlyBooks = localBooks.filter(b => {
+          // Skip if already in Supabase by ID
+          if (b.id && supabaseBookIds.has(b.id)) return false;
+          // Skip if already in Supabase by title+author
+          const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
+          return !supabaseBookKeys.has(key);
+        });
+        
+        if (localOnlyBooks.length > 0) {
+          mergedBooks = [...mergedBooks, ...localOnlyBooks];
+          console.log(`📚 Added ${localOnlyBooks.length} local-only books`);
+        }
+      } else {
+        // Fallback to local books if Supabase has none
+        mergedBooks = localBooks;
+        console.log(`📚 Using ${mergedBooks.length} local books (no Supabase data)`);
+      }
+      
+      setBooks(mergedBooks);
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
       
       // Fetch covers for books that don't have them
-      const booksNeedingCovers = loadedBooks.filter(book => !getBookCoverUri(book));
+      const booksNeedingCovers = mergedBooks.filter(book => !getBookCoverUri(book));
       if (booksNeedingCovers.length > 0) {
         console.log(`🖼️ Fetching covers for ${booksNeedingCovers.length} books without covers in library...`);
         setTimeout(() => {
@@ -220,7 +266,7 @@ export const MyLibraryTab: React.FC = () => {
         
         // Check if any book from this photo matches an approved book
         return photo.books.some(photoBook => 
-          loadedBooks.some(approvedBook => booksMatch(photoBook, approvedBook))
+          mergedBooks.some(approvedBook => booksMatch(photoBook, approvedBook))
         );
       }).length;
       
@@ -231,7 +277,7 @@ export const MyLibraryTab: React.FC = () => {
           email: user.email || '',
           createdAt: new Date(),
           lastLogin: new Date(),
-          totalBooks: loadedBooks.length,
+          totalBooks: mergedBooks.length,
           totalPhotos: scansWithApprovedBooks,
         };
         setUserProfile(profile);

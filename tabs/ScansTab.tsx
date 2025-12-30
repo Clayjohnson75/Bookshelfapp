@@ -38,8 +38,8 @@ import {
   deletePhotoFromSupabase,
   deleteBookFromSupabase,
 } from '../services/supabaseSync';
-import { canUserScan, getUserScanUsage, ScanUsage } from '../services/subscriptionService';
-import { ScanLimitBanner } from '../components/ScanLimitBanner';
+import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage } from '../services/subscriptionService';
+import { ScanLimitBanner, ScanLimitBannerRef } from '../components/ScanLimitBanner';
 import { UpgradeModal } from '../components/UpgradeModal';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -100,6 +100,9 @@ export const ScansTab: React.FC = () => {
   
   // Ref to track which URIs are currently being processed to prevent duplicates
   const processingUrisRef = useRef<Set<string>>(new Set());
+  
+  // Ref to refresh scan limit banner after scans
+  const scanLimitBannerRef = useRef<ScanLimitBannerRef>(null);
   
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
@@ -1736,6 +1739,28 @@ export const ScansTab: React.FC = () => {
         await addBooksToSelectedFolder(scannedBookIds);
       }
       
+      // Increment scan count client-side (ensures it works with dev database)
+      // The API might be using production Supabase, so we increment here too
+      if (user && allBooks.length > 0) {
+        incrementScanCount(user.uid).catch(error => {
+          console.error('Error incrementing scan count (non-blocking):', error);
+        });
+      }
+      
+      // Refresh scan limit banner after successful scan
+      // The API increments the count asynchronously, so refresh multiple times to catch the update
+      const refreshBanner = () => {
+        if (scanLimitBannerRef.current) {
+          scanLimitBannerRef.current.refresh();
+        }
+      };
+      
+      // Refresh after 500ms (give database time to update)
+      setTimeout(refreshBanner, 500);
+      
+      // Refresh after 1.5 seconds (in case of slow database)
+      setTimeout(refreshBanner, 1500);
+      
       // Update queue status using functional update to get latest state
       setScanQueue(prev => {
         const updatedQueue = prev.map(item => 
@@ -2755,6 +2780,7 @@ export const ScansTab: React.FC = () => {
       {/* Scan Limit Banner */}
       {user && (
         <ScanLimitBanner
+          ref={scanLimitBannerRef}
           onUpgradePress={() => setShowUpgradeModal(true)}
         />
       )}
@@ -2909,7 +2935,7 @@ export const ScansTab: React.FC = () => {
                   {new Date(photo.timestamp).toLocaleDateString()}
                 </Text>
                 <Text style={styles.photoBooks}>
-                  {photo.books.length} books found
+                  {photo.books?.length || 0} books found
                 </Text>
                 <Text style={styles.tapToView}>Tap to view details</Text>
               </View>

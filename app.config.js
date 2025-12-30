@@ -56,7 +56,7 @@ module.exports = {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-      buildNumber: "17",
+      buildNumber: "18",
       infoPlist: {
         ITSAppUsesNonExemptEncryption: false,
         NSCameraUsageDescription: "Bookshelf Scanner uses your camera to capture photos of bookshelves. The app uses AI to automatically detect book titles and authors from the spines visible in your photos, allowing you to build and manage your digital book library. For example, when you take a photo of your bookshelf, the app identifies books like 'The Great Gatsby by F. Scott Fitzgerald' from their spines.",
@@ -91,9 +91,25 @@ module.exports = {
       eas: {
         projectId: "b558ee2d-5af2-481c-82af-669e79311aab"
       },
-      EXPO_PUBLIC_SUPABASE_URL: envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co',
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0',
-      EXPO_PUBLIC_API_BASE_URL: envVars.EXPO_PUBLIC_API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app',
+      // Environment Configuration:
+      // - Development (Expo Go/local): Use _DEV values from .env file
+      // - Production (EAS builds): Use values from EAS secrets or fallback to hardcoded production values
+      // Priority based on EAS_ENV:
+      //   - If EAS_ENV is NOT "production": Use _DEV values (for local dev/Expo Go)
+      //   - If EAS_ENV is "production": Use production values (from EAS secrets or fallback)
+      //   - If EAS_ENV not set (Expo Go): Use _DEV values
+      EXPO_PUBLIC_SUPABASE_URL: (process.env.EAS_ENV !== 'production' && (envVars.EXPO_PUBLIC_SUPABASE_URL_DEV || process.env.EXPO_PUBLIC_SUPABASE_URL_DEV)) ||
+                                 envVars.EXPO_PUBLIC_SUPABASE_URL || 
+                                 process.env.EXPO_PUBLIC_SUPABASE_URL || 
+                                 'https://cnlnrlzhhbrtehpkttqv.supabase.co',
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: (process.env.EAS_ENV !== 'production' && (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV)) ||
+                                      envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || 
+                                      process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 
+                                      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0',
+      EXPO_PUBLIC_API_BASE_URL: (process.env.EAS_ENV !== 'production' && (envVars.EXPO_PUBLIC_API_BASE_URL_DEV || process.env.EXPO_PUBLIC_API_BASE_URL_DEV)) ||
+                                 envVars.EXPO_PUBLIC_API_BASE_URL || 
+                                 process.env.EXPO_PUBLIC_API_BASE_URL || 
+                                 'https://bookshelfapp-five.vercel.app',
       // NOTE: API keys (OpenAI, Gemini) are now server-side only for security
       // They must be set as environment variables on Vercel (not in client code)
     }
