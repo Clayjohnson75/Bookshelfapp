@@ -1139,8 +1139,19 @@ export const MyLibraryTab: React.FC = () => {
           setSelectedBook(null);
           setSelectedPhoto(null);
         }}
-        onRemove={() => {
-          loadUserData(); // Refresh library after removal
+        onRemove={async () => {
+          // Immediately update local state to remove the book
+          if (selectedBook) {
+            setBooks(prev => prev.filter(b => {
+              // Match by ID if both have IDs
+              if (selectedBook.id && b.id && selectedBook.id === b.id) return false;
+              // Match by title and author
+              if (b.title === selectedBook.title && b.author === selectedBook.author) return false;
+              return true;
+            }));
+          }
+          // Then reload from Supabase to ensure sync
+          await loadUserData();
         }}
         onBookUpdate={(updatedBook) => {
           // Update the book in state when description/stats are fetched

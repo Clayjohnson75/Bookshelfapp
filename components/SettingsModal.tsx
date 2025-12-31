@@ -13,6 +13,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/SimpleAuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../lib/supabaseClient';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -24,6 +25,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
   const { user, signOut, deleteAccount } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [loading, setLoading] = useState(false);
+  const [clearingAccount, setClearingAccount] = useState(false);
 
   // Update username when user changes or modal opens
   React.useEffect(() => {
@@ -124,6 +126,175 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
     }
   };
 
+  const handleClearAccount = async () => {
+    if (!user) {
+      Alert.alert('Error', 'User not found. Please try again.');
+      return;
+    }
+
+    // First confirmation dialog
+    Alert.alert(
+      'Clear All Data',
+      'This will permanently delete:\n\n• All books in your library\n• All scan photos\n• All folders\n• All scan history\n\nThis action cannot be undone. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Yes, Clear Everything',
+          style: 'destructive',
+          onPress: async () => {
+            setClearingAccount(true);
+            try {
+              // Get counts for final confirmation
+              let bookCount = 0;
+              let photoCount = 0;
+              
+              try {
+                const approvedData = await AsyncStorage.getItem(`approved_books_${user.uid}`);
+                const photosData = await AsyncStorage.getItem(`photos_${user.uid}`);
+                const books = approvedData ? JSON.parse(approvedData) : [];
+                const photos = photosData ? JSON.parse(photosData) : [];
+                bookCount = books.length;
+                photoCount = photos.length;
+              } catch (e) {
+                console.warn('Error getting counts:', e);
+              }
+
+              // Final confirmation with actual counts
+              Alert.alert(
+                'Final Confirmation',
+                `You are about to permanently delete:\n\n• ${bookCount} book${bookCount !== 1 ? 's' : ''} from your library\n• ${photoCount} scan photo${photoCount !== 1 ? 's' : ''}\n• All folders and organization\n• All scan history\n\nThis cannot be undone. Continue?`,
+                [
+                  { text: 'Cancel', style: 'cancel', onPress: () => setClearingAccount(false) },
+                  {
+                    text: 'Delete Everything',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        // Delete all books from Supabase
+                        if (supabase) {
+                          try {
+                            const { error: booksError } = await supabase
+                              .from('books')
+                              .delete()
+                              .eq('user_id', user.uid);
+                            
+                            if (booksError) {
+                              console.warn('Error deleting books from Supabase:', booksError);
+                            } else {
+                              console.log('✅ Deleted all books from Supabase');
+                            }
+                          } catch (e) {
+                            console.warn('Error deleting books from Supabase:', e);
+                          }
+
+                          // Delete all photos from Supabase storage and database
+                          try {
+                            // First, get all photos to delete their storage files
+                            const { data: photosData, error: fetchError } = await supabase
+                              .from('photos')
+                              .select('storage_path')
+                              .eq('user_id', user.uid);
+
+                            if (!fetchError && photosData && photosData.length > 0) {
+                              // Delete all storage files
+                              const storagePaths = photosData
+                                .map(p => p.storage_path)
+                                .filter(Boolean);
+                              
+                              if (storagePaths.length > 0) {
+                                const { error: storageError } = await supabase.storage
+                                  .from('photos')
+                                  .remove(storagePaths);
+                                
+                                if (storageError) {
+                                  console.warn('Error deleting photos from storage:', storageError);
+                                } else {
+                                  console.log(`✅ Deleted ${storagePaths.length} photos from storage`);
+                                }
+                              }
+                            }
+
+                            // Delete all photos from database
+                            const { error: photosError } = await supabase
+                              .from('photos')
+                              .delete()
+                              .eq('user_id', user.uid);
+                            
+                            if (photosError) {
+                              console.warn('Error deleting photos from Supabase:', photosError);
+                            } else {
+                              console.log('✅ Deleted all photos from Supabase');
+                            }
+                          } catch (e) {
+                            console.warn('Error deleting photos from Supabase:', e);
+                          }
+
+                          // Reset user stats
+                          try {
+                            const { error: statsError } = await supabase
+                              .from('user_stats')
+                              .update({
+                                total_scans: 0,
+                                monthly_scans: 0,
+                                last_scan_month: null,
+                                last_scan_at: null,
+                              })
+                              .eq('user_id', user.uid);
+                            
+                            if (statsError) {
+                              console.warn('Error resetting user stats:', statsError);
+                            } else {
+                              console.log('✅ Reset user stats');
+                            }
+                          } catch (e) {
+                            console.warn('Error resetting user stats:', e);
+                          }
+                        }
+
+                        // Clear all local storage
+                        await AsyncStorage.removeItem(`approved_books_${user.uid}`);
+                        await AsyncStorage.removeItem(`photos_${user.uid}`);
+                        await AsyncStorage.removeItem(`folders_${user.uid}`);
+                        await AsyncStorage.removeItem(`pending_books_${user.uid}`);
+                        await AsyncStorage.removeItem(`rejected_books_${user.uid}`);
+                        
+                        console.log('✅ Cleared all local storage');
+
+                        Alert.alert(
+                          'Success',
+                          'All books, photos, and data have been cleared from your account.',
+                          [
+                            {
+                              text: 'OK',
+                              onPress: () => {
+                                setClearingAccount(false);
+                                onClose();
+                                // Refresh the app by triggering a reload
+                                // The parent components should detect the cleared data
+                              },
+                            },
+                          ]
+                        );
+                      } catch (error) {
+                        console.error('Error clearing account:', error);
+                        Alert.alert('Error', 'Failed to clear all data. Please try again.');
+                        setClearingAccount(false);
+                      }
+                    },
+                  },
+                ]
+              );
+            } catch (error) {
+              console.error('Error in clear account flow:', error);
+              Alert.alert('Error', 'Failed to clear account. Please try again.');
+              setClearingAccount(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <Modal
       visible={visible}
@@ -214,6 +385,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Preferences</Text>
             <Text style={styles.comingSoon}>More settings coming soon...</Text>
+          </View>
+
+          {/* Clear Account Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Data Management</Text>
+            <Text style={styles.settingDescription}>
+              Remove all books, photos, and scan data from your account. Your account will remain active.
+            </Text>
+            <TouchableOpacity
+              style={[styles.clearAccountButton, clearingAccount && styles.clearAccountButtonDisabled]}
+              onPress={handleClearAccount}
+              disabled={clearingAccount}
+              activeOpacity={0.8}
+            >
+              {clearingAccount ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Text style={styles.clearAccountButtonText}>Clear All Data</Text>
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* Sign Out Section */}
@@ -434,6 +625,26 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   signOutButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  clearAccountButton: {
+    backgroundColor: '#f59e0b', // Amber/orange warning color
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  clearAccountButtonDisabled: {
+    opacity: 0.6,
+  },
+  clearAccountButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: '700',

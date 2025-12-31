@@ -425,54 +425,204 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       if (!supabase) {
         Alert.alert('Sign In Error', 'Supabase not configured. Please add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your .env file.');
+        setLoading(false);
         return false;
       }
       
       // Allow username sign-in by resolving to email from Supabase
       let email = emailOrUsername.trim();
       if (!emailOrUsername.includes('@')) {
-        const { data: emailData, error: rpcError } = await supabase.rpc('get_email_by_username', {
-          username_input: emailOrUsername.toLowerCase(),
-        });
-        
-        if (!rpcError && emailData) {
-          email = emailData;
-        } else {
+        try {
+          // Add timeout to RPC call
+          const rpcPromise = supabase.rpc('get_email_by_username', {
+            username_input: emailOrUsername.toLowerCase(),
+          });
+          const rpcTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
+          );
+          
+          const { data: emailData, error: rpcError } = await Promise.race([rpcPromise, rpcTimeout]) as any;
+          
+          if (!rpcError && emailData) {
+            email = emailData;
+          } else {
+            // Fallback: check local storage for old mapping
+            const mapped = await AsyncStorage.getItem('usernameToEmail:' + emailOrUsername.toLowerCase());
+            if (mapped) {
+              email = mapped;
+            } else {
+              Alert.alert('Sign In Error', 'Username not found');
+              setLoading(false);
+              return false;
+            }
+          }
+        } catch (rpcError: any) {
+          console.warn('RPC error, trying local storage fallback:', rpcError);
           // Fallback: check local storage for old mapping
           const mapped = await AsyncStorage.getItem('usernameToEmail:' + emailOrUsername.toLowerCase());
           if (mapped) {
             email = mapped;
           } else {
-            Alert.alert('Sign In Error', 'Username not found');
+            Alert.alert('Sign In Error', 'Username not found. Please check your connection and try again.');
+            setLoading(false);
             return false;
           }
         }
       }
       
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password: cleanedPassword });
-      if (error || !data.user) {
-        Alert.alert('Sign In Error', error?.message || 'Invalid credentials');
+      // Add timeout to signInWithPassword call
+      try {
+        const signInPromise = supabase.auth.signInWithPassword({ email, password: cleanedPassword });
+        const signInTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Sign in timeout')), 10000)
+        );
+        
+        const { data, error } = await Promise.race([signInPromise, signInTimeout]) as any;
+        
+        if (error || !data?.user) {
+          const errorMessage = getSignInErrorMessage(error);
+          Alert.alert('Sign In Error', errorMessage);
+          setLoading(false);
+          return false;
+        }
+        
+        const sUser = data.user;
+        
+        // Add timeout to profile fetch
+        let profile;
+        try {
+          const profilePromise = fetchUserProfile(sUser.id);
+          const profileTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+          );
+          profile = await Promise.race([profilePromise, profileTimeout]) as any;
+        } catch (profileError) {
+          console.warn('Profile fetch error, using basic user data:', profileError);
+          // Use basic data if profile fetch fails
+          profile = {
+            username: sUser.email?.split('@')[0] || '',
+            displayName: undefined,
+            photoURL: undefined,
+          };
+        }
+        
+        const userData: User = {
+          uid: sUser.id,
+          email: sUser.email || '',
+          username: profile?.username || sUser.email?.split('@')[0] || '',
+          displayName: profile?.displayName,
+          photoURL: profile?.photoURL,
+        };
+        setUser(userData);
+        await saveUserToStorage(userData);
+        setLoading(false);
+        return true;
+      } catch (signInError: any) {
+        console.error('Sign in error:', signInError);
+        const errorMessage = signInError?.message?.includes('timeout') 
+          ? 'Connection timeout. Please check your internet connection and try again.'
+          : getSignInErrorMessage(signInError);
+        Alert.alert('Sign In Error', errorMessage);
+        setLoading(false);
         return false;
       }
-      const sUser = data.user;
-      const profile = await fetchUserProfile(sUser.id);
-      const userData: User = {
-        uid: sUser.id,
-        email: sUser.email || '',
-        username: profile.username,
-        displayName: profile.displayName,
-        photoURL: profile.photoURL,
-      };
-      setUser(userData);
-      await saveUserToStorage(userData);
-      return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Sign in error:', error);
-      Alert.alert('Sign In Error', 'An error occurred. Please try again.');
-      return false;
-    } finally {
+      const errorMessage = getSignInErrorMessage(error);
+      Alert.alert('Sign In Error', errorMessage);
       setLoading(false);
+      return false;
     }
+  };
+
+  // Helper function to parse Supabase error messages into user-friendly messages
+  const getSignInErrorMessage = (error: any): string => {
+    if (!error) return 'Invalid credentials. Please check your email/username and password.';
+    
+    const errorMessage = error?.message || error?.toString() || '';
+    const errorCode = error?.code || error?.status || '';
+    
+    // Check for specific error messages
+    if (errorMessage.includes('Invalid login credentials') || 
+        errorMessage.includes('invalid_credentials') ||
+        errorMessage.includes('Invalid password') ||
+        errorCode === 'invalid_credentials') {
+      return 'Invalid email/username or password. Please check your credentials and try again.';
+    }
+    
+    if (errorMessage.includes('Email not confirmed') || 
+        errorMessage.includes('email_not_confirmed')) {
+      return 'Please check your email and confirm your account before signing in.';
+    }
+    
+    if (errorMessage.includes('User not found') || 
+        errorMessage.includes('user_not_found')) {
+      return 'No account found with this email/username. Please sign up first.';
+    }
+    
+    if (errorMessage.includes('timeout') || errorMessage.includes('network')) {
+      return 'Connection timeout. Please check your internet connection and try again.';
+    }
+    
+    if (errorMessage.includes('Too many requests') || 
+        errorMessage.includes('rate_limit')) {
+      return 'Too many sign-in attempts. Please wait a few minutes and try again.';
+    }
+    
+    // Return the original message if it's user-friendly, otherwise return a generic message
+    if (errorMessage && errorMessage.length < 100) {
+      return errorMessage;
+    }
+    
+    return 'Unable to sign in. Please check your internet connection and try again.';
+  };
+
+  // Helper function to parse Supabase sign-up error messages into user-friendly messages
+  const getSignUpErrorMessage = (error: any): string => {
+    if (!error) return 'Failed to create account. Please try again.';
+    
+    const errorMessage = error?.message || error?.toString() || '';
+    const errorCode = error?.code || error?.status || '';
+    
+    // Check for specific error messages
+    if (errorMessage.includes('User already registered') || 
+        errorMessage.includes('already registered') ||
+        errorMessage.includes('email_address_already_exists') ||
+        errorCode === 'email_address_already_exists') {
+      return 'This email is already registered. Please sign in instead or use a different email.';
+    }
+    
+    if (errorMessage.includes('Password should be at least') || 
+        errorMessage.includes('password_too_short') ||
+        errorMessage.includes('Password length')) {
+      return 'Password must be at least 6 characters long.';
+    }
+    
+    if (errorMessage.includes('Invalid email') || 
+        errorMessage.includes('invalid_email') ||
+        errorMessage.includes('Email format')) {
+      return 'Please enter a valid email address.';
+    }
+    
+    if (errorMessage.includes('Username') && errorMessage.includes('taken')) {
+      return 'This username is already taken. Please choose another.';
+    }
+    
+    if (errorMessage.includes('timeout') || errorMessage.includes('network')) {
+      return 'Connection timeout. Please check your internet connection and try again.';
+    }
+    
+    if (errorMessage.includes('Too many requests') || 
+        errorMessage.includes('rate_limit')) {
+      return 'Too many sign-up attempts. Please wait a few minutes and try again.';
+    }
+    
+    // Return the original message if it's user-friendly, otherwise return a generic message
+    if (errorMessage && errorMessage.length < 100 && !errorMessage.includes('supabase')) {
+      return errorMessage;
+    }
+    
+    return 'Unable to create account. Please check your internet connection and try again.';
   };
 
   const signUp = async (email: string, password: string, username: string, displayName: string): Promise<boolean> => {
@@ -481,6 +631,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       if (!supabase) {
         Alert.alert('Sign Up Error', 'Supabase not configured. Please add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your .env file.');
+        setLoading(false);
+        return false;
+      }
+      
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        Alert.alert('Sign Up Error', 'Please enter a valid email address.');
+        setLoading(false);
         return false;
       }
       
@@ -488,95 +647,169 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
       if (!usernameRegex.test(username)) {
         Alert.alert('Sign Up Error', 'Username must be 3-20 characters and contain only letters, numbers, and underscores');
+        setLoading(false);
         return false;
       }
       
-      // Check if username is already taken
-      const { data: existingProfile } = await supabase
-        .from('profiles')
-        .select('username')
-        .eq('username', username.toLowerCase())
-        .single();
-      
-      if (existingProfile) {
-        Alert.alert('Sign Up Error', 'This username is already taken. Please choose another.');
-        return false;
-      }
-      
-      // Sign up with metadata so trigger can create profile
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username: username.toLowerCase(),
-            display_name: displayName,
-          },
-        },
-      });
-      
-      if (error || !data.user) {
-        Alert.alert('Sign Up Error', error?.message || 'Failed to create account');
-        return false;
-      }
-      
-      const uid = data.user.id;
-      
-      // Check if profile already exists (trigger might have created it)
-      const { data: existingProfileCheck } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', uid)
-        .single();
-      
-      // Only insert if profile doesn't exist
-      if (!existingProfileCheck) {
-        const { error: profileError } = await supabase
+      // Check if username is already taken (with timeout)
+      try {
+        const usernameCheckPromise = supabase
           .from('profiles')
-          .insert({
-            id: uid,
-            username: username.toLowerCase(),
-            display_name: displayName || null,
-          });
+          .select('username')
+          .eq('username', username.toLowerCase())
+          .single();
+        const usernameTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Username check timeout')), 5000)
+        );
         
-        // If profile insert fails with RLS error, that's OK - trigger probably created it
-        if (profileError && !profileError.message.includes('duplicate') && !profileError.message.includes('row-level security')) {
-          console.warn('Profile creation warning:', profileError);
+        const { data: existingProfile } = await Promise.race([usernameCheckPromise, usernameTimeout]) as any;
+        
+        if (existingProfile) {
+          Alert.alert('Sign Up Error', 'This username is already taken. Please choose another.');
+          setLoading(false);
+          return false;
         }
+      } catch (usernameError: any) {
+        console.warn('Username check error, continuing anyway:', usernameError);
+        // Continue with sign-up if username check fails (might be network issue)
       }
       
-      // Store local mapping for backwards compatibility
-      await AsyncStorage.setItem('usernameToEmail:' + username.toLowerCase(), email);
+      // Sign up with metadata so trigger can create profile (with timeout)
+      try {
+        const signUpPromise = supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              username: username.toLowerCase(),
+              display_name: displayName,
+            },
+          },
+        });
+        const signUpTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Sign up timeout')), 10000)
+        );
+        
+        const { data, error } = await Promise.race([signUpPromise, signUpTimeout]) as any;
+        
+        if (error || !data?.user) {
+          const errorMessage = getSignUpErrorMessage(error);
+          Alert.alert('Sign Up Error', errorMessage);
+          setLoading(false);
+          return false;
+        }
+        
+        const uid = data.user.id;
+        
+        // Check if profile already exists (trigger might have created it)
+        try {
+          const profileCheckPromise = supabase
+            .from('profiles')
+            .select('id')
+            .eq('id', uid)
+            .single();
+          const profileTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile check timeout')), 5000)
+          );
+          
+          const { data: existingProfileCheck } = await Promise.race([profileCheckPromise, profileTimeout]) as any;
+          
+          // Only insert if profile doesn't exist
+          if (!existingProfileCheck) {
+            const { error: profileError } = await supabase
+              .from('profiles')
+              .insert({
+                id: uid,
+                username: username.toLowerCase(),
+                display_name: displayName || null,
+              });
+            
+            // If profile insert fails with RLS error, that's OK - trigger probably created it
+            if (profileError && !profileError.message.includes('duplicate') && !profileError.message.includes('row-level security')) {
+              console.warn('Profile creation warning:', profileError);
+            }
+          }
+        } catch (profileError) {
+          console.warn('Profile check/creation error, continuing anyway:', profileError);
+          // Continue even if profile check fails - trigger might have created it
+        }
+        
+        // Store local mapping for backwards compatibility
+        await AsyncStorage.setItem('usernameToEmail:' + username.toLowerCase(), email);
 
-      const userData: User = {
-        uid,
-        email: email,
-        username: username.toLowerCase(),
-        displayName,
-      };
-      setUser(userData);
-      await saveUserToStorage(userData);
-      Alert.alert('Success', 'Account created. Check your email if confirmation is enabled.');
-      return true;
-    } catch (error) {
+        const userData: User = {
+          uid,
+          email: email,
+          username: username.toLowerCase(),
+          displayName,
+        };
+        setUser(userData);
+        await saveUserToStorage(userData);
+        setLoading(false);
+        Alert.alert('Success', 'Account created successfully! You can now start using the app.');
+        return true;
+      } catch (signUpError: any) {
+        console.error('Sign up error:', signUpError);
+        const errorMessage = signUpError?.message?.includes('timeout')
+          ? 'Connection timeout. Please check your internet connection and try again.'
+          : getSignUpErrorMessage(signUpError);
+        Alert.alert('Sign Up Error', errorMessage);
+        setLoading(false);
+        return false;
+      }
+    } catch (error: any) {
       console.error('Sign up error:', error);
-      Alert.alert('Sign Up Error', 'An error occurred. Please try again.');
-      return false;
-    } finally {
+      const errorMessage = getSignUpErrorMessage(error);
+      Alert.alert('Sign Up Error', errorMessage);
       setLoading(false);
+      return false;
     }
   };
 
   const signOut = async (): Promise<void> => {
     try {
-      if (supabase) {
-        await supabase.auth.signOut();
-      }
-      await AsyncStorage.removeItem('user');
+      const currentUser = user;
+      
+      // Clear user state first
       setUser(null);
+      
+      // Remove user from AsyncStorage
+      await AsyncStorage.removeItem('user');
+      
+      // For Supabase-authenticated users, sign out from Supabase
+      // For demo accounts (DEMO_UID), skip Supabase signOut since they're not in Supabase auth
+      if (supabase && currentUser && currentUser.uid !== DEMO_UID) {
+        try {
+          await supabase.auth.signOut();
+        } catch (supabaseError) {
+          console.warn('Supabase signOut error (continuing anyway):', supabaseError);
+          // Continue even if Supabase signOut fails - we've already cleared local state
+        }
+      }
+      
+      // Clear any Supabase session data from AsyncStorage
+      try {
+        const allKeys = await AsyncStorage.getAllKeys();
+        const supabaseKeys = allKeys.filter(key => 
+          key.includes('supabase') || 
+          key.includes('sb-') || 
+          key.includes('auth-token')
+        );
+        if (supabaseKeys.length > 0) {
+          await AsyncStorage.multiRemove(supabaseKeys);
+        }
+      } catch (clearError) {
+        console.warn('Error clearing Supabase keys:', clearError);
+        // Continue anyway
+      }
+      
+      console.log('✅ Successfully signed out');
     } catch (error) {
       console.error('Sign out error:', error);
-      Alert.alert('Sign Out Error', 'Failed to sign out. Please try again.');
+      // Even if there's an error, clear the user state
+      setUser(null);
+      await AsyncStorage.removeItem('user').catch(() => {});
+      Alert.alert('Sign Out Error', 'Failed to sign out completely. Please try again.');
     }
   };
 

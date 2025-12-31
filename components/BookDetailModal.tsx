@@ -279,28 +279,46 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
           onPress: async () => {
             setRemoving(true);
             try {
+              // Delete from Supabase first
+              if (supabase) {
+                try {
+                  const { deleteBookFromSupabase } = await import('../services/supabaseSync');
+                  await deleteBookFromSupabase(user.uid, book);
+                  console.log('✅ Book deleted from Supabase');
+                } catch (supabaseError) {
+                  console.warn('Error deleting book from Supabase:', supabaseError);
+                  // Continue with local deletion even if Supabase fails
+                }
+              }
+              
+              // Remove from AsyncStorage
               const userApprovedKey = `approved_books_${user.uid}`;
               const approvedData = await AsyncStorage.getItem(userApprovedKey);
               
               if (approvedData) {
                 const approvedBooks: Book[] = JSON.parse(approvedData);
-                // Remove book by matching title and author
-                const updatedBooks = approvedBooks.filter(
-                  (b) => !(b.title === book.title && b.author === book.author)
-                );
+                // Remove book by matching ID first, then by title and author
+                const updatedBooks = approvedBooks.filter((b) => {
+                  // Match by ID if both have IDs
+                  if (book.id && b.id && book.id === b.id) return false;
+                  // Match by title and author
+                  if (b.title === book.title && b.author === book.author) return false;
+                  return true;
+                });
                 
                 await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
-                
-                // Call the refresh callback if provided
-                if (onRemove) {
-                  onRemove();
-                }
-                
-                // Close the modal
-                onClose();
-                
-                Alert.alert('Success', 'Book removed from library');
+                console.log(`✅ Book removed from AsyncStorage. ${approvedBooks.length} -> ${updatedBooks.length} books`);
               }
+              
+              // Call the refresh callback if provided (this will reload from Supabase)
+              if (onRemove) {
+                onRemove();
+              }
+              
+              // Close the modal
+              onClose();
+              
+              Alert.alert('Success', 'Book removed from library');
             } catch (error) {
               console.error('Error removing book:', error);
               Alert.alert('Error', 'Failed to remove book from library');
@@ -510,7 +528,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                       <Text style={styles.statLabel}>Rating</Text>
                       <Text style={styles.statValue}>
                         {book.averageRating.toFixed(1)} ⭐
-                        {book.ratingsCount && ` (${book.ratingsCount.toLocaleString()} reviews)`}
+                        {book.ratingsCount ? ` (${book.ratingsCount.toLocaleString()} reviews)` : ''}
                       </Text>
                     </View>
                   )}
