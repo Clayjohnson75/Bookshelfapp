@@ -1775,13 +1775,10 @@ export const ScansTab: React.FC = () => {
         await addBooksToSelectedFolder(scannedBookIds);
       }
       
-      // Increment scan count client-side (ensures it works with dev database)
-      // The API might be using production Supabase, so we increment here too
-      if (user && allBooks.length > 0) {
-        incrementScanCount(user.uid).catch(error => {
-          console.error('Error incrementing scan count (non-blocking):', error);
-        });
-      }
+      // NOTE: Scan count is already incremented by the API when the scan request is made
+      // We should NOT increment again here to avoid double-counting
+      // The API tracks scans at the point of request, not when books are found
+      // This ensures 1 photo = 1 scan, regardless of how many books are found
       
       // Refresh scan limit banner and usage after successful scan
       // The API increments the count asynchronously, so refresh multiple times to catch the update
@@ -3458,8 +3455,8 @@ export const ScansTab: React.FC = () => {
         onRequestClose={handleCaptionSkip}
         transparent={false}
       >
-        <View style={styles.captionModalContainer}>
-          <View style={styles.captionModalHeader}>
+        <SafeAreaView style={styles.captionModalContainer} edges={['top']}>
+          <View style={[styles.captionModalHeader, { paddingTop: insets.top + 20 }]}>
             <Text style={styles.modalTitle}>Add Caption</Text>
             {pendingImages.length > 1 && (
               <Text style={styles.captionProgressText}>
@@ -3482,19 +3479,20 @@ export const ScansTab: React.FC = () => {
               behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
               keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
-              <GestureDetector gesture={Gesture.Fling()
-                .direction(Gesture.DIRECTION_LEFT)
-                .onEnd(() => {
-                  // Swipe left to go to next photo
-                  if (currentImageIndex < pendingImages.length - 1) {
-                    handleCaptionSubmit();
+              <GestureDetector gesture={Gesture.Pan()
+                .activeOffsetX([-15, 15]) // Require at least 15px horizontal movement to activate
+                .failOffsetY([-20, 20]) // Fail if vertical movement exceeds 20px (allows some vertical but prioritizes horizontal)
+                .onEnd((e) => {
+                  const { translationX, velocityX } = e;
+                  // Swipe left (negative translationX or negative velocityX) to go to next photo
+                  // Require at least 50px movement or fast velocity (500px/s)
+                  if (translationX < -50 || velocityX < -500) {
+                    if (currentImageIndex < pendingImages.length - 1) {
+                      handleCaptionSubmit();
+                    }
                   }
-                })
-              }>
-                <GestureDetector gesture={Gesture.Fling()
-                  .direction(Gesture.DIRECTION_RIGHT)
-                  .onEnd(() => {
-                    // Swipe right to go to previous photo
+                  // Swipe right (positive translationX or positive velocityX) to go to previous photo
+                  else if (translationX > 50 || velocityX > 500) {
                     if (currentImageIndex > 0) {
                       const prevIndex = currentImageIndex - 1;
                       setCurrentImageIndex(prevIndex);
@@ -3502,8 +3500,9 @@ export const ScansTab: React.FC = () => {
                       currentScanIdRef.current = pendingImages[prevIndex].scanId;
                       setCaptionText(scanCaptionsRef.current.get(pendingImages[prevIndex].scanId) || '');
                     }
-                  })
-                }>
+                  }
+                })
+              }>
                   <ScrollView 
                     style={styles.captionModalContent}
                     contentContainerStyle={styles.captionModalContentContainer}
@@ -3559,11 +3558,10 @@ export const ScansTab: React.FC = () => {
                   </TouchableOpacity>
                 </View>
               </ScrollView>
-                </GestureDetector>
               </GestureDetector>
             </KeyboardAvoidingView>
           )}
-        </View>
+        </SafeAreaView>
       </Modal>
 
       {/* Folder Selection Modal */}
@@ -3577,14 +3575,8 @@ export const ScansTab: React.FC = () => {
         }}
         transparent={false}
       >
-        <View style={styles.folderModalContainer}>
-          <LinearGradient
-            colors={['#ffffff', '#2d3748']}
-            style={{ height: insets.top }}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0, y: 1 }}
-          />
-          <View style={styles.folderModalHeader}>
+        <SafeAreaView style={styles.folderModalContainer} edges={['top']}>
+          <View style={[styles.folderModalHeader, { paddingTop: insets.top + 20 }]}>
             <Text style={styles.modalTitle}>Add to Folder</Text>
             <TouchableOpacity
               style={styles.modalCloseButton}
@@ -3683,7 +3675,7 @@ export const ScansTab: React.FC = () => {
               </TouchableOpacity>
             </View>
           </ScrollView>
-        </View>
+        </SafeAreaView>
       </Modal>
 
       </SafeAreaView>
@@ -4927,7 +4919,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
-    paddingTop: Platform.OS === 'ios' ? 50 : 20,
     backgroundColor: '#1a1a2e',
     borderBottomWidth: 0,
   },

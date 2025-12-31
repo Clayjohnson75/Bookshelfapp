@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,8 +11,11 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Switch,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from './SimpleAuthContext';
+import * as BiometricAuth from '../services/biometricAuth';
 
 interface AuthScreenProps {
   onAuthSuccess: () => void;
@@ -23,7 +26,31 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true); // Show by default
   const [showSignUp, setShowSignUp] = useState(false);
-  const { signIn, signInWithDemoAccount, loading, demoCredentials } = useAuth();
+  const [rememberMe, setRememberMe] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const { 
+    signIn, 
+    signInWithDemoAccount, 
+    signInWithBiometric,
+    loading, 
+    demoCredentials,
+    biometricCapabilities,
+    enableBiometric,
+    isBiometricEnabled,
+  } = useAuth();
+
+  useEffect(() => {
+    checkBiometricStatus();
+  }, []);
+
+  const checkBiometricStatus = async () => {
+    try {
+      const enabled = await isBiometricEnabled();
+      setBiometricEnabled(enabled);
+    } catch (error) {
+      console.error('Error checking biometric status:', error);
+    }
+  };
 
   const handleLogin = async () => {
     const trimmedId = identifier.trim();
@@ -49,7 +76,29 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
 
     const success = await signIn(trimmedId, trimmedPassword);
     if (success) {
+      // If "Remember Me" is checked and biometric is available, enable it
+      if (rememberMe && biometricCapabilities?.isAvailable) {
+        try {
+          await enableBiometric(trimmedId.includes('@') ? trimmedId : '', trimmedPassword);
+          setBiometricEnabled(true);
+        } catch (error) {
+          console.error('Error enabling biometric:', error);
+          // Don't block login if biometric enable fails
+        }
+      }
       onAuthSuccess();
+    }
+  };
+
+  const handleBiometricLogin = async () => {
+    const success = await signInWithBiometric();
+    if (success) {
+      onAuthSuccess();
+    } else {
+      Alert.alert(
+        'Biometric Login Failed',
+        'Unable to sign in with biometric authentication. Please try signing in with your password.'
+      );
     }
   };
 
@@ -74,6 +123,9 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             onChangeText={setIdentifier}
             autoCapitalize="none"
             autoCorrect={false}
+            textContentType="username"
+            autoComplete="username"
+            keyboardType="email-address"
           />
 
           <View style={styles.passwordContainer}>
@@ -84,6 +136,8 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
               autoCapitalize="none"
+              textContentType="password"
+              autoComplete="password"
             />
             <TouchableOpacity 
               style={styles.eyeButton}
@@ -93,6 +147,21 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               <Text style={styles.eyeButtonPlain}>{showPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Remember Me Toggle */}
+          {biometricCapabilities?.isAvailable && (
+            <View style={styles.rememberMeContainer}>
+              <Switch
+                value={rememberMe}
+                onValueChange={setRememberMe}
+                trackColor={{ false: '#767577', true: '#0056CC' }}
+                thumbColor={rememberMe ? '#fff' : '#f4f3f4'}
+              />
+              <Text style={styles.rememberMeText}>
+                Remember me & enable {BiometricAuth.getBiometricTypeName(biometricCapabilities)}
+              </Text>
+            </View>
+          )}
 
           <TouchableOpacity
             style={[styles.button, styles.primaryButton]}
@@ -105,6 +174,31 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               <Text style={styles.buttonText}>Sign In</Text>
             )}
           </TouchableOpacity>
+
+          {/* Biometric Login Button */}
+          {biometricCapabilities?.isAvailable && biometricEnabled && (
+            <TouchableOpacity
+              style={[styles.button, styles.biometricButton]}
+              onPress={handleBiometricLogin}
+              disabled={loading}
+            >
+              <Ionicons 
+                name={
+                  biometricCapabilities.supportedTypes.includes(
+                    require('expo-local-authentication').AuthenticationType.FACIAL_RECOGNITION
+                  ) 
+                    ? 'face' 
+                    : 'finger-print'
+                } 
+                size={20} 
+                color="#fff" 
+                style={{ marginRight: 8 }}
+              />
+              <Text style={styles.buttonText}>
+                Sign in with {BiometricAuth.getBiometricTypeName(biometricCapabilities)}
+              </Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             style={styles.linkButton}
@@ -198,6 +292,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
+            textContentType="emailAddress"
+            autoComplete="email"
           />
 
           <View style={styles.passwordContainer}>
@@ -208,6 +304,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
               autoCapitalize="none"
+              textContentType="newPassword"
+              autoComplete="password-new"
             />
             <TouchableOpacity 
               style={styles.eyeButton}
@@ -222,6 +320,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Confirm Password"
+              textContentType="newPassword"
+              autoComplete="password-new"
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               secureTextEntry={!showConfirmPassword}
@@ -363,5 +463,20 @@ const styles = StyleSheet.create({
   linkText: {
     color: '#007AFF',
     fontSize: 16,
+  },
+  rememberMeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    marginTop: 8,
+  },
+  rememberMeText: {
+    marginLeft: 10,
+    fontSize: 14,
+    color: '#333',
+  },
+  biometricButton: {
+    backgroundColor: '#4A90E2',
+    marginTop: 12,
   },
 });

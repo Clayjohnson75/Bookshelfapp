@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,11 +9,14 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/SimpleAuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
+import * as BiometricAuth from '../services/biometricAuth';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -23,10 +26,20 @@ interface SettingsModalProps {
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataCleared }) => {
   const insets = useSafeAreaInsets();
-  const { user, signOut, deleteAccount } = useAuth();
+  const { 
+    user, 
+    signOut, 
+    deleteAccount,
+    biometricCapabilities,
+    isBiometricEnabled,
+    enableBiometric,
+    disableBiometric,
+  } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [clearingAccount, setClearingAccount] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricLoading, setBiometricLoading] = useState(false);
 
   // Update username when user changes or modal opens
   React.useEffect(() => {
@@ -35,6 +48,48 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       setNewUsername(user.username || '');
     }
   }, [user, visible]);
+
+  // Check biometric status when modal opens
+  useEffect(() => {
+    if (visible) {
+      loadBiometricStatus();
+    }
+  }, [visible]);
+
+  const loadBiometricStatus = async () => {
+    try {
+      const enabled = await isBiometricEnabled();
+      setBiometricEnabled(enabled);
+    } catch (error) {
+      console.error('Error loading biometric status:', error);
+    }
+  };
+
+  const toggleBiometric = async () => {
+    if (biometricLoading) return;
+    
+    setBiometricLoading(true);
+    try {
+      if (biometricEnabled) {
+        await disableBiometric();
+        setBiometricEnabled(false);
+        Alert.alert('Success', 'Biometric login has been disabled');
+      } else {
+        // To enable, we need the user's password
+        // For now, show a message that they need to sign in again with "Remember Me" checked
+        Alert.alert(
+          'Enable Biometric Login',
+          'To enable biometric login, please sign out and sign in again with "Remember Me" checked on the login screen.',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Error toggling biometric:', error);
+      Alert.alert('Error', 'Failed to update biometric settings. Please try again.');
+    } finally {
+      setBiometricLoading(false);
+    }
+  };
 
   const handleChangeUsername = async () => {
     console.log('Save button pressed, current user:', user?.username, 'new username:', newUsername);
@@ -385,10 +440,44 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
             </View>
           </View>
 
-          {/* Additional Settings Section (for future) */}
+          {/* Additional Settings Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Preferences</Text>
-            <Text style={styles.comingSoon}>More settings coming soon...</Text>
+            
+            {/* Biometric Login Toggle */}
+            {biometricCapabilities?.isAvailable && (
+              <View style={styles.settingItem}>
+                <View style={styles.settingContent}>
+                  <View style={styles.settingHeader}>
+                    <Ionicons 
+                      name={
+                        biometricCapabilities.supportedTypes.includes(
+                          require('expo-local-authentication').AuthenticationType.FACIAL_RECOGNITION
+                        ) 
+                          ? 'face' 
+                          : 'finger-print'
+                      } 
+                      size={20} 
+                      color="#0056CC" 
+                      style={{ marginRight: 8 }}
+                    />
+                    <Text style={styles.settingLabel}>
+                      {BiometricAuth.getBiometricTypeName(biometricCapabilities)} Login
+                    </Text>
+                  </View>
+                  <Text style={styles.settingDescription}>
+                    Sign in quickly using {BiometricAuth.getBiometricTypeName(biometricCapabilities).toLowerCase()}
+                  </Text>
+                </View>
+                <Switch
+                  value={biometricEnabled}
+                  onValueChange={toggleBiometric}
+                  disabled={biometricLoading}
+                  trackColor={{ false: '#767577', true: '#0056CC' }}
+                  thumbColor={biometricEnabled ? '#fff' : '#f4f3f4'}
+                />
+              </View>
+            )}
           </View>
 
           {/* Clear Account Section */}
@@ -546,9 +635,18 @@ const styles = StyleSheet.create({
   },
   settingItem: {
     paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   settingContent: {
-    flexDirection: 'column',
+    flex: 1,
+    marginRight: 12,
+  },
+  settingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   settingLabel: {
     fontSize: 16,

@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import { Book, Photo, Folder } from '../types/BookTypes';
+import * as BiometricAuth from '../services/biometricAuth';
 
 interface User {
   uid: string;
@@ -47,11 +48,26 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [biometricCapabilities, setBiometricCapabilities] = useState<BiometricAuth.BiometricCapabilities | null>(null);
   const DEMO_USERNAME = 'test12';
   const DEMO_PASSWORD = 'admin12345';
   const DEMO_EMAIL = 'appstore.review+test12@bookshelfscanner.app';
   const DEMO_UID = 'demo-user-test12';
   const DEMO_SEEDED_KEY = `demo_seeded_${DEMO_UID}`;
+  
+  // Check biometric capabilities on mount
+  useEffect(() => {
+    checkBiometricCapabilities();
+  }, []);
+  
+  const checkBiometricCapabilities = async () => {
+    try {
+      const capabilities = await BiometricAuth.checkBiometricAvailability();
+      setBiometricCapabilities(capabilities);
+    } catch (error) {
+      console.error('Error checking biometric capabilities:', error);
+    }
+  };
 
   const handleDemoSignIn = async (saveUserToStorageFn: (userData: User) => Promise<void>) => {
     const demoUser: User = {
@@ -776,6 +792,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Remove user from AsyncStorage
       await AsyncStorage.removeItem('user');
       
+      // Clear biometric credentials on sign out
+      await BiometricAuth.clearStoredCredentials().catch(() => {
+        // Ignore errors - biometric clearing is optional
+      });
+      
       // For Supabase-authenticated users, sign out from Supabase
       // For demo accounts (DEMO_UID), skip Supabase signOut since they're not in Supabase auth
       if (supabase && currentUser && currentUser.uid !== DEMO_UID) {
@@ -1003,12 +1024,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     loading,
     signIn,
     signInWithDemoAccount,
+    signInWithBiometric,
     signUp,
     signOut,
     resetPassword,
     searchUsers,
     getUserByUsername,
     deleteAccount,
+    biometricCapabilities,
+    isBiometricEnabled: BiometricAuth.isBiometricEnabled,
+    enableBiometric,
+    disableBiometric,
     demoCredentials: {
       username: DEMO_USERNAME,
       email: DEMO_EMAIL,
