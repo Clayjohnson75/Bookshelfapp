@@ -18,9 +18,10 @@ import { supabase } from '../lib/supabaseClient';
 interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
+  onDataCleared?: () => void; // Callback to notify parent that data was cleared
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataCleared }) => {
   const insets = useSafeAreaInsets();
   const { user, signOut, deleteAccount } = useAuth();
   const [newUsername, setNewUsername] = useState('');
@@ -260,6 +261,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
                         
                         console.log('✅ Cleared all local storage');
 
+                        // Notify parent component to clear local state immediately
+                        if (onDataCleared) {
+                          onDataCleared();
+                        }
+
                         Alert.alert(
                           'Success',
                           'All books, photos, and data have been cleared from your account.',
@@ -269,8 +275,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
                               onPress: () => {
                                 setClearingAccount(false);
                                 onClose();
-                                // Refresh the app by triggering a reload
-                                // The parent components should detect the cleared data
                               },
                             },
                           ]

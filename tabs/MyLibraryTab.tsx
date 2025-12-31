@@ -1127,6 +1127,18 @@ export const MyLibraryTab: React.FC = () => {
       <SettingsModal
         visible={showSettings}
         onClose={() => setShowSettings(false)}
+        onDataCleared={() => {
+          // Immediately clear local state when data is cleared
+          console.log('🧹 Clearing local state after account clear...');
+          setBooks([]);
+          setPhotos([]);
+          setFolders([]);
+          setUserProfile(prev => prev ? { ...prev, totalBooks: 0, totalPhotos: 0 } : null);
+          // Reload after a short delay to ensure Supabase deletion completed
+          setTimeout(() => {
+            loadUserData();
+          }, 1000);
+        }}
       />
 
       {/* Book Detail Modal */}

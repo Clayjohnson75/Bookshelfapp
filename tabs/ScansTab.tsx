@@ -2834,17 +2834,33 @@ export const ScansTab: React.FC = () => {
         <TouchableOpacity 
           style={styles.scanButton} 
           onPress={async () => {
-            // Check scan limit first
-            if (user) {
+            // Only check scan limit if user is free tier and has NO scans remaining
+            if (user && scanUsage) {
+              const isFreeTier = scanUsage.subscriptionTier === 'free';
+              const hasNoScans = scanUsage.scansRemaining !== null && scanUsage.scansRemaining <= 0;
+              
+              // Only block if free tier AND no scans remaining
+              if (isFreeTier && hasNoScans) {
+                // Double-check with server to be sure
+                const canScanNow = await canUserScan(user.uid);
+                if (!canScanNow) {
+                  // User is out of scans - show upgrade modal
+                  setShowUpgradeModal(true);
+                  loadScanUsage();
+                  return;
+                }
+              }
+              // If user has scans remaining OR is pro/owner, proceed normally
+            } else if (user && !scanUsage) {
+              // If scanUsage not loaded yet, check with server
               const canScanNow = await canUserScan(user.uid);
               if (!canScanNow) {
-                // Directly show upgrade modal
                 setShowUpgradeModal(true);
-                // Refresh usage to update UI
                 loadScanUsage();
                 return;
               }
             }
+            // User has scans or is pro/owner - proceed normally
             handleStartCamera();
           }}
           activeOpacity={0.7}
@@ -2857,17 +2873,33 @@ export const ScansTab: React.FC = () => {
         <TouchableOpacity 
           style={styles.scanButton} 
           onPress={async () => {
-            // Check scan limit first
-            if (user) {
+            // Only check scan limit if user is free tier and has NO scans remaining
+            if (user && scanUsage) {
+              const isFreeTier = scanUsage.subscriptionTier === 'free';
+              const hasNoScans = scanUsage.scansRemaining !== null && scanUsage.scansRemaining <= 0;
+              
+              // Only block if free tier AND no scans remaining
+              if (isFreeTier && hasNoScans) {
+                // Double-check with server to be sure
+                const canScanNow = await canUserScan(user.uid);
+                if (!canScanNow) {
+                  // User is out of scans - show upgrade modal
+                  setShowUpgradeModal(true);
+                  loadScanUsage();
+                  return;
+                }
+              }
+              // If user has scans remaining OR is pro/owner, proceed normally
+            } else if (user && !scanUsage) {
+              // If scanUsage not loaded yet, check with server
               const canScanNow = await canUserScan(user.uid);
               if (!canScanNow) {
-                // Directly show upgrade modal
                 setShowUpgradeModal(true);
-                // Refresh usage to update UI
                 loadScanUsage();
                 return;
               }
             }
+            // User has scans or is pro/owner - proceed normally
             pickImage();
           }}
           activeOpacity={0.7}
