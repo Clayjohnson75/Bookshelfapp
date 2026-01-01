@@ -100,3 +100,5 @@ GRANT EXECUTE ON FUNCTION public.increment_user_scan_count(UUID) TO authenticate
 
 
 
+
+

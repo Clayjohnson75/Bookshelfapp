@@ -316,6 +316,228 @@ export async function fetchBookData(
 }
 
 /**
+ * Search for multiple books by title and author (returns up to 20 results)
+ * Used for "Switch Covers" feature to show all available covers for a book
+ */
+export async function searchMultipleBooks(
+  title: string,
+  author?: string,
+  maxResults: number = 20
+): Promise<GoogleBooksData[]> {
+  const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
+  const query = author ? `${cleanTitle} ${author}` : cleanTitle;
+  const cacheKey = `searchMultiple:${query}:${maxResults}`;
+
+  // Check cache first
+  if (cache.has(cacheKey)) {
+    const cached = cache.get(cacheKey);
+    // If cached result is an array, return it
+    if (Array.isArray(cached)) {
+      return cached;
+    }
+  }
+
+  // Check if there's already a pending request for this search
+  if (pendingRequests.has(cacheKey)) {
+    const pending = await pendingRequests.get(cacheKey)!;
+    // If pending result is an array, return it
+    if (Array.isArray(pending)) {
+      return pending;
+    }
+  }
+
+  const requestPromise = (async () => {
+    try {
+      await waitForRateLimit();
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout for multiple results
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timeoutId);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Request timeout - please check your internet connection');
+        }
+        throw fetchError;
+      }
+
+      if (!response.ok) {
+        console.warn(`Google Books API request failed: ${response.status} ${response.statusText}`);
+        return [];
+      }
+
+      const data = await response.json();
+
+      if (data.items && data.items.length > 0) {
+        const results: GoogleBooksData[] = data.items.map((book: any) => {
+          const volumeInfo = book.volumeInfo;
+
+          const result: GoogleBooksData = {
+            googleBooksId: book.id,
+            pageCount: volumeInfo.pageCount,
+            categories: volumeInfo.categories,
+            publisher: volumeInfo.publisher,
+            publishedDate: volumeInfo.publishedDate,
+            language: volumeInfo.language,
+            averageRating: volumeInfo.averageRating,
+            ratingsCount: volumeInfo.ratingsCount,
+            subtitle: volumeInfo.subtitle,
+            printType: volumeInfo.printType,
+            description: volumeInfo.description,
+          };
+
+          // Extract cover URL
+          if (volumeInfo.imageLinks) {
+            const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+            result.coverUrl = rawCoverUrl?.replace('http:', 'https:');
+          }
+
+          return result;
+        });
+
+        // Cache the results as an array
+        cache.set(cacheKey, results);
+        return results;
+      }
+
+      return [];
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error);
+      if (errorMessage.includes('Network request failed') || 
+          errorMessage.includes('fetch failed') || 
+          errorMessage.includes('network') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('AbortError')) {
+        if (__DEV__) {
+          console.warn(`Network/timeout error searching for multiple books "${title}":`, errorMessage);
+        }
+      } else {
+        console.error(`Error searching for multiple books "${title}":`, error);
+      }
+      return [];
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Search for books by query string (for "Switch Book" feature)
+ * Returns up to 20 results with title, author, and cover
+ */
+export async function searchBooksByQuery(
+  query: string,
+  maxResults: number = 20
+): Promise<Array<{
+  googleBooksId: string;
+  title: string;
+  author?: string;
+  coverUrl?: string;
+  subtitle?: string;
+  publishedDate?: string;
+}>> {
+  const cacheKey = `searchQuery:${query}:${maxResults}`;
+
+  // Check cache first
+  if (cache.has(cacheKey)) {
+    const cached = cache.get(cacheKey);
+    if (Array.isArray(cached)) {
+      return cached;
+    }
+  }
+
+  // Check if there's already a pending request
+  if (pendingRequests.has(cacheKey)) {
+    const pending = await pendingRequests.get(cacheKey)!;
+    if (Array.isArray(pending)) {
+      return pending;
+    }
+  }
+
+  const requestPromise = (async () => {
+    try {
+      await waitForRateLimit();
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timeoutId);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Request timeout - please check your internet connection');
+        }
+        throw fetchError;
+      }
+
+      if (!response.ok) {
+        console.warn(`Google Books API request failed: ${response.status} ${response.statusText}`);
+        return [];
+      }
+
+      const data = await response.json();
+
+      if (data.items && data.items.length > 0) {
+        const results = data.items.map((book: any) => {
+          const volumeInfo = book.volumeInfo;
+          return {
+            googleBooksId: book.id,
+            title: volumeInfo.title || 'Unknown Title',
+            author: volumeInfo.authors?.[0] || undefined,
+            coverUrl: volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || 
+                     volumeInfo.imageLinks?.smallThumbnail?.replace('http:', 'https:') || 
+                     undefined,
+            subtitle: volumeInfo.subtitle,
+            publishedDate: volumeInfo.publishedDate,
+          };
+        });
+
+        // Cache the results
+        cache.set(cacheKey, results);
+        return results;
+      }
+
+      return [];
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error);
+      if (errorMessage.includes('Network request failed') || 
+          errorMessage.includes('fetch failed') || 
+          errorMessage.includes('network') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('AbortError')) {
+        if (__DEV__) {
+          console.warn(`Network/timeout error searching books by query "${query}":`, errorMessage);
+        }
+      } else {
+        console.error(`Error searching books by query "${query}":`, error);
+      }
+      return [];
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
  * Clear the cache (useful for testing or memory management)
  */
 export function clearCache(): void {

@@ -10,7 +10,9 @@ import {
   FlatList,
   Modal,
   TextInput,
-  Alert
+  Alert,
+  Keyboard,
+  InteractionManager
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,9 +25,9 @@ import { useAuth } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
 import { LibraryView } from '../screens/LibraryView';
-import { loadBooksFromSupabase } from '../services/supabaseSync';
+import { loadBooksFromSupabase, deletePhotoFromSupabase } from '../services/supabaseSync';
 
-const { width: screenWidth } = Dimensions.get('window');
+const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 export const MyLibraryTab: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -54,9 +56,16 @@ export const MyLibraryTab: React.FC = () => {
   const [showLibraryView, setShowLibraryView] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
+  const [folderSearchQuery, setFolderSearchQuery] = useState('');
+  const [isFolderSelectionMode, setIsFolderSelectionMode] = useState(false);
+  const [selectedFolderBooks, setSelectedFolderBooks] = useState<Set<string>>(new Set());
+  const [showReadBooks, setShowReadBooks] = useState(false);
+  const [showUnreadBooks, setShowUnreadBooks] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
+  const searchBarRef = useRef<View>(null);
   const [booksSectionY, setBooksSectionY] = useState(0);
+  const searchBarScrollPosition = useRef<number | null>(null);
 
   const filteredBooks = useMemo(() => {
     const q = librarySearch.trim().toLowerCase();
@@ -140,6 +149,48 @@ export const MyLibraryTab: React.FC = () => {
     loadUserData();
   }, []);
 
+  // Maintain scroll position when keyboard appears/disappears during search
+  useEffect(() => {
+    if (!librarySearch.trim()) {
+      searchBarScrollPosition.current = null;
+      return;
+    }
+
+    const keyboardWillShow = Keyboard.addListener('keyboardWillShow', () => {
+      // Maintain scroll position when keyboard shows - keep "My Library" section at top
+      if (searchBarScrollPosition.current !== null && booksSectionY > 0) {
+        searchBarScrollPosition.current = booksSectionY - 10;
+        
+        // Use multiple timeouts to ensure scroll happens after keyboard animation
+        setTimeout(() => {
+          scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: false });
+        }, 50);
+        setTimeout(() => {
+          scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: false });
+        }, 200);
+        setTimeout(() => {
+          scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: false });
+        }, 400);
+      }
+    });
+
+    const keyboardDidShow = Keyboard.addListener('keyboardDidShow', () => {
+      // Maintain scroll position when keyboard is fully shown - keep "My Library" section at top
+      if (booksSectionY > 0) {
+        searchBarScrollPosition.current = booksSectionY - 10;
+        
+        setTimeout(() => {
+          scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: false });
+        }, 100);
+      }
+    });
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardDidShow.remove();
+    };
+  }, [librarySearch, booksSectionY, isSelectionMode, selectedBooks.size]);
+
   // Update userProfile when user changes (display name, username)
   useEffect(() => {
     if (user && userProfile) {
@@ -186,41 +237,171 @@ export const MyLibraryTab: React.FC = () => {
       const loadedFolders: Folder[] = foldersData ? JSON.parse(foldersData) : [];
       
       // Merge Supabase books (which have cover data) with local books
-      // Prefer Supabase books as they have the latest cover data
+      // CRITICAL: Start with ALL local books, then merge in Supabase data
+      // This ensures no local books are lost if Supabase is missing them
       let mergedBooks: Book[] = [];
+      
+      console.log(`📚 Starting merge: ${localBooks.length} local books, ${supabaseBooks?.approved?.length || 0} Supabase books`);
+      
       if (supabaseBooks && supabaseBooks.approved && supabaseBooks.approved.length > 0) {
-        // Use Supabase books as primary source (they have cover data from database)
-        mergedBooks = supabaseBooks.approved;
-        console.log(`📚 Loaded ${mergedBooks.length} approved books from Supabase`);
+        // Create a map of Supabase books by title+author and ID for quick lookup
+        const supabaseBooksMap = new Map<string, Book>();
+        const supabaseBooksById = new Map<string, Book>();
         
-        // Merge in any local books that aren't in Supabase (for backwards compatibility)
-        // Match by both ID and title+author to catch duplicates
-        const supabaseBookIds = new Set(mergedBooks.map(b => b.id).filter(Boolean));
-        const supabaseBookKeys = new Set(
-          mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
-        );
-        
-        const localOnlyBooks = localBooks.filter(b => {
-          // Skip if already in Supabase by ID
-          if (b.id && supabaseBookIds.has(b.id)) return false;
-          // Skip if already in Supabase by title+author
-          const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
-          return !supabaseBookKeys.has(key);
+        supabaseBooks.approved.forEach(sb => {
+          const key = `${sb.title?.toLowerCase().trim()}|${sb.author?.toLowerCase().trim() || ''}`;
+          if (!supabaseBooksMap.has(key)) {
+            supabaseBooksMap.set(key, sb);
+          }
+          if (sb.id) {
+            supabaseBooksById.set(sb.id, sb);
+          }
         });
         
-        if (localOnlyBooks.length > 0) {
-          mergedBooks = [...mergedBooks, ...localOnlyBooks];
-          console.log(`📚 Added ${localOnlyBooks.length} local-only books`);
+        console.log(`📚 Supabase: ${supabaseBooksMap.size} unique books by title+author, ${supabaseBooksById.size} books with IDs`);
+        
+        // CRITICAL FIX: Start with ALL local books - NO DEDUPLICATION
+        // Keep ALL books, even if they're duplicates. User should decide what to keep.
+        // Only deduplicate if they have the EXACT same ID (same object)
+        const localBooksList: Book[] = [];
+        const seenIds = new Set<string>();
+        
+        localBooks.forEach(b => {
+          // Only skip if we've seen this EXACT same ID before (same book object)
+          if (b.id) {
+            if (seenIds.has(b.id)) {
+              console.warn(`⚠️ Duplicate book with same ID skipped: "${b.title}" by ${b.author || 'Unknown'} (ID: ${b.id})`);
+              return; // Skip this exact duplicate
+            }
+            seenIds.add(b.id);
+          }
+          // Keep ALL books, even if title+author match (user might have multiple copies)
+          localBooksList.push(b);
+        });
+        
+        console.log(`📚 Local: ${localBooksList.length} books (keeping all, including duplicates)`);
+        
+        // Merge: For each local book, update with Supabase data if it exists
+        // CRITICAL: Track which Supabase books we've already matched to prevent duplicates
+        const matchedSupabaseIds = new Set<string>();
+        const matchedSupabaseKeys = new Set<string>();
+        
+        mergedBooks = localBooksList.map(localBook => {
+          // Try to match by ID first (most reliable)
+          if (localBook.id && supabaseBooksById.has(localBook.id)) {
+            const supabaseBook = supabaseBooksById.get(localBook.id)!;
+            matchedSupabaseIds.add(localBook.id);
+            const key = `${supabaseBook.title?.toLowerCase().trim()}|${supabaseBook.author?.toLowerCase().trim() || ''}`;
+            matchedSupabaseKeys.add(key);
+            
+            // Merge: Use Supabase data but preserve local readAt if more recent
+            const mergedBook = { ...supabaseBook };
+            if (localBook.readAt) {
+              if (!supabaseBook.readAt || (localBook.readAt > supabaseBook.readAt)) {
+                mergedBook.readAt = localBook.readAt;
+              }
+            }
+            return mergedBook;
+          }
+          
+          // Try to match by title+author (but only if not already matched)
+          const key = `${localBook.title?.toLowerCase().trim()}|${localBook.author?.toLowerCase().trim() || ''}`;
+          if (!matchedSupabaseKeys.has(key) && supabaseBooksMap.has(key)) {
+            const supabaseBook = supabaseBooksMap.get(key)!;
+            matchedSupabaseKeys.add(key);
+            if (supabaseBook.id) {
+              matchedSupabaseIds.add(supabaseBook.id);
+            }
+            
+            // Merge: Use Supabase data but preserve local readAt if more recent
+            const mergedBook = { ...supabaseBook };
+            // Preserve local ID if it exists (might be different from Supabase ID)
+            if (localBook.id) {
+              mergedBook.id = localBook.id;
+            }
+            if (localBook.readAt) {
+              if (!supabaseBook.readAt || (localBook.readAt > supabaseBook.readAt)) {
+                mergedBook.readAt = localBook.readAt;
+              }
+            }
+            return mergedBook;
+          }
+          
+          // Local book not in Supabase - keep it as-is (IMPORTANT: Don't drop it!)
+          console.log(`📚 Keeping local-only book: "${localBook.title}" by ${localBook.author || 'Unknown'}`);
+          return localBook;
+        });
+        
+        console.log(`📚 After merging local with Supabase: ${mergedBooks.length} books`);
+        
+        // Also add any Supabase books that aren't in local (shouldn't happen often, but possible)
+        // Use the matched sets we already created to avoid duplicates
+        const supabaseOnlyBooks = supabaseBooks.approved.filter(sb => {
+          if (sb.id && matchedSupabaseIds.has(sb.id)) return false;
+          const key = `${sb.title?.toLowerCase().trim()}|${sb.author?.toLowerCase().trim() || ''}`;
+          return !matchedSupabaseKeys.has(key);
+        });
+        
+        if (supabaseOnlyBooks.length > 0) {
+          console.log(`📚 Adding ${supabaseOnlyBooks.length} Supabase-only books`);
+          mergedBooks = [...mergedBooks, ...supabaseOnlyBooks];
         }
+        
+        console.log(`📚 Final merged count: ${mergedBooks.length} books (started with ${localBooks.length} local + ${supabaseBooks.approved.length} Supabase)`);
       } else {
         // Fallback to local books if Supabase has none
         mergedBooks = localBooks;
         console.log(`📚 Using ${mergedBooks.length} local books (no Supabase data)`);
       }
       
-      setBooks(mergedBooks);
+      // CRITICAL: Log if we lost any books and identify which ones
+      if (localBooks.length > 0 && mergedBooks.length < localBooks.length) {
+        const lostCount = localBooks.length - mergedBooks.length;
+        console.error(`❌ WARNING: Lost ${lostCount} books during merge! (${localBooks.length} → ${mergedBooks.length})`);
+        
+        // Identify which books were lost
+        const mergedBookKeys = new Set(
+          mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
+        );
+        const lostBooks = localBooks.filter(b => {
+          const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
+          return !mergedBookKeys.has(key);
+        });
+        
+        if (lostBooks.length > 0) {
+          console.error(`❌ Lost books:`, lostBooks.map(b => `"${b.title}" by ${b.author || 'Unknown'}`).join(', '));
+        }
+      }
+      
+      // CRITICAL: Never save fewer books than we started with (unless explicitly deleted)
+      // If we're about to lose books, keep the original local books instead
+      const finalBooks = mergedBooks.length < localBooks.length ? localBooks : mergedBooks;
+      
+      if (finalBooks.length !== mergedBooks.length) {
+        console.warn(`⚠️ Preventing data loss: Using ${localBooks.length} local books instead of ${mergedBooks.length} merged books`);
+      }
+      
+      // CRITICAL: Save merged books to AsyncStorage immediately to preserve them
+      // This ensures books persist even if Supabase is missing some later
+      if (user && finalBooks.length > 0) {
+        const userApprovedKey = `approved_books_${user.uid}`;
+        AsyncStorage.setItem(userApprovedKey, JSON.stringify(finalBooks)).catch(error => {
+          console.error('❌ Error saving merged books to AsyncStorage:', error);
+        });
+        console.log(`💾 Saved ${finalBooks.length} books to AsyncStorage`);
+      }
+      
+      setBooks(finalBooks);
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
+      
+      // Clean up photos that don't have any approved books
+      // This ensures only photos with added books show in the profile
+      setTimeout(() => {
+        cleanupPhotosWithoutApprovedBooks(mergedBooks, loadedPhotos).catch(error => {
+          console.error('Error cleaning up photos:', error);
+        });
+      }, 1000);
       
       // Fetch covers for books that don't have them
       const booksNeedingCovers = mergedBooks.filter(book => !getBookCoverUri(book));
@@ -628,6 +809,70 @@ export const MyLibraryTab: React.FC = () => {
     );
   };
 
+  const renderFolderBook = ({ item, index }: { item: Book; index: number }) => {
+    const bookId = item.id || `${item.title}_${item.author || ''}`;
+    const isSelected = selectedFolderBooks.has(bookId);
+    
+    return (
+      <TouchableOpacity
+        style={[
+          styles.bookCard,
+          isFolderSelectionMode && isSelected && styles.selectedBookCard
+        ]}
+        onPress={() => {
+          if (isFolderSelectionMode) {
+            setSelectedFolderBooks(prev => {
+              const newSet = new Set(prev);
+              if (newSet.has(bookId)) {
+                newSet.delete(bookId);
+              } else {
+                newSet.add(bookId);
+              }
+              return newSet;
+            });
+          } else {
+            const photo = findBookPhoto(item);
+            setSelectedBook(item);
+            setSelectedPhoto(photo);
+            setShowBookDetail(true);
+          }
+        }}
+        activeOpacity={0.7}
+      >
+        {isFolderSelectionMode && (
+          <View style={styles.selectionOverlay}>
+            {isSelected && (
+              <View style={styles.selectionCheckmark}>
+                <Ionicons name="checkmark-circle" size={24} color="#4299e1" />
+              </View>
+            )}
+          </View>
+        )}
+        {getBookCoverUri(item) ? (
+          <Image 
+            source={{ uri: getBookCoverUri(item) }} 
+            style={[
+              styles.bookCover,
+              isFolderSelectionMode && isSelected && styles.selectedBookCover
+            ]}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={[styles.bookCover, styles.placeholderCover]}>
+            <Text style={styles.placeholderText} numberOfLines={3}>
+              {item.title}
+            </Text>
+          </View>
+        )}
+        {item.author && (
+          <Text style={styles.bookAuthor} numberOfLines={2}>
+            {item.author}
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
   // Helper function to normalize strings for comparison
   const normalizeString = (str: string | undefined): string => {
     if (!str) return '';
@@ -683,10 +928,85 @@ export const MyLibraryTab: React.FC = () => {
     });
   };
 
+  // Clean up photos that don't have any approved books
+  // These photos should be deleted from both AsyncStorage and Supabase
+  const cleanupPhotosWithoutApprovedBooks = async (currentBooks: Book[], currentPhotos: Photo[]) => {
+    if (!user || currentPhotos.length === 0) return;
+    
+    try {
+      // Helper function to check if a photo has approved books
+      const photoHasApprovedBooks = (photo: Photo): boolean => {
+        if (!photo.books || photo.books.length === 0) {
+          return false;
+        }
+        
+        return photo.books.some(photoBook => {
+          return currentBooks.some(libraryBook => {
+            return booksMatch(photoBook, libraryBook);
+          });
+        });
+      };
+      
+      // Find photos that don't have any approved books
+      const photosToDelete = currentPhotos.filter(photo => !photoHasApprovedBooks(photo));
+      
+      if (photosToDelete.length === 0) {
+        return; // No photos to delete
+      }
+      
+      console.log(`🧹 Cleaning up ${photosToDelete.length} photos without approved books...`);
+      
+      // Delete from Supabase
+      for (const photo of photosToDelete) {
+        try {
+          await deletePhotoFromSupabase(user.uid, photo.id);
+        } catch (error) {
+          console.warn(`Failed to delete photo ${photo.id} from Supabase:`, error);
+        }
+      }
+      
+      // Remove from local state and AsyncStorage
+      const updatedPhotos = currentPhotos.filter(photo => photoHasApprovedBooks(photo));
+      setPhotos(updatedPhotos);
+      
+      // Save updated photos to AsyncStorage
+      const userPhotosKey = `photos_${user.uid}`;
+      await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
+      
+      console.log(`✅ Cleaned up ${photosToDelete.length} photos without approved books`);
+    } catch (error) {
+      console.error('Error cleaning up photos:', error);
+    }
+  };
+
   // Count scans that resulted in approved books
   const getScansWithBooks = () => {
     return getPhotosWithApprovedBooks().length;
   };
+
+  // Count read and unread books
+  const readBooksCount = useMemo(() => {
+    const count = books.filter(book => {
+      const hasReadAt = book.readAt !== undefined && book.readAt !== null && book.readAt > 0;
+      return hasReadAt;
+    }).length;
+    console.log(`📊 Read books count: ${count} out of ${books.length} total books`);
+    books.forEach(book => {
+      if (book.readAt) {
+        console.log(`  ✓ Read: "${book.title}" - readAt: ${book.readAt}`);
+      }
+    });
+    return count;
+  }, [books]);
+
+  const unreadBooksCount = useMemo(() => {
+    const count = books.filter(book => {
+      const isUnread = !book.readAt || book.readAt === null || book.readAt === 0;
+      return isUnread;
+    }).length;
+    console.log(`📊 Unread books count: ${count} out of ${books.length} total books`);
+    return count;
+  }, [books]);
 
   const handleStatsClick = () => {
     setShowAnalytics(!showAnalytics);
@@ -857,6 +1177,13 @@ export const MyLibraryTab: React.FC = () => {
         showsVerticalScrollIndicator={false}
         bounces={false}
         overScrollMode="never"
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="none"
+        contentContainerStyle={
+          librarySearch.trim() 
+            ? { paddingBottom: screenHeight * 0.6 } // Add enough padding when searching to allow scroll
+            : undefined
+        }
       >
       {/* Header - Match Scans tab design */}
       <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
@@ -952,6 +1279,32 @@ export const MyLibraryTab: React.FC = () => {
               <Text style={styles.statLabel}>Photos</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Read/Unread Buttons */}
+          <View style={styles.statsRow}>
+            <TouchableOpacity 
+              style={styles.statCard}
+              onPress={() => {
+                setShowReadBooks(true);
+                setShowUnreadBooks(false);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.statNumber}>{readBooksCount}</Text>
+              <Text style={styles.statLabel}>Read</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.statCard}
+              onPress={() => {
+                setShowUnreadBooks(true);
+                setShowReadBooks(false);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.statNumber}>{unreadBooksCount}</Text>
+              <Text style={styles.statLabel}>Unread</Text>
+            </TouchableOpacity>
+          </View>
         </TouchableOpacity>
 
         {/* Top Author - Expandable */}
@@ -1027,20 +1380,6 @@ export const MyLibraryTab: React.FC = () => {
             <Text style={styles.sectionTitle}>My Library</Text>
             <Text style={styles.sectionSubtitle}>{sortedDisplayedBooks.length} {sortedDisplayedBooks.length === 1 ? 'book' : 'books'}</Text>
           </View>
-          <TouchableOpacity
-            style={styles.selectButton}
-            onPress={() => {
-              setIsSelectionMode(!isSelectionMode);
-              if (isSelectionMode) {
-                setSelectedBooks(new Set());
-              }
-            }}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.selectButtonText}>
-              {isSelectionMode ? 'Cancel' : 'Select'}
-            </Text>
-          </TouchableOpacity>
         </View>
         
         {/* Selection Mode Indicator */}
@@ -1060,33 +1399,50 @@ export const MyLibraryTab: React.FC = () => {
         )}
         
         {/* Library Search Bar */}
-        <View style={styles.librarySearchContainer}>
+        <View ref={searchBarRef} style={styles.librarySearchContainer}>
           <TextInput
             style={styles.librarySearchInput}
             value={librarySearch}
-            onChangeText={setLibrarySearch}
+            onChangeText={(text) => {
+              setLibrarySearch(text);
+              // Scroll "My Library" section to top of screen when typing
+              // Use aggressive scrolling to override keyboard behavior
+              const scrollToLibrarySection = () => {
+                if (booksSectionY > 0) {
+                  // Scroll to the "My Library" section header at the top
+                  searchBarScrollPosition.current = booksSectionY - 10;
+                  scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: false });
+                }
+              };
+              // Scroll immediately and repeatedly to override keyboard auto-scroll
+              scrollToLibrarySection();
+              setTimeout(scrollToLibrarySection, 50);
+              setTimeout(scrollToLibrarySection, 150);
+              setTimeout(scrollToLibrarySection, 300);
+              setTimeout(scrollToLibrarySection, 500);
+              // Also use InteractionManager as backup
+              InteractionManager.runAfterInteractions(() => {
+                scrollToLibrarySection();
+                setTimeout(scrollToLibrarySection, 100);
+              });
+            }}
             placeholder="Search by title or author..."
             autoCapitalize="none"
             autoCorrect={false}
             clearButtonMode="never"
             onFocus={() => {
-              // Scroll to "My Library" section when search input is focused
-              const scrollToSection = () => {
+              // Scroll "My Library" section to top when focused
+              const scrollToLibrarySection = () => {
                 if (booksSectionY > 0) {
-                  scrollViewRef.current?.scrollTo({ y: booksSectionY - 20, animated: true });
-                } else {
-                  // Measure and scroll if Y not available
-                  booksSectionRef.current?.measure((x, y, width, height, pageX, pageY) => {
-                    // pageY is relative to window, but we need relative to ScrollView content
-                    // Try using y directly (relative to parent) or calculate offset
-                    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 20), animated: true });
-                  });
+                  // Scroll to the "My Library" section header at the top
+                  scrollViewRef.current?.scrollTo({ y: booksSectionY - 10, animated: true });
                 }
               };
-              
-              // Try immediately, then with a delay as fallback
-              scrollToSection();
-              setTimeout(scrollToSection, 100);
+              // Wait for keyboard to show, then scroll
+              InteractionManager.runAfterInteractions(() => {
+                setTimeout(scrollToLibrarySection, 100);
+                setTimeout(scrollToLibrarySection, 300);
+              });
             }}
           />
           {librarySearch.length > 0 && (
@@ -1174,6 +1530,29 @@ export const MyLibraryTab: React.FC = () => {
           ));
           setSelectedBook(updatedBook); // Update the selected book too
         }}
+        onEditBook={async (updatedBook) => {
+          // Update book when cover is changed
+          if (!user) return;
+          try {
+            // Update local state immediately
+            const userApprovedKey = `approved_books_${user.uid}`;
+            const updatedBooks = books.map(b => 
+              b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+                ? updatedBook
+                : b
+            );
+            setBooks(updatedBooks);
+            setSelectedBook(updatedBook);
+            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+            
+            // Reload from Supabase to ensure all views are updated
+            setTimeout(() => {
+              loadUserData();
+            }, 500);
+          } catch (error) {
+            console.error('Error updating book:', error);
+          }
+        }}
       />
 
       {/* Photos Modal */}
@@ -1183,7 +1562,8 @@ export const MyLibraryTab: React.FC = () => {
         transparent={false}
         onRequestClose={() => setShowPhotos(false)}
       >
-        <SafeAreaView style={styles.safeContainer}>
+        <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
+          <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
           <View style={styles.modalHeader}>
             <Text style={styles.modalHeaderTitle}>My Photos</Text>
             <TouchableOpacity
@@ -1590,14 +1970,18 @@ export const MyLibraryTab: React.FC = () => {
         </SafeAreaView>
       </Modal>
 
-      {/* Folder View Modal */}
+      {/* Folder View - Full Screen Page */}
       <Modal
         visible={showFolderView}
-        animationType="none"
+        animationType="slide"
+        presentationStyle="fullScreen"
         transparent={false}
         onRequestClose={() => {
           setShowFolderView(false);
           setSelectedFolder(null);
+          setIsFolderSelectionMode(false);
+          setSelectedFolderBooks(new Set());
+          setFolderSearchQuery('');
         }}
       >
         <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
@@ -1613,6 +1997,9 @@ export const MyLibraryTab: React.FC = () => {
               onPress={() => {
                 setShowFolderView(false);
                 setSelectedFolder(null);
+                setIsFolderSelectionMode(false);
+                setSelectedFolderBooks(new Set());
+                setFolderSearchQuery('');
               }}
               activeOpacity={0.7}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -1635,13 +2022,79 @@ export const MyLibraryTab: React.FC = () => {
           </View>
 
           {selectedFolder && (
-            <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+            <ScrollView style={styles.container} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20 }}>
+              {/* Search Bar */}
+              <View style={[styles.librarySearchContainer, { marginHorizontal: 20, marginTop: 0 }]}>
+                <TextInput
+                  style={styles.librarySearchInput}
+                  value={folderSearchQuery}
+                  onChangeText={setFolderSearchQuery}
+                  placeholder="Search by title or author..."
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  clearButtonMode="never"
+                />
+                {folderSearchQuery.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setFolderSearchQuery('')}
+                    style={styles.librarySearchClear}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.librarySearchClearText}>×</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Select Button */}
+              <View style={styles.folderSelectButtonContainer}>
+                <TouchableOpacity
+                  style={styles.selectButton}
+                  onPress={() => {
+                    setIsFolderSelectionMode(!isFolderSelectionMode);
+                    if (isFolderSelectionMode) {
+                      setSelectedFolderBooks(new Set());
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.selectButtonText}>
+                    {isFolderSelectionMode ? 'Cancel' : 'Select'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Selection Mode Indicator */}
+              {isFolderSelectionMode && selectedFolderBooks.size > 0 && (
+                <View style={styles.selectionBar}>
+                  <Text style={styles.selectionCount}>
+                    {selectedFolderBooks.size} {selectedFolderBooks.size === 1 ? 'book' : 'books'} selected
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.clearSelectionButton}
+                    onPress={() => setSelectedFolderBooks(new Set())}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.clearSelectionText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {(() => {
                 const folderPhotoIds = selectedFolder.photoIds || [];
                 const folderPhotos = photos.filter(photo => folderPhotoIds.includes(photo.id));
-                const folderBooks = books.filter(book => 
+                let folderBooks = books.filter(book => 
                   book.id && selectedFolder.bookIds.includes(book.id)
                 );
+
+                // Filter books by search query if provided
+                if (folderSearchQuery.trim()) {
+                  const query = folderSearchQuery.trim().toLowerCase();
+                  folderBooks = folderBooks.filter(book => {
+                    const title = (book.title || '').toLowerCase();
+                    const author = (book.author || '').toLowerCase();
+                    return title.includes(query) || author.includes(query);
+                  });
+                }
                 
                 // Show Photos section if there are photos
                 if (folderPhotos.length > 0) {
@@ -1683,7 +2136,7 @@ export const MyLibraryTab: React.FC = () => {
                           </View>
                           <FlatList
                             data={folderBooks}
-                            renderItem={renderBook}
+                            renderItem={renderFolderBook}
                             keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
                             numColumns={4}
                             scrollEnabled={false}
@@ -1716,7 +2169,7 @@ export const MyLibraryTab: React.FC = () => {
                     </View>
                     <FlatList
                       data={folderBooks}
-                      renderItem={renderBook}
+                      renderItem={renderFolderBook}
                       keyExtractor={(item, index) => `${item.title}-${item.author || ''}-${index}`}
                       numColumns={4}
                       scrollEnabled={false}
@@ -1834,6 +2287,50 @@ export const MyLibraryTab: React.FC = () => {
         onRequestClose={() => setShowLibraryView(false)}
       >
         <LibraryView onClose={() => setShowLibraryView(false)} />
+      </Modal>
+
+      {/* Read Books View Modal */}
+      <Modal
+        visible={showReadBooks}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowReadBooks(false);
+          loadUserData(); // Reload data when modal closes to update counts
+        }}
+      >
+        <LibraryView 
+          onClose={() => {
+            setShowReadBooks(false);
+            loadUserData(); // Reload data when modal closes to update counts
+          }} 
+          filterReadStatus="read"
+          onBooksUpdated={() => {
+            loadUserData(); // Reload data when books are updated
+          }}
+        />
+      </Modal>
+
+      {/* Unread Books View Modal */}
+      <Modal
+        visible={showUnreadBooks}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowUnreadBooks(false);
+          loadUserData(); // Reload data when modal closes to update counts
+        }}
+      >
+        <LibraryView 
+          onClose={() => {
+            setShowUnreadBooks(false);
+            loadUserData(); // Reload data when modal closes to update counts
+          }} 
+          filterReadStatus="unread"
+          onBooksUpdated={() => {
+            loadUserData(); // Reload data when books are updated
+          }}
+        />
       </Modal>
       
     </SafeAreaView>
@@ -1981,6 +2478,7 @@ const styles = StyleSheet.create({
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginBottom: 12,
   },
   statCard: {
     flex: 1,
@@ -2128,6 +2626,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
+  },
+  folderSelectButtonContainer: {
+    paddingHorizontal: 20,
+    marginBottom: 12,
   },
   librarySearchInput: {
     flex: 1,
@@ -2302,10 +2804,9 @@ const styles = StyleSheet.create({
   },
   // Photo Modal Styles
   modalHeader: {
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#2d3748',
     paddingVertical: 16,
     paddingHorizontal: 20,
-    paddingTop: 60,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',

@@ -64,6 +64,7 @@ module.exports = {
         NSFaceIDUsageDescription: "Bookshelf Scanner uses Face ID to quickly and securely sign you into your account."
       }
     },
+    scheme: "bookshelfscanner",
     android: {
       package: "com.clayjohnson75.bookshelfscanner",
       adaptiveIcon: {

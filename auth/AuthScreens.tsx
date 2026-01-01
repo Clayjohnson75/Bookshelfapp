@@ -14,6 +14,7 @@ import {
   Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from './SimpleAuthContext';
 import * as BiometricAuth from '../services/biometricAuth';
 
@@ -26,12 +27,16 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true); // Show by default
   const [showSignUp, setShowSignUp] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const { 
     signIn, 
     signInWithDemoAccount, 
     signInWithBiometric,
+    resetPassword,
     loading, 
     demoCredentials,
     biometricCapabilities,
@@ -102,8 +107,88 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     }
   };
 
+  const handleForgotPassword = async () => {
+    const email = resetEmail.trim();
+    
+    if (!email) {
+      Alert.alert('Error', 'Please enter your email address');
+      return;
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      const success = await resetPassword(email);
+      if (success) {
+        setShowForgotPassword(false);
+        setResetEmail('');
+      }
+    } catch (error) {
+      console.error('Password reset error:', error);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   if (showSignUp) {
     return <SignUpScreen onAuthSuccess={onAuthSuccess} onBackToLogin={() => setShowSignUp(false)} />;
+  }
+
+  if (showForgotPassword) {
+    return (
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={styles.scrollContainer}>
+          <View style={styles.header}>
+            <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
+            <Text style={styles.title}>Reset Password</Text>
+            <Text style={styles.subtitle}>Enter your email to receive a reset link</Text>
+          </View>
+
+          <View style={styles.form}>
+            <TextInput
+              style={styles.input}
+              placeholder="Email"
+              value={resetEmail}
+              onChangeText={setResetEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType="emailAddress"
+              autoComplete="email"
+              keyboardType="email-address"
+              editable={!resetLoading}
+            />
+
+            <TouchableOpacity
+              style={[styles.button, styles.primaryButton]}
+              onPress={handleForgotPassword}
+              disabled={resetLoading}
+            >
+              {resetLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>Send Reset Link</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.linkButton}
+              onPress={() => {
+                setShowForgotPassword(false);
+                setResetEmail('');
+              }}
+            >
+              <Text style={styles.linkText}>Back to Sign In</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
   }
 
   return (
@@ -184,8 +269,9 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             >
               <Ionicons 
                 name={
+                  LocalAuthentication && 
                   biometricCapabilities.supportedTypes.includes(
-                    require('expo-local-authentication').AuthenticationType.FACIAL_RECOGNITION
+                    LocalAuthentication.AuthenticationType?.FACIAL_RECOGNITION
                   ) 
                     ? 'face' 
                     : 'finger-print'
@@ -199,6 +285,13 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               </Text>
             </TouchableOpacity>
           )}
+
+          <TouchableOpacity
+            style={styles.linkButton}
+            onPress={() => setShowForgotPassword(true)}
+          >
+            <Text style={styles.linkText}>Forgot Password?</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.linkButton}

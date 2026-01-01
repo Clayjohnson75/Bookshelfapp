@@ -91,3 +91,5 @@ EXPO_PUBLIC_SUPABASE_URL=https://prod-project.supabase.co
 
 This is actually **good** - your data persists and syncs across all environments! 🎉
 
+
+

@@ -464,40 +464,32 @@ Return the array in the same order as the input. Respond with ONLY the JSON arra
 // Track scan in Supabase (non-blocking, don't fail scan if tracking fails)
 async function trackScan(userId: string | undefined): Promise<void> {
   if (!userId) {
-    return; // No user ID provided, skip tracking
+    throw new Error('No userId provided for scan tracking');
   }
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   
   if (!supabaseUrl || !supabaseServiceKey) {
-    console.warn('[API] Supabase credentials not configured, skipping scan tracking');
-    return;
+    throw new Error('Supabase credentials not configured for scan tracking');
   }
 
-  try {
-    // Use dynamic import to avoid bundling issues
-    const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
-
-    // Call the increment function we created in the migration
-    const { error } = await supabase.rpc('increment_user_scan_count', {
-      user_uuid: userId
-    });
-
-    if (error) {
-      console.error(`[API] Failed to track scan for user ${userId}:`, error);
-    } else {
-      console.log(`[API] Successfully tracked scan for user ${userId}`);
+  // Use dynamic import to avoid bundling issues
+  const { createClient } = await import('@supabase/supabase-js');
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
     }
-  } catch (e: any) {
-    // Don't throw - tracking failures shouldn't break scans
-    console.error('[API] Error tracking scan:', e?.message || e);
+  });
+  
+  // Call the increment function we created in the migration
+  const { data, error } = await supabase.rpc('increment_user_scan_count', {
+    user_uuid: userId
+  });
+
+  if (error) {
+    throw new Error(`Failed to increment scan count: ${error.message || error.code || 'Unknown error'}`);
   }
 }
 
@@ -554,11 +546,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Track scan asynchronously (don't wait for it)
+    // Track scan BEFORE processing (synchronous to ensure it happens)
+    // This ensures the count is incremented even if the scan fails
+    let scanTracked = false;
     if (userId && typeof userId === 'string') {
-      trackScan(userId).catch(err => {
-        console.error('[API] Scan tracking error (non-blocking):', err);
-      });
+      try {
+        await trackScan(userId);
+        scanTracked = true;
+        console.log(`[API] ✅ Scan tracked for user ${userId}`);
+      } catch (err) {
+        console.error('[API] ❌ Failed to track scan:', err);
+        // Don't block the scan if tracking fails, but log it
+      }
+    } else {
+      console.warn('[API] ⚠️ No userId provided, scan not tracked');
     }
 
     console.log(`[API] Starting parallel scans: OpenAI and Gemini...`);
@@ -627,6 +628,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     return res.status(200).json({ 
       books: validatedBooks,
+      scanTracked: scanTracked, // Indicate if scan was tracked
       apiResults: {
         openai: { count: openaiCount, working: openaiCount > 0 },
         gemini: { count: geminiCount, working: geminiCount > 0 }

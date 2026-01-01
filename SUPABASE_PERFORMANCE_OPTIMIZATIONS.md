@@ -106,3 +106,5 @@ If queries are consistently slow, consider:
 3. Upgrading your Supabase plan (better performance tier)
 
 
+
+

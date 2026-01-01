@@ -49,3 +49,5 @@ If you want to keep email confirmation for security, you can:
 
 But for most mobile apps, auto-confirmation is the better choice.
 
+
+

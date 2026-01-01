@@ -179,3 +179,5 @@ The app automatically detects environment:
 ✅ **Production**: Uses EAS secrets → Prod Supabase → Prod Vercel
 ✅ **Separation**: Complete data isolation between environments
 
+
+

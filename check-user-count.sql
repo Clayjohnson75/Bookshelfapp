@@ -26,3 +26,5 @@ SELECT COUNT(*) as recent_signups
 FROM profiles
 WHERE created_at > NOW() - INTERVAL '30 days';
 
+
+

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import { Book, Photo, Folder } from '../types/BookTypes';
@@ -55,17 +55,29 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const DEMO_UID = 'demo-user-test12';
   const DEMO_SEEDED_KEY = `demo_seeded_${DEMO_UID}`;
   
-  // Check biometric capabilities on mount
+  // Check biometric capabilities on mount (with delay to prevent crashes)
   useEffect(() => {
-    checkBiometricCapabilities();
+    // Delay the check slightly to ensure native modules are loaded
+    const timer = setTimeout(() => {
+      checkBiometricCapabilities();
+    }, 500);
+    
+    return () => clearTimeout(timer);
   }, []);
   
   const checkBiometricCapabilities = async () => {
     try {
+      // Only check if we're on a native platform (not web)
+      if (Platform.OS === 'web') {
+        setBiometricCapabilities(null);
+        return;
+      }
       const capabilities = await BiometricAuth.checkBiometricAvailability();
       setBiometricCapabilities(capabilities);
     } catch (error) {
       console.error('Error checking biometric capabilities:', error);
+      // Set to null if check fails - app will work without biometric
+      setBiometricCapabilities(null);
     }
   };
 
@@ -779,6 +791,47 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       Alert.alert('Sign Up Error', errorMessage);
       setLoading(false);
       return false;
+    }
+  };
+
+  const signInWithBiometric = async (): Promise<boolean> => {
+    try {
+      setLoading(true);
+      
+      // Get stored credentials (this will prompt for biometric)
+      const credentials = await BiometricAuth.getStoredCredentials();
+      
+      if (!credentials) {
+        setLoading(false);
+        return false;
+      }
+      
+      // Sign in with stored credentials
+      return await signIn(credentials.email, credentials.password);
+    } catch (error) {
+      console.error('Biometric sign in error:', error);
+      setLoading(false);
+      return false;
+    }
+  };
+  
+  const enableBiometric = async (email: string, password: string): Promise<void> => {
+    try {
+      await BiometricAuth.storeCredentialsForBiometric(email, password);
+      await BiometricAuth.setBiometricEnabled(true);
+    } catch (error) {
+      console.error('Error enabling biometric:', error);
+      // Don't throw - just log to prevent crashes
+    }
+  };
+  
+  const disableBiometric = async (): Promise<void> => {
+    try {
+      await BiometricAuth.setBiometricEnabled(false);
+      await BiometricAuth.clearStoredCredentials();
+    } catch (error) {
+      console.error('Error disabling biometric:', error);
+      // Don't throw - just log to prevent crashes
     }
   };
 

@@ -464,6 +464,12 @@ export async function saveBookToSupabase(
   }
 
   try {
+    // Convert scannedAt to BIGINT (timestamp in milliseconds) for Supabase
+    // scanned_at is BIGINT in database, not TIMESTAMPTZ
+    const scannedAtValue = book.scannedAt 
+      ? (typeof book.scannedAt === 'number' ? book.scannedAt : new Date(book.scannedAt).getTime())
+      : null;
+
     const bookData = {
       user_id: userId,
       title: book.title,
@@ -471,7 +477,7 @@ export async function saveBookToSupabase(
       isbn: book.isbn || null,
       confidence: book.confidence || null,
       status: status,
-      scanned_at: book.scannedAt ? new Date(book.scannedAt).toISOString() : null,
+      scanned_at: scannedAtValue, // BIGINT timestamp in milliseconds
       cover_url: book.coverUrl || null,
       local_cover_path: book.localCoverPath || null,
       google_books_id: book.googleBooksId || null,
@@ -513,9 +519,28 @@ export async function saveBookToSupabase(
         .eq('id', existingBook.id);
 
       if (updateError) {
+        // Check if error message is HTML (Cloudflare error page)
         const errorMessage = updateError?.message || updateError?.code || JSON.stringify(updateError) || String(updateError);
-        console.error('Error updating book in Supabase:', errorMessage);
-        console.error('Book data:', JSON.stringify(bookData, null, 2));
+        const isHtmlError = typeof errorMessage === 'string' && errorMessage.trim().startsWith('<!DOCTYPE');
+        const isDateRangeError = typeof errorMessage === 'string' && errorMessage.includes('date/time field value out of range');
+        
+        if (isHtmlError) {
+          console.error('❌ Error updating book in Supabase: Received HTML error page (likely Cloudflare 500 error)');
+          console.error('   This usually indicates a database schema mismatch or server issue');
+          console.error('   Error code:', updateError?.code);
+          console.error('   Book title:', book.title);
+          console.error('   scanned_at value type:', typeof bookData.scanned_at, 'value:', bookData.scanned_at);
+        } else if (isDateRangeError) {
+          console.error('❌ Error updating book in Supabase: Date/time field value out of range');
+          console.error('   This indicates scanned_at column is TIMESTAMPTZ but we sent BIGINT');
+          console.error('   SOLUTION: Run the migration supabase-migration-fix-scanned-at-type.sql');
+          console.error('   Book title:', book.title);
+          console.error('   scanned_at value:', bookData.scanned_at);
+          // Don't log full book data for this error to reduce noise
+        } else {
+          console.error('Error updating book in Supabase:', errorMessage);
+          console.error('Book data:', JSON.stringify(bookData, null, 2));
+        }
         return false;
       }
     } else {
@@ -563,8 +588,26 @@ export async function saveBookToSupabase(
         }
         
         const errorMessage = insertError?.message || insertError?.code || JSON.stringify(insertError) || String(insertError);
-        console.error('Error inserting book to Supabase:', errorMessage);
-        console.error('Book data:', JSON.stringify(bookData, null, 2));
+        const isHtmlError = typeof errorMessage === 'string' && errorMessage.trim().startsWith('<!DOCTYPE');
+        const isDateRangeError = typeof errorMessage === 'string' && errorMessage.includes('date/time field value out of range');
+        
+        if (isHtmlError) {
+          console.error('❌ Error inserting book to Supabase: Received HTML error page (likely Cloudflare 500 error)');
+          console.error('   This usually indicates a database schema mismatch or server issue');
+          console.error('   Error code:', insertError?.code);
+          console.error('   Book title:', book.title);
+          console.error('   scanned_at value type:', typeof bookData.scanned_at, 'value:', bookData.scanned_at);
+        } else if (isDateRangeError) {
+          console.error('❌ Error inserting book to Supabase: Date/time field value out of range');
+          console.error('   This indicates scanned_at column is TIMESTAMPTZ but we sent BIGINT');
+          console.error('   SOLUTION: Run the migration supabase-migration-fix-scanned-at-type.sql');
+          console.error('   Book title:', book.title);
+          console.error('   scanned_at value:', bookData.scanned_at);
+          // Don't log full book data for this error to reduce noise
+        } else {
+          console.error('Error inserting book to Supabase:', errorMessage);
+          console.error('Book data:', JSON.stringify(bookData, null, 2));
+        }
         return false;
       }
     }
@@ -618,7 +661,8 @@ export async function loadBooksFromSupabase(
       isbn: row.isbn || undefined,
       confidence: row.confidence || undefined,
       status: row.status || 'pending',
-      scannedAt: row.scanned_at || undefined,
+      // scanned_at is BIGINT in database, ensure it's a number or undefined
+      scannedAt: row.scanned_at != null ? Number(row.scanned_at) : undefined,
       coverUrl: row.cover_url || undefined,
       localCoverPath: row.local_cover_path || undefined,
       googleBooksId: row.google_books_id || undefined,
@@ -633,6 +677,7 @@ export async function loadBooksFromSupabase(
       ratingsCount: row.ratings_count || undefined,
       subtitle: row.subtitle || undefined,
       printType: row.print_type || undefined,
+      readAt: row.read_at ? (typeof row.read_at === 'number' ? row.read_at : (typeof row.read_at === 'string' ? parseInt(row.read_at, 10) : new Date(row.read_at).getTime())) : undefined, // Map read_at from Supabase to readAt in Book (BIGINT -> number)
     }));
 
     const pending = books.filter((b) => b.status === 'pending' || b.status === 'incomplete');
@@ -668,7 +713,10 @@ export async function deletePhotoFromSupabase(
       .single();
 
     if (fetchError) {
-      console.error('Error fetching photo for deletion:', fetchError);
+      // Don't log full error object, just the message to reduce noise
+      const errorMsg = fetchError?.message || fetchError?.code || 'Unknown error';
+      console.warn(`⚠️ Error fetching photo ${photoId} for deletion: ${errorMsg}`);
+      // Continue with deletion even if fetch fails - the photo might not exist in Supabase
     }
 
     // Delete from storage if path exists

@@ -75,3 +75,5 @@ To verify which URL the app is using, check the console logs when scanning:
 ✅ **Hardcoded fallback**: Same URL (so it always works)
 ✅ **Used in**: All API calls from the app
 
+
+

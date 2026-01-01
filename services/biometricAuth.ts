@@ -3,8 +3,16 @@
  * Handles Face ID / Touch ID authentication with secure token storage
  */
 
-import * as LocalAuthentication from 'expo-local-authentication';
-import * as SecureStore from 'expo-secure-store';
+// Safe imports with fallbacks
+let LocalAuthentication: any = null;
+let SecureStore: any = null;
+
+try {
+  LocalAuthentication = require('expo-local-authentication');
+  SecureStore = require('expo-secure-store');
+} catch (error) {
+  console.warn('Biometric modules not available:', error);
+}
 
 const BIOMETRIC_KEY = 'biometric_enabled';
 const AUTH_TOKEN_KEY = 'auth_token';
@@ -14,7 +22,7 @@ export interface BiometricCapabilities {
   isAvailable: boolean;
   hasHardware: boolean;
   isEnrolled: boolean;
-  supportedTypes: LocalAuthentication.AuthenticationType[];
+  supportedTypes: any[]; // Using any[] to prevent type errors if module not loaded
 }
 
 export interface StoredCredentials {
@@ -26,22 +34,49 @@ export interface StoredCredentials {
  * Check if biometric authentication is available on this device
  */
 export async function checkBiometricAvailability(): Promise<BiometricCapabilities> {
-  const hasHardware = await LocalAuthentication.hasHardwareAsync();
-  const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-  const supportedTypes = await LocalAuthentication.supportedAuthenticationTypesAsync();
-  
-  return {
-    isAvailable: hasHardware && isEnrolled,
-    hasHardware,
-    isEnrolled,
-    supportedTypes,
-  };
+  try {
+    // Check if modules are available
+    if (!LocalAuthentication || !SecureStore) {
+      return {
+        isAvailable: false,
+        hasHardware: false,
+        isEnrolled: false,
+        supportedTypes: [],
+      };
+    }
+    
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    const supportedTypes = await LocalAuthentication.supportedAuthenticationTypesAsync();
+    
+    return {
+      isAvailable: hasHardware && isEnrolled,
+      hasHardware,
+      isEnrolled,
+      supportedTypes,
+    };
+  } catch (error) {
+    console.error('Error checking biometric availability:', error);
+    // Return safe defaults if check fails
+    return {
+      isAvailable: false,
+      hasHardware: false,
+      isEnrolled: false,
+      supportedTypes: [],
+    };
+  }
 }
 
 /**
  * Get the biometric type name for display
  */
-export function getBiometricTypeName(capabilities: BiometricCapabilities): string {
+export function getBiometricTypeName(capabilities: BiometricCapabilities | null): string {
+  if (!capabilities || !capabilities.supportedTypes || capabilities.supportedTypes.length === 0) {
+    return 'Biometric';
+  }
+  if (!LocalAuthentication) {
+    return 'Biometric';
+  }
   if (capabilities.supportedTypes.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
     return 'Face ID';
   }
@@ -56,6 +91,9 @@ export function getBiometricTypeName(capabilities: BiometricCapabilities): strin
  */
 export async function isBiometricEnabled(): Promise<boolean> {
   try {
+    if (!SecureStore) {
+      return false;
+    }
     const enabled = await SecureStore.getItemAsync(BIOMETRIC_KEY);
     return enabled === 'true';
   } catch (error) {
@@ -72,7 +110,8 @@ export async function setBiometricEnabled(enabled: boolean): Promise<void> {
     await SecureStore.setItemAsync(BIOMETRIC_KEY, enabled ? 'true' : 'false');
   } catch (error) {
     console.error('Error setting biometric status:', error);
-    throw error;
+    // Don't throw - just log the error to prevent crashes
+    // throw error;
   }
 }
 
@@ -85,6 +124,10 @@ export async function storeCredentialsForBiometric(
   password: string
 ): Promise<void> {
   try {
+    if (!SecureStore) {
+      console.warn('SecureStore not available');
+      return;
+    }
     const credentials: StoredCredentials = {
       email,
       password, // SecureStore encrypts this automatically
@@ -92,7 +135,7 @@ export async function storeCredentialsForBiometric(
     await SecureStore.setItemAsync(USER_CREDENTIALS_KEY, JSON.stringify(credentials));
   } catch (error) {
     console.error('Error storing credentials:', error);
-    throw error;
+    // Don't throw - just log to prevent crashes
   }
 }
 
@@ -101,6 +144,10 @@ export async function storeCredentialsForBiometric(
  */
 export async function getStoredCredentials(): Promise<StoredCredentials | null> {
   try {
+    if (!LocalAuthentication || !SecureStore) {
+      return null;
+    }
+    
     // First check if biometric is enabled
     const isEnabled = await isBiometricEnabled();
     if (!isEnabled) {
@@ -142,6 +189,9 @@ export async function getStoredCredentials(): Promise<StoredCredentials | null> 
  */
 export async function clearStoredCredentials(): Promise<void> {
   try {
+    if (!SecureStore) {
+      return;
+    }
     await SecureStore.deleteItemAsync(USER_CREDENTIALS_KEY);
   } catch (error) {
     console.error('Error clearing credentials:', error);
@@ -153,10 +203,14 @@ export async function clearStoredCredentials(): Promise<void> {
  */
 export async function storeAuthToken(token: string): Promise<void> {
   try {
+    if (!SecureStore) {
+      console.warn('SecureStore not available');
+      return;
+    }
     await SecureStore.setItemAsync(AUTH_TOKEN_KEY, token);
   } catch (error) {
     console.error('Error storing auth token:', error);
-    throw error;
+    // Don't throw - just log to prevent crashes
   }
 }
 
@@ -165,6 +219,9 @@ export async function storeAuthToken(token: string): Promise<void> {
  */
 export async function getAuthToken(): Promise<string | null> {
   try {
+    if (!SecureStore) {
+      return null;
+    }
     return await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
   } catch (error) {
     console.error('Error getting auth token:', error);
@@ -177,6 +234,9 @@ export async function getAuthToken(): Promise<string | null> {
  */
 export async function clearAuthToken(): Promise<void> {
   try {
+    if (!SecureStore) {
+      return;
+    }
     await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY);
   } catch (error) {
     console.error('Error clearing auth token:', error);

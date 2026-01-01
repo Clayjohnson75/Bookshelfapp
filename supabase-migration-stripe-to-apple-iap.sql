@@ -28,3 +28,5 @@ COMMENT ON COLUMN public.profiles.apple_original_transaction_id IS 'Apple IAP or
 COMMENT ON COLUMN public.profiles.apple_product_id IS 'Apple IAP product ID (e.g., com.bookshelfscanner.pro.monthly)';
 
 
+
+

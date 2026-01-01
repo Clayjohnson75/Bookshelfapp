@@ -40,3 +40,5 @@ When you start Expo Go, check the console logs. You should see:
 
 And when the app connects, it should use: `https://gsfkjwmdwhptakgcbuxe.supabase.co`
 
+
+

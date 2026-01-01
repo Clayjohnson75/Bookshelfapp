@@ -159,3 +159,5 @@ SELECT * FROM get_user_scan_usage('YOUR_USER_UUID');
 1. Check function exists: `SELECT routine_name FROM information_schema.routines WHERE routine_name = 'can_user_scan';`
 2. Re-run the function creation part of the setup script
 
+
+

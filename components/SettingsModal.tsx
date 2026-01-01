@@ -18,6 +18,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import * as BiometricAuth from '../services/biometricAuth';
 
+// Safe import for LocalAuthentication
+let LocalAuthentication: any = null;
+try {
+  LocalAuthentication = require('expo-local-authentication');
+} catch (error) {
+  console.warn('expo-local-authentication not available');
+}
+
 interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
@@ -451,8 +459,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
                   <View style={styles.settingHeader}>
                     <Ionicons 
                       name={
+                        LocalAuthentication && 
                         biometricCapabilities.supportedTypes.includes(
-                          require('expo-local-authentication').AuthenticationType.FACIAL_RECOGNITION
+                          LocalAuthentication.AuthenticationType?.FACIAL_RECOGNITION
                         ) 
                           ? 'face' 
                           : 'finger-print'

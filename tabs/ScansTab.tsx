@@ -104,6 +104,9 @@ export const ScansTab: React.FC = () => {
   // Ref to refresh scan limit banner after scans
   const scanLimitBannerRef = useRef<ScanLimitBannerRef>(null);
   
+  // Ref for search debounce timeout
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
   const [approvedBooks, setApprovedBooks] = useState<Book[]>([]);
@@ -125,6 +128,16 @@ export const ScansTab: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [manualTitle, setManualTitle] = useState('');
   const [manualAuthor, setManualAuthor] = useState('');
+
+  // Edit mode states for pending books
+  const [showEditActions, setShowEditActions] = useState(false);
+  const [showSwitchCoversModal, setShowSwitchCoversModal] = useState(false);
+  const [showSwitchBookModal, setShowSwitchBookModal] = useState(false);
+  const [coverSearchResults, setCoverSearchResults] = useState<Array<{googleBooksId: string, coverUrl?: string}>>([]);
+  const [isLoadingCovers, setIsLoadingCovers] = useState(false);
+  const [bookSearchResults, setBookSearchResults] = useState<Array<{googleBooksId: string, title: string, author?: string, coverUrl?: string}>>([]);
+  const [isSearchingBooks, setIsSearchingBooks] = useState(false);
+  const [bookSearchQuery, setBookSearchQuery] = useState('');
 
   // Smart search for editing incomplete books: auto-search as user types title/author
   // Show caption modal when image is ready (either from camera or picker)
@@ -1390,6 +1403,14 @@ export const ScansTab: React.FC = () => {
           console.log(`✅ Server API returned ${serverBooks.length} books`);
           }
           
+          // If API didn't track the scan, do it client-side as fallback
+          if (user && (!data.scanTracked)) {
+            console.warn('⚠️ API did not track scan, attempting client-side fallback...');
+            incrementScanCount(user.uid).catch(err => {
+              console.error('❌ Client-side scan tracking also failed:', err);
+            });
+          }
+          
         console.log(`✅ Using server API results: ${serverBooks.length} books found (already validated)`);
             return { books: serverBooks, fromVercel: true };
         } else {
@@ -1540,7 +1561,6 @@ export const ScansTab: React.FC = () => {
         startTimestamp: latestProgress?.startTimestamp || Date.now(), // Preserve or set start timestamp
       });
       
-      console.log('📊 processImage set scanProgress with totalScans:', totalScans);
       
       setCurrentScan({ id: scanId, uri, progress: { current: 1, total: 10 } });
       
@@ -1653,15 +1673,34 @@ export const ScansTab: React.FC = () => {
           totalScans: totalScans,
         });
         
-        // Show alert with failure reason
-        Alert.alert(
-          'Failed to Find Books',
-          `${failureReason}\n\n${failureDetails}`,
-          [{ text: 'OK' }]
-        );
-        
         // Clean up caption ref
         scanCaptionsRef.current.delete(scanId);
+        
+        // Check if there are more photos to scan
+        const hasMorePhotos = pendingImages.length > 1 && currentImageIndex < pendingImages.length - 1;
+        
+        if (hasMorePhotos) {
+          // Automatically move to next photo without showing alert
+          console.log('📸 No books found, automatically moving to next photo...');
+          const nextIndex = currentImageIndex + 1;
+          const nextImage = pendingImages[nextIndex];
+          
+          // Update to show next photo in caption modal
+          setCurrentImageIndex(nextIndex);
+          setPendingImageUri(nextImage.uri);
+          currentScanIdRef.current = nextImage.scanId;
+          setCaptionText(scanCaptionsRef.current.get(nextImage.scanId) || '');
+          
+          // Don't save the photo - just return (caption modal will show next photo)
+          return;
+        } else {
+          // This is the last photo (or only photo), show alert
+          Alert.alert(
+            'Failed to Find Books',
+            `${failureReason}\n\n${failureDetails}`,
+            [{ text: 'OK' }]
+          );
+        }
         
         // Don't save the photo - just return
         // The photo won't appear in recent scans since it's never added to the photos array
@@ -1781,26 +1820,23 @@ export const ScansTab: React.FC = () => {
       // This ensures 1 photo = 1 scan, regardless of how many books are found
       
       // Refresh scan limit banner and usage after successful scan
-      // The API increments the count asynchronously, so refresh multiple times to catch the update
-      const refreshBanner = () => {
-        if (scanLimitBannerRef.current) {
-          scanLimitBannerRef.current.refresh();
-        }
-        // Also refresh the canScan state
-        if (user) {
-          loadScanUsage();
-        }
-      };
-      
-      // Refresh after 500ms (give database time to update)
-      setTimeout(refreshBanner, 500);
-      
-      // Refresh after 1.5 seconds (in case of slow database)
-      setTimeout(refreshBanner, 1500);
-      
-      // Immediate refresh to update UI quickly
+      // The API now tracks scans synchronously, so refresh after a short delay
       if (user) {
-        loadScanUsage();
+        // Refresh after 1 second to let the database update complete
+        setTimeout(() => {
+          if (scanLimitBannerRef.current) {
+            scanLimitBannerRef.current.refresh();
+          }
+          loadScanUsage();
+        }, 1000);
+        
+        // Also refresh after 3 seconds as a backup
+        setTimeout(() => {
+          if (scanLimitBannerRef.current) {
+            scanLimitBannerRef.current.refresh();
+          }
+          loadScanUsage();
+        }, 3000);
       }
       
       // Update queue status using functional update to get latest state
@@ -1873,6 +1909,13 @@ export const ScansTab: React.FC = () => {
           console.log('📊 All scans complete, hiding notification');
         setTimeout(() => {
           setScanProgress(null);
+          // Refresh scan usage when all scans are complete
+          if (user) {
+            setTimeout(() => {
+              loadScanUsage();
+              scanLimitBannerRef.current?.refresh();
+            }, 1000);
+          }
         }, 500);
       }
         
@@ -1930,6 +1973,13 @@ export const ScansTab: React.FC = () => {
         // All scans complete (including failures), hide notification
         setTimeout(() => {
           setScanProgress(null);
+          // Refresh scan usage when all scans are complete
+          if (user) {
+            setTimeout(() => {
+              loadScanUsage();
+              scanLimitBannerRef.current?.refresh();
+            }, 1000);
+          }
         }, 500);
       }
         
@@ -2066,8 +2116,16 @@ export const ScansTab: React.FC = () => {
       const newSelected = new Set(prev);
       if (newSelected.has(bookId)) {
         newSelected.delete(bookId);
+        // Close edit actions if no books are selected
+        if (newSelected.size === 0) {
+          setShowEditActions(false);
+        }
       } else {
         newSelected.add(bookId);
+        // Close edit actions if more than one book is selected
+        if (newSelected.size > 1) {
+          setShowEditActions(false);
+        }
       }
       return newSelected;
     });
@@ -2261,6 +2319,215 @@ export const ScansTab: React.FC = () => {
       });
     }
   }, [pendingBooks, approvedBooks, rejectedBooks, photos, selectedBooks]);
+
+  // Edit functions for pending books
+  const handleRemoveCover = useCallback(async (bookId: string) => {
+    if (!user) return;
+    
+    const bookToUpdate = pendingBooks.find(book => book.id === bookId);
+    if (!bookToUpdate) return;
+
+    const updatedBook: Book = {
+      ...bookToUpdate,
+      coverUrl: undefined,
+      localCoverPath: undefined,
+      googleBooksId: undefined, // Remove Google Books ID since we're removing the cover
+    };
+
+    // Update in pending books
+    const updatedPending = pendingBooks.map(book => 
+      book.id === bookId ? updatedBook : book
+    );
+    setPendingBooks(updatedPending);
+
+    // Update in photos
+    const updatedPhotos = photos.map(photo => ({
+      ...photo,
+      books: photo.books.map(book => 
+        book.id === bookId ? updatedBook : book
+      ),
+    }));
+    setPhotos(updatedPhotos);
+
+    // Save to Supabase
+    await saveBookToSupabase(user.uid, updatedBook);
+    await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
+
+    // Clear selection and close edit mode
+    setSelectedBooks(new Set());
+    setShowEditActions(false);
+
+    Alert.alert('Cover Removed', 'The cover has been removed from this book.');
+  }, [pendingBooks, photos, approvedBooks, rejectedBooks, user]);
+
+  const handleSwitchCovers = useCallback(async (bookId: string) => {
+    const bookToUpdate = pendingBooks.find(book => book.id === bookId);
+    if (!bookToUpdate) return;
+
+    setShowSwitchCoversModal(true);
+    setIsLoadingCovers(true);
+    setCoverSearchResults([]);
+
+    try {
+      const { searchMultipleBooks } = await import('../services/googleBooksService');
+      const results = await searchMultipleBooks(bookToUpdate.title, bookToUpdate.author, 20);
+      
+      // Filter to only show results with covers
+      const resultsWithCovers = results.filter(r => r.coverUrl && r.googleBooksId);
+      setCoverSearchResults(resultsWithCovers);
+    } catch (error) {
+      console.error('Error searching for covers:', error);
+      Alert.alert('Error', 'Failed to search for covers. Please try again.');
+    } finally {
+      setIsLoadingCovers(false);
+    }
+  }, [pendingBooks]);
+
+  const handleSelectCover = useCallback(async (selectedCover: {googleBooksId: string, coverUrl?: string}) => {
+    if (!user || !selectedCover.googleBooksId || !selectedCover.coverUrl) return;
+
+    const bookId = Array.from(selectedBooks)[0]; // Get the selected book ID
+    const bookToUpdate = pendingBooks.find(book => book.id === bookId);
+    if (!bookToUpdate) return;
+
+    // Download and cache the new cover
+    const { fetchBookData } = await import('../services/googleBooksService');
+    const bookData = await fetchBookData(bookToUpdate.title, bookToUpdate.author, selectedCover.googleBooksId);
+
+    if (bookData.coverUrl) {
+      // Download the cover
+      const coverUri = await downloadAndCacheCover(bookData.coverUrl, selectedCover.googleBooksId);
+      
+      const updatedBook: Book = {
+        ...bookToUpdate,
+        coverUrl: bookData.coverUrl,
+        localCoverPath: coverUri ? coverUri.replace(FileSystem.documentDirectory || '', '') : undefined,
+        googleBooksId: selectedCover.googleBooksId,
+        // Update other book data if available
+        description: bookData.description || bookToUpdate.description,
+        pageCount: bookData.pageCount || bookToUpdate.pageCount,
+        categories: bookData.categories || bookToUpdate.categories,
+        publisher: bookData.publisher || bookToUpdate.publisher,
+        publishedDate: bookData.publishedDate || bookToUpdate.publishedDate,
+        language: bookData.language || bookToUpdate.language,
+        averageRating: bookData.averageRating || bookToUpdate.averageRating,
+        ratingsCount: bookData.ratingsCount || bookToUpdate.ratingsCount,
+        subtitle: bookData.subtitle || bookToUpdate.subtitle,
+      };
+
+      // Update in pending books
+      const updatedPending = pendingBooks.map(book => 
+        book.id === bookId ? updatedBook : book
+      );
+      setPendingBooks(updatedPending);
+
+      // Update in photos
+      const updatedPhotos = photos.map(photo => ({
+        ...photo,
+        books: photo.books.map(book => 
+          book.id === bookId ? updatedBook : book
+        ),
+      }));
+      setPhotos(updatedPhotos);
+
+      // Save to Supabase
+      await saveBookToSupabase(user.uid, updatedBook);
+      await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
+
+      setShowSwitchCoversModal(false);
+      setSelectedBooks(new Set());
+      setShowEditActions(false);
+
+      Alert.alert('Cover Updated', 'The book cover has been updated.');
+    }
+  }, [pendingBooks, photos, approvedBooks, rejectedBooks, user, selectedBooks]);
+
+  const handleSwitchBook = useCallback(() => {
+    setShowSwitchBookModal(true);
+    setBookSearchQuery('');
+    setBookSearchResults([]);
+  }, []);
+
+  const searchBooks = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setBookSearchResults([]);
+      return;
+    }
+
+    setIsSearchingBooks(true);
+    try {
+      const { searchBooksByQuery } = await import('../services/googleBooksService');
+      const results = await searchBooksByQuery(query, 20);
+      setBookSearchResults(results);
+    } catch (error) {
+      console.error('Error searching books:', error);
+      Alert.alert('Error', 'Failed to search for books. Please try again.');
+    } finally {
+      setIsSearchingBooks(false);
+    }
+  }, []);
+
+  const handleSelectBook = useCallback(async (selectedBook: {googleBooksId: string, title: string, author?: string, coverUrl?: string}) => {
+    if (!user) return;
+
+    const bookId = Array.from(selectedBooks)[0]; // Get the selected book ID
+    const bookToUpdate = pendingBooks.find(book => book.id === bookId);
+    if (!bookToUpdate) return;
+
+    // Fetch full book data
+    const { fetchBookData } = await import('../services/googleBooksService');
+    const bookData = await fetchBookData(selectedBook.title, selectedBook.author, selectedBook.googleBooksId);
+
+    // Download cover if available
+    let localCoverPath: string | undefined = undefined;
+    if (bookData.coverUrl) {
+      const coverUri = await downloadAndCacheCover(bookData.coverUrl, selectedBook.googleBooksId);
+      localCoverPath = coverUri ? coverUri.replace(FileSystem.documentDirectory || '', '') : undefined;
+    }
+
+    const updatedBook: Book = {
+      ...bookToUpdate,
+      title: selectedBook.title,
+      author: selectedBook.author || bookToUpdate.author,
+      coverUrl: bookData.coverUrl || selectedBook.coverUrl,
+      localCoverPath,
+      googleBooksId: selectedBook.googleBooksId,
+      description: bookData.description,
+      pageCount: bookData.pageCount,
+      categories: bookData.categories,
+      publisher: bookData.publisher,
+      publishedDate: bookData.publishedDate,
+      language: bookData.language,
+      averageRating: bookData.averageRating,
+      ratingsCount: bookData.ratingsCount,
+      subtitle: bookData.subtitle,
+    };
+
+    // Update in pending books
+    const updatedPending = pendingBooks.map(book => 
+      book.id === bookId ? updatedBook : book
+    );
+    setPendingBooks(updatedPending);
+
+    // Update in photos
+    const updatedPhotos = photos.map(photo => ({
+      ...photo,
+      books: photo.books.map(book => 
+        book.id === bookId ? updatedBook : book
+      ),
+    }));
+    setPhotos(updatedPhotos);
+
+    // Save to Supabase
+    await saveBookToSupabase(user.uid, updatedBook);
+    await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
+
+    setShowSwitchBookModal(false);
+    setSelectedBooks(new Set());
+    setShowEditActions(false);
+
+    Alert.alert('Book Updated', 'The book has been replaced.');
+  }, [pendingBooks, photos, approvedBooks, rejectedBooks, user, selectedBooks]);
 
   const rejectSelectedBooks = useCallback(async () => {
     if (!user) return;
@@ -2919,16 +3186,10 @@ export const ScansTab: React.FC = () => {
             <View style={styles.headerButtons}>
               <TouchableOpacity 
                 style={styles.selectAllButton}
-                onPress={selectAllBooks}
+                onPress={selectedBooks.size > 0 && selectedBooks.size === pendingBooks.filter(book => book.status !== 'incomplete').length ? unselectAllBooks : selectAllBooks}
               >
-                <Text style={styles.selectAllButtonText}>Select All</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.clearButton}
-                onPress={selectedBooks.size > 0 ? unselectAllBooks : clearAllBooks}
-              >
-                <Text style={styles.clearButtonText}>
-                  {selectedBooks.size > 0 ? 'Unselect All' : 'Clear All'}
+                <Text style={styles.selectAllButtonText}>
+                  {selectedBooks.size > 0 && selectedBooks.size === pendingBooks.filter(book => book.status !== 'incomplete').length ? 'Unselect All' : 'Select All'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -3455,8 +3716,9 @@ export const ScansTab: React.FC = () => {
         onRequestClose={handleCaptionSkip}
         transparent={false}
       >
-        <SafeAreaView style={styles.captionModalContainer} edges={['top']}>
-          <View style={[styles.captionModalHeader, { paddingTop: insets.top + 20 }]}>
+        <SafeAreaView style={styles.captionModalContainer} edges={['left','right']}>
+          <View style={{ height: insets.top, backgroundColor: '#2d3748' }} />
+          <View style={styles.captionModalHeader}>
             <Text style={styles.modalTitle}>Add Caption</Text>
             {pendingImages.length > 1 && (
               <Text style={styles.captionProgressText}>
@@ -3695,6 +3957,43 @@ export const ScansTab: React.FC = () => {
             <Text style={styles.stickyToolbarTitle}>Pending Books</Text>
             <Text style={styles.stickySelectedCount}>{selectedBooks.size} selected</Text>
           </View>
+          {/* Edit action buttons - shown when edit mode is active */}
+          {showEditActions && selectedBooks.size === 1 && (
+            <View style={styles.editActionsRow}>
+              <TouchableOpacity 
+                style={styles.editActionButton}
+                onPress={() => {
+                  const bookId = Array.from(selectedBooks)[0];
+                  handleRemoveCover(bookId);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="image-outline" size={14} color="#fff" style={{ marginRight: 4 }} />
+                <Text style={styles.editActionButtonText}>Remove Cover</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.editActionButton}
+                onPress={() => {
+                  const bookId = Array.from(selectedBooks)[0];
+                  handleSwitchCovers(bookId);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="swap-horizontal-outline" size={14} color="#fff" style={{ marginRight: 4 }} />
+                <Text style={styles.editActionButtonText}>Switch Covers</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.editActionButton}
+                onPress={() => {
+                  handleSwitchBook();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="book-outline" size={14} color="#fff" style={{ marginRight: 4 }} />
+                <Text style={styles.editActionButtonText}>Switch Book</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <View style={styles.stickyToolbarRow}>
             <TouchableOpacity 
               style={[styles.stickyButton, selectedBooks.size === 0 && styles.stickyButtonDisabled]}
@@ -3712,6 +4011,25 @@ export const ScansTab: React.FC = () => {
             >
               <Text style={styles.stickyDeleteButtonText}>Delete Selected</Text>
             </TouchableOpacity>
+            {selectedBooks.size === 1 && (
+              <TouchableOpacity 
+                style={[styles.stickyEditButton, showEditActions && styles.stickyEditButtonActive]}
+                onPress={() => {
+                  setShowEditActions(!showEditActions);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons 
+                  name={showEditActions ? "close" : "create-outline"} 
+                  size={16} 
+                  color="#fff" 
+                  style={{ marginRight: 4 }} 
+                />
+                <Text style={styles.stickyEditButtonText}>
+                  {showEditActions ? 'Cancel' : 'Edit'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       )}
@@ -3728,6 +4046,236 @@ export const ScansTab: React.FC = () => {
           loadScanUsage(); // Refresh usage after upgrade
         }}
       />
+
+      {/* Switch Covers Modal */}
+      <Modal
+        visible={showSwitchCoversModal}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowSwitchCoversModal(false);
+          setCoverSearchResults([]);
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer} edges={['top']}>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 20 }]}>
+            <Text style={styles.modalTitle}>Switch Cover</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => {
+                setShowSwitchCoversModal(false);
+                setCoverSearchResults([]);
+              }}
+            >
+              <Text style={styles.modalCloseText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          
+          {selectedBooks.size === 1 && (() => {
+            const bookId = Array.from(selectedBooks)[0];
+            const book = pendingBooks.find(b => b.id === bookId);
+            if (!book) return null;
+            
+            return (
+              <ScrollView style={styles.modalContent}>
+                <View style={styles.switchCoversHeader}>
+                  <Text style={styles.switchCoversTitle}>Current Book</Text>
+                  <View style={styles.currentBookCard}>
+                    {getBookCoverUri(book) ? (
+                      <Image 
+                        source={{ uri: getBookCoverUri(book) }} 
+                        style={styles.currentBookCover}
+                      />
+                    ) : (
+                      <View style={[styles.currentBookCover, styles.placeholderCover]}>
+                        <Text style={styles.placeholderText} numberOfLines={3}>
+                          {book.title}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.currentBookInfo}>
+                      <Text style={styles.currentBookTitle}>{book.title}</Text>
+                      {book.author && (
+                        <Text style={styles.currentBookAuthor}>{book.author}</Text>
+                      )}
+                    </View>
+                  </View>
+                </View>
+
+                <View style={styles.switchCoversSection}>
+                  <Text style={styles.switchCoversSectionTitle}>Available Covers</Text>
+                  {isLoadingCovers ? (
+                    <View style={styles.loadingContainer}>
+                      <ActivityIndicator size="large" color="#0056CC" />
+                      <Text style={styles.loadingText}>Searching for covers...</Text>
+                    </View>
+                  ) : coverSearchResults.length === 0 ? (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>No covers found</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.coversGrid}>
+                      {coverSearchResults.map((result, index) => (
+                        <TouchableOpacity
+                          key={result.googleBooksId || index}
+                          style={styles.coverOption}
+                          onPress={() => handleSelectCover(result)}
+                          activeOpacity={0.7}
+                        >
+                          {result.coverUrl ? (
+                            <Image 
+                              source={{ uri: result.coverUrl }} 
+                              style={styles.coverOptionImage}
+                            />
+                          ) : (
+                            <View style={[styles.coverOptionImage, styles.placeholderCover]}>
+                              <Text style={styles.placeholderText}>No Cover</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
+            );
+          })()}
+        </SafeAreaView>
+      </Modal>
+
+      {/* Switch Book Modal */}
+      <Modal
+        visible={showSwitchBookModal}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          // Clear search timeout
+          if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+            searchTimeoutRef.current = null;
+          }
+          setShowSwitchBookModal(false);
+          setBookSearchQuery('');
+          setBookSearchResults([]);
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer} edges={['top']}>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 20 }]}>
+            <Text style={styles.modalTitle}>Switch Book</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => {
+                // Clear search timeout
+                if (searchTimeoutRef.current) {
+                  clearTimeout(searchTimeoutRef.current);
+                  searchTimeoutRef.current = null;
+                }
+                setShowSwitchBookModal(false);
+                setBookSearchQuery('');
+                setBookSearchResults([]);
+              }}
+            >
+              <Text style={styles.modalCloseText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.modalContent}>
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search for a book..."
+                value={bookSearchQuery}
+                onChangeText={(text) => {
+                  setBookSearchQuery(text);
+                  // Debounce search
+                  if (searchTimeoutRef.current) {
+                    clearTimeout(searchTimeoutRef.current);
+                  }
+                  searchTimeoutRef.current = setTimeout(() => {
+                    searchBooks(text);
+                  }, 500);
+                }}
+                autoCapitalize="words"
+                autoCorrect={false}
+              />
+              {isSearchingBooks && (
+                <ActivityIndicator size="small" color="#0056CC" style={{ marginLeft: 10 }} />
+              )}
+            </View>
+
+            {selectedBooks.size === 1 && (() => {
+              const bookId = Array.from(selectedBooks)[0];
+              const book = pendingBooks.find(b => b.id === bookId);
+              if (!book) return null;
+              
+              return (
+                <View style={styles.switchBookHeader}>
+                  <Text style={styles.switchBookHeaderTitle}>Replacing:</Text>
+                  <View style={styles.currentBookCard}>
+                    {getBookCoverUri(book) ? (
+                      <Image 
+                        source={{ uri: getBookCoverUri(book) }} 
+                        style={styles.currentBookCoverSmall}
+                      />
+                    ) : (
+                      <View style={[styles.currentBookCoverSmall, styles.placeholderCover]}>
+                        <Text style={styles.placeholderText} numberOfLines={2}>
+                          {book.title}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.currentBookInfo}>
+                      <Text style={styles.currentBookTitle}>{book.title}</Text>
+                      {book.author && (
+                        <Text style={styles.currentBookAuthor}>{book.author}</Text>
+                      )}
+                    </View>
+                  </View>
+                </View>
+              );
+            })()}
+
+            <ScrollView style={styles.searchResultsContainer}>
+              {bookSearchResults.length === 0 && bookSearchQuery.trim() ? (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No books found</Text>
+                </View>
+              ) : (
+                bookSearchResults.map((result, index) => (
+                  <TouchableOpacity
+                    key={result.googleBooksId || index}
+                    style={styles.bookSearchResult}
+                    onPress={() => handleSelectBook(result)}
+                    activeOpacity={0.7}
+                  >
+                    {result.coverUrl ? (
+                      <Image 
+                        source={{ uri: result.coverUrl }} 
+                        style={styles.bookSearchResultCover}
+                      />
+                    ) : (
+                      <View style={[styles.bookSearchResultCover, styles.placeholderCover]}>
+                        <Text style={styles.placeholderText} numberOfLines={2}>
+                          {result.title}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.bookSearchResultInfo}>
+                      <Text style={styles.bookSearchResultTitle}>{result.title}</Text>
+                      {result.author && (
+                        <Text style={styles.bookSearchResultAuthor}>{result.author}</Text>
+                      )}
+                      {result.publishedDate && (
+                        <Text style={styles.bookSearchResultDate}>{result.publishedDate}</Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 };
@@ -4591,6 +5139,9 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
     borderWidth: 0,
+    minWidth: 110, // Fixed width to prevent resizing when text changes
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   selectAllButtonText: {
     color: 'white',
@@ -4742,7 +5293,7 @@ const styles = StyleSheet.create({
   stickyToolbar: {
     backgroundColor: '#ffffff',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -4769,7 +5320,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   stickyToolbarTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     color: '#1a202c',
   },
@@ -4779,48 +5330,107 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   stickySelectedCount: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#4a5568',
     fontWeight: '600',
   },
   stickyButton: {
     backgroundColor: '#2563eb', // Deep blue accent
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 0,
     shadowColor: '#2563eb',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 6,
     elevation: 3,
+    flex: 1,
+    minHeight: 48,
   },
   stickyButtonDisabled: {
     opacity: 0.5,
   },
   stickyButtonText: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
   stickyDeleteButton: {
     backgroundColor: '#dc2626', // Red for delete
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 0,
     shadowColor: '#dc2626',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 6,
     elevation: 3,
+    flex: 1,
+    minHeight: 48,
   },
   stickyDeleteButtonText: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
+  },
+  stickyEditButton: {
+    backgroundColor: '#0056CC',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 0,
+    shadowColor: '#0056CC',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    minHeight: 48,
+  },
+  stickyEditButtonActive: {
+    backgroundColor: '#dc2626',
+    shadowColor: '#dc2626',
+  },
+  stickyEditButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  editActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+    flexWrap: 'wrap',
+  },
+  editActionButton: {
+    flex: 1,
+    minWidth: '30%',
+    backgroundColor: '#0056CC',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0056CC',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  editActionButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.1,
   },
   selectionIndicator: {},
   selectedCheckbox: {},
@@ -4919,7 +5529,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#2d3748',
     borderBottomWidth: 0,
   },
   captionProgressText: {
@@ -5071,6 +5681,175 @@ const styles = StyleSheet.create({
   },
   folderItemNameSelected: {
     color: '#0056CC',
+  },
+  // Switch Covers Modal Styles
+  switchCoversHeader: {
+    padding: 20,
+    backgroundColor: '#f8f9fa',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  switchCoversTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+  },
+  currentBookCard: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  currentBookCover: {
+    width: 80,
+    height: 120,
+    borderRadius: 8,
+    marginRight: 12,
+  },
+  currentBookCoverSmall: {
+    width: 60,
+    height: 90,
+    borderRadius: 6,
+    marginRight: 12,
+  },
+  currentBookInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  currentBookTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 4,
+  },
+  currentBookAuthor: {
+    fontSize: 14,
+    color: '#6b7280',
+  },
+  switchCoversSection: {
+    padding: 20,
+  },
+  switchCoversSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 16,
+  },
+  coversGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  coverOption: {
+    width: (screenWidth - 80) / 3, // 3 columns with padding
+    aspectRatio: 0.67, // Book cover ratio
+    borderRadius: 8,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  coverOptionImage: {
+    width: '100%',
+    height: '100%',
+  },
+  // Switch Book Modal Styles
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  searchInput: {
+    flex: 1,
+    height: 44,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#1a202c',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  switchBookHeader: {
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  switchBookHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6b7280',
+    marginBottom: 8,
+  },
+  searchResultsContainer: {
+    flex: 1,
+    padding: 16,
+  },
+  bookSearchResult: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  bookSearchResultCover: {
+    width: 50,
+    height: 75,
+    borderRadius: 6,
+    marginRight: 12,
+  },
+  bookSearchResultInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  bookSearchResultTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 4,
+  },
+  bookSearchResultAuthor: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginBottom: 2,
+  },
+  bookSearchResultDate: {
+    fontSize: 12,
+    color: '#9ca3af',
+  },
+  loadingContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6b7280',
+  },
+  emptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#9ca3af',
   },
   folderItemCount: {
     fontSize: 13,

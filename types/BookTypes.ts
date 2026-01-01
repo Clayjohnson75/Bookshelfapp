@@ -20,6 +20,7 @@ export interface Book {
   ratingsCount?: number; // Total number of ratings
   subtitle?: string; // Book subtitle
   printType?: string; // Print type (e.g., "BOOK")
+  readAt?: number; // Timestamp when book was marked as read (null/undefined = unread)
 }
 
 export interface Photo {

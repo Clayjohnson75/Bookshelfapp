@@ -17,3 +17,5 @@ WHERE uri IS NULL AND storage_url IS NOT NULL;
 -- Add comment
 COMMENT ON COLUMN public.photos.uri IS 'Legacy URI column for backward compatibility with older app versions';
 
+
+

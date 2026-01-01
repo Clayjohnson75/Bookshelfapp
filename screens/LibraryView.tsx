@@ -27,9 +27,11 @@ const { width: screenWidth } = Dimensions.get('window');
 
 interface LibraryViewProps {
   onClose?: () => void;
+  filterReadStatus?: 'read' | 'unread';
+  onBooksUpdated?: () => void; // Callback to notify parent when books are updated
 }
 
-export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
+export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadStatus, onBooksUpdated }) => {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -47,6 +49,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
   const [selectedFolderForExport, setSelectedFolderForExport] = useState<string | null>(null);
   const [exportAll, setExportAll] = useState(true);
   const [newFolderName, setNewFolderName] = useState('');
+  const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
+  const [showFolderView, setShowFolderView] = useState(false);
+  const [folderSearchQuery, setFolderSearchQuery] = useState('');
+  const [isFolderSelectionMode, setIsFolderSelectionMode] = useState(false);
+  const [selectedFolderBooks, setSelectedFolderBooks] = useState<Set<string>>(new Set());
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (user) {
@@ -54,15 +63,76 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
     }
   }, [user]);
 
+  // Reload books when filter changes to ensure fresh data
+  useEffect(() => {
+    if (user && filterReadStatus) {
+      loadBooks();
+    }
+  }, [filterReadStatus, user]);
+
   const loadBooks = async () => {
     if (!user) return;
     try {
+      // Load from Supabase first (primary source of truth)
+      let supabaseBooks = null;
+      try {
+        const { loadBooksFromSupabase } = await import('../services/supabaseSync');
+        supabaseBooks = await loadBooksFromSupabase(user.uid);
+      } catch (error) {
+        console.error('Error loading books from Supabase:', error);
+      }
+
+      // Also load from AsyncStorage for backwards compatibility
       const userApprovedKey = `approved_books_${user.uid}`;
       const storedApproved = await AsyncStorage.getItem(userApprovedKey);
-      if (storedApproved) {
-        const approvedBooks: Book[] = JSON.parse(storedApproved);
-        setBooks(approvedBooks);
+      const localBooks: Book[] = storedApproved ? JSON.parse(storedApproved) : [];
+
+      // Merge Supabase books (which have readAt) with local books
+      // Prioritize Supabase data as source of truth, but preserve readAt from local if more recent
+      let mergedBooks: Book[] = [];
+      if (supabaseBooks && supabaseBooks.approved && supabaseBooks.approved.length > 0) {
+        // Create a map of local books by title+author for quick lookup
+        const localBooksMap = new Map<string, Book>();
+        localBooks.forEach(b => {
+          const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
+          if (!localBooksMap.has(key)) {
+            localBooksMap.set(key, b);
+          }
+        });
+        
+        // Use Supabase books as primary, but merge readAt from local if it's more recent
+        mergedBooks = supabaseBooks.approved.map(supabaseBook => {
+          const key = `${supabaseBook.title?.toLowerCase().trim()}|${supabaseBook.author?.toLowerCase().trim() || ''}`;
+          const localBook = localBooksMap.get(key);
+          
+          // If local book has a more recent readAt, use it
+          if (localBook && localBook.readAt) {
+            if (!supabaseBook.readAt || (localBook.readAt > supabaseBook.readAt)) {
+              return { ...supabaseBook, readAt: localBook.readAt };
+            }
+          }
+          
+          return supabaseBook;
+        });
+        
+        // Merge in any local books that aren't in Supabase
+        const supabaseBookKeys = new Set(
+          mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
+        );
+        
+        const localOnlyBooks = localBooks.filter(b => {
+          const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
+          return !supabaseBookKeys.has(key);
+        });
+        
+        if (localOnlyBooks.length > 0) {
+          mergedBooks = [...mergedBooks, ...localOnlyBooks];
+        }
+      } else {
+        mergedBooks = localBooks;
       }
+      
+      setBooks(mergedBooks);
 
       // Load photos to find source photo for books
       const photosKey = `@${user.uid}:photos`;
@@ -85,23 +155,60 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
   };
 
   const filteredBooks = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return books;
+    // First filter by read status if specified
+    let filtered = books;
+    if (filterReadStatus === 'read') {
+      // Show only books that have been marked as read (readAt is a valid timestamp)
+      filtered = books.filter(b => {
+        // Check if readAt exists and is a valid positive number
+        const isRead = b.readAt !== undefined && 
+                      b.readAt !== null && 
+                      typeof b.readAt === 'number' && 
+                      b.readAt > 0;
+        if (!isRead && filterReadStatus === 'read') {
+          // Debug: log why book isn't showing
+          console.log(`⚠️ Book "${b.title}" filtered out of read view - readAt:`, b.readAt, 'type:', typeof b.readAt);
+        }
+        return isRead;
+      });
+      console.log(`📖 Filtered to ${filtered.length} read books from ${books.length} total books`);
+      if (filtered.length > 0) {
+        console.log(`📖 Read books:`, filtered.map(b => `"${b.title}" (readAt: ${b.readAt})`));
+      }
+    } else if (filterReadStatus === 'unread') {
+      // Show only books that haven't been marked as read
+      filtered = books.filter(b => {
+        // Book is unread if readAt is undefined, null, or not a valid positive number
+        const isUnread = !b.readAt || 
+                        b.readAt === null || 
+                        (typeof b.readAt === 'number' && b.readAt <= 0);
+        if (!isUnread && filterReadStatus === 'unread') {
+          // Debug: log why book isn't showing
+          console.log(`⚠️ Book "${b.title}" filtered out of unread view - readAt:`, b.readAt, 'type:', typeof b.readAt);
+        }
+        return isUnread;
+      });
+      console.log(`📚 Filtered to ${filtered.length} unread books from ${books.length} total books`);
+    }
 
-    const startsWithMatches = books.filter(b => {
+    // Then filter by search query
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return filtered;
+
+    const startsWithMatches = filtered.filter(b => {
       const title = (b.title || '').toLowerCase();
       const author = (b.author || '').toLowerCase();
       return title.startsWith(q) || author.startsWith(q);
     });
 
-    const containsMatches = books.filter(b => {
+    const containsMatches = filtered.filter(b => {
       const title = (b.title || '').toLowerCase();
       const author = (b.author || '').toLowerCase();
       return (title.includes(q) || author.includes(q)) && !(title.startsWith(q) || author.startsWith(q));
     });
 
     return [...startsWithMatches, ...containsMatches];
-  }, [books, searchQuery]);
+  }, [books, searchQuery, filterReadStatus]);
 
   const sortedBooks = useMemo(() => {
     const extractLastName = (author?: string): string => {
@@ -390,40 +497,65 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
         >
           <Ionicons name="arrow-back" size={24} color="#ffffff" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>My Library</Text>
+        <Text style={styles.headerTitle}>
+          {filterReadStatus === 'read' ? 'Read Books' : 
+           filterReadStatus === 'unread' ? 'Unread Books' : 
+           'My Library'}
+        </Text>
         <View style={styles.headerRight} />
       </View>
 
-      <View style={styles.exportButtonContainer} ref={(ref) => {
-        if (ref) {
-          ref.measure((x, y, width, height, pageX, pageY) => {
-            // Store position for modal placement
-          });
-        }
-      }}>
-        <View style={styles.actionButtonsRow}>
+      {/* Show Select button when filtering by read status, otherwise show Folders/Export */}
+      {filterReadStatus ? (
+        <View style={styles.exportButtonContainer}>
           <TouchableOpacity
-            style={[styles.foldersButton, styles.actionButton]}
-            onPress={() => setShowFoldersModal(true)}
+            style={styles.selectButton}
+            onPress={() => {
+              setIsSelectionMode(!isSelectionMode);
+              if (isSelectionMode) {
+                setSelectedBooks(new Set());
+              }
+            }}
             activeOpacity={0.8}
           >
-            <Ionicons name="folder-outline" size={20} color="#ffffff" />
-            <Text style={styles.exportButtonText}>Folders</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.exportButton, styles.actionButton]}
-            onPress={() => setShowExportModal(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="download-outline" size={20} color="#ffffff" />
-            <Text style={styles.exportButtonText}>Export</Text>
+            <Text style={styles.selectButtonText}>
+              {isSelectionMode ? 'Cancel' : 'Select'}
+            </Text>
           </TouchableOpacity>
         </View>
-      </View>
+      ) : (
+        <View style={styles.exportButtonContainer} ref={(ref) => {
+          if (ref) {
+            ref.measure((x, y, width, height, pageX, pageY) => {
+              // Store position for modal placement
+            });
+          }
+        }}>
+          <View style={styles.actionButtonsRow}>
+            <TouchableOpacity
+              style={[styles.foldersButton, styles.actionButton]}
+              onPress={() => setShowFoldersModal(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="folder-outline" size={20} color="#ffffff" />
+              <Text style={styles.exportButtonText}>Folders</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.exportButton, styles.actionButton]}
+              onPress={() => setShowExportModal(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="download-outline" size={20} color="#ffffff" />
+              <Text style={styles.exportButtonText}>Export</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       <ScrollView 
         style={styles.mainScrollView}
+        contentContainerStyle={isSelectionMode && filterReadStatus && selectedBooks.size > 0 ? { paddingBottom: 100 } : undefined}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={false}
       >
@@ -607,7 +739,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
                 return (
                   <View key={`row-${index}`} style={styles.bookGrid}>
                     {sortedBooks.slice(index, index + 4).map((book) => {
-                      const isSelected = !exportAll && !selectedFolderForExport && selectedBooksForExport.has(book.id || `${book.title}_${book.author}`);
+                      const bookId = book.id || `${book.title}_${book.author}`;
+                      const isSelectedForExport = !exportAll && !selectedFolderForExport && selectedBooksForExport.has(bookId);
+                      const isSelectedForRead = isSelectionMode && filterReadStatus && selectedBooks.has(bookId);
+                      const isSelected = isSelectedForExport || isSelectedForRead;
                       return (
                         <TouchableOpacity
                           key={book.id || book.title + book.author}
@@ -616,11 +751,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
                             isSelected && styles.bookCardSelected,
                           ]}
                           onPress={() => {
-                            if (showExportModal && !exportAll && !selectedFolderForExport) {
+                            if (isSelectionMode && filterReadStatus) {
+                              // In read/unread selection mode, toggle selection
+                              setSelectedBooks(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(bookId)) {
+                                  newSet.delete(bookId);
+                                } else {
+                                  newSet.add(bookId);
+                                }
+                                return newSet;
+                              });
+                            } else if (showExportModal && !exportAll && !selectedFolderForExport) {
                               // In export mode, toggle selection
                               const newSet = new Set(selectedBooksForExport);
-                              const bookId = book.id || `${book.title}_${book.author}`;
-                              if (isSelected) {
+                              if (isSelectedForExport) {
                                 newSet.delete(bookId);
                               } else {
                                 newSet.add(bookId);
@@ -632,11 +777,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
                             }
                           }}
                         >
-                          {isSelected && (
-                            <View style={styles.bookSelectionCheckmark}>
-                              <Ionicons name="checkmark-circle" size={28} color="#0056CC" />
-                            </View>
-                          )}
                           {getBookCoverUri(book) ? (
                             <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
                           ) : (
@@ -668,6 +808,181 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
           </View>
         )}
       </ScrollView>
+
+      {/* Bottom Action Bar for Read/Unread Selection */}
+      {isSelectionMode && filterReadStatus && selectedBooks.size > 0 && (
+        <View style={[styles.bottomActionBar, { paddingBottom: insets.bottom }]}>
+          <Text style={styles.bottomActionBarText}>
+            {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'} selected
+          </Text>
+          <TouchableOpacity
+            style={styles.bottomActionButton}
+            onPress={async () => {
+              if (!user) return;
+              
+              const newReadAt = filterReadStatus === 'unread' ? Date.now() : null;
+              const booksToUpdate = sortedBooks.filter(book => {
+                const bookId = book.id || `${book.title}_${book.author}`;
+                return selectedBooks.has(bookId);
+              });
+
+              try {
+                // Update AsyncStorage
+                const userApprovedKey = `approved_books_${user.uid}`;
+                const approvedData = await AsyncStorage.getItem(userApprovedKey);
+                
+                if (approvedData) {
+                  const approvedBooks: Book[] = JSON.parse(approvedData);
+                  
+                  const updatedBooks = approvedBooks.map((b) => {
+                    const matches = booksToUpdate.some(bookToUpdate => 
+                      b.title === bookToUpdate.title && 
+                      ((!b.author && !bookToUpdate.author) || (b.author === bookToUpdate.author))
+                    );
+                    
+                    if (matches) {
+                      return {
+                        ...b,
+                        readAt: newReadAt || undefined,
+                      };
+                    }
+                    return b;
+                  });
+                  
+                  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+                }
+
+                // Update Supabase - CRITICAL: This must succeed for data to persist
+                const { supabase } = await import('../lib/supabaseClient');
+                if (supabase) {
+                  const updatePromises = booksToUpdate.map(async (book) => {
+                    const authorForQuery = book.author || '';
+                    const { data: existingBook, error: findError } = await supabase
+                      .from('books')
+                      .select('id')
+                      .eq('user_id', user.uid)
+                      .eq('title', book.title)
+                      .eq('author', authorForQuery)
+                      .maybeSingle();
+
+                    if (findError) {
+                      console.error(`❌ Error finding book "${book.title}" in Supabase:`, findError);
+                      return false;
+                    }
+
+                    if (existingBook) {
+                      // Ensure newReadAt is either a number (BIGINT) or null for Supabase
+                      const readAtValue = newReadAt && typeof newReadAt === 'number' && newReadAt > 0 
+                        ? newReadAt 
+                        : null;
+                      
+                      const { data, error: updateError } = await supabase
+                        .from('books')
+                        .update({
+                          read_at: readAtValue, // BIGINT timestamp or null
+                          updated_at: new Date().toISOString(),
+                        })
+                        .eq('id', existingBook.id)
+                        .select(); // Select to verify update
+
+                      if (updateError) {
+                        // Log full error details
+                        console.error(`❌ Error updating book "${book.title}" in Supabase:`, JSON.stringify(updateError, null, 2));
+                        console.error(`   - Message:`, updateError.message);
+                        console.error(`   - Code:`, updateError.code);
+                        console.error(`   - Details:`, updateError.details);
+                        console.error(`   - Hint:`, updateError.hint);
+                        console.error(`   - Book ID:`, existingBook.id);
+                        console.error(`   - ReadAt Value:`, readAtValue, `(type: ${typeof readAtValue})`);
+                        console.error(`   - User ID:`, user.uid);
+                        return false;
+                      }
+                      
+                      if (!data || data.length === 0) {
+                        console.warn(`⚠️ Book "${book.title}" update returned no data - update may have failed`);
+                        return false;
+                      }
+                      
+                      console.log(`✅ Updated book "${book.title}" read_at to:`, readAtValue);
+                      console.log(`   - Updated record:`, data[0]);
+                      return true;
+                    } else {
+                      console.warn(`⚠️ Book "${book.title}" not found in Supabase, cannot update read_at`);
+                      return false;
+                    }
+                  });
+
+                  const results = await Promise.all(updatePromises);
+                  const successCount = results.filter(r => r === true).length;
+                  console.log(`📊 Supabase update: ${successCount}/${booksToUpdate.length} books updated successfully`);
+                }
+
+                // Update local state immediately with proper readAt values
+                // This ensures books disappear/appear in the correct view right away
+                // Use functional update to ensure we're working with latest state
+                setBooks(prevBooks => {
+                  const updatedBooksList = prevBooks.map(b => {
+                    const matches = booksToUpdate.some(bookToUpdate => 
+                      b.title === bookToUpdate.title && 
+                      ((!b.author && !bookToUpdate.author) || (b.author === bookToUpdate.author))
+                    );
+                    
+                    if (matches) {
+                      // Ensure readAt is a number (timestamp) or undefined (not null)
+                      const readAtValue = newReadAt && typeof newReadAt === 'number' && newReadAt > 0 
+                        ? newReadAt 
+                        : undefined;
+                      const updatedBook = {
+                        ...b,
+                        readAt: readAtValue,
+                      };
+                      console.log(`📖 Updated book "${b.title}" readAt from ${b.readAt} to:`, readAtValue);
+                      return updatedBook;
+                    }
+                    return b;
+                  });
+                  
+                  // Debug: log how many books have readAt after update
+                  const readCount = updatedBooksList.filter(b => b.readAt && typeof b.readAt === 'number' && b.readAt > 0).length;
+                  const unreadCount = updatedBooksList.filter(b => !b.readAt || (typeof b.readAt === 'number' && b.readAt <= 0)).length;
+                  console.log(`📚 After state update - Read: ${readCount}, Unread: ${unreadCount}, Total: ${updatedBooksList.length}`);
+                  
+                  // Debug: log which books are read
+                  const readBooks = updatedBooksList.filter(b => b.readAt && typeof b.readAt === 'number' && b.readAt > 0);
+                  if (readBooks.length > 0) {
+                    console.log(`📖 Read books:`, readBooks.map(b => `"${b.title}" (readAt: ${b.readAt})`));
+                  }
+                  
+                  return updatedBooksList;
+                });
+
+                // Clear selection and exit selection mode
+                setSelectedBooks(new Set());
+                setIsSelectionMode(false);
+                
+                // Notify parent component immediately so counts update
+                if (onBooksUpdated) {
+                  onBooksUpdated();
+                }
+                
+                // DON'T reload immediately - the state update above is sufficient
+                // Reloading too quickly can cause race conditions where Supabase hasn't
+                // processed the update yet, causing books to revert to their old state
+                // The state update above ensures UI reflects changes immediately
+                // Supabase will sync in the background, and we'll reload when switching views
+              } catch (error) {
+                console.error('Error updating read status:', error);
+                Alert.alert('Error', 'Failed to update read status. Please try again.');
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.bottomActionButtonText}>
+              {filterReadStatus === 'unread' ? 'Add to Read' : 'Remove from Read'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <BookDetailModal
         visible={showBookDetail}
@@ -702,13 +1017,33 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
         onEditBook={async (book) => {
           if (!user) return;
           try {
+            // Update local state immediately
             const userApprovedKey = `approved_books_${user.uid}`;
-            const updatedBooks = books.map(b => b.id === book.id ? book : b);
+            const updatedBooks = books.map(b => 
+              b.id === book.id || (b.title === book.title && b.author === book.author)
+                ? book
+                : b
+            );
             setBooks(updatedBooks);
+            setSelectedBook(book);
             await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+            
+            // Reload from Supabase to ensure all views are updated
+            setTimeout(() => {
+              loadBooks();
+            }, 500);
           } catch (error) {
             console.error('Error editing book:', error);
           }
+        }}
+        onBookUpdate={(updatedBook) => {
+          // Update the book in state when cover is changed
+          setBooks(prev => prev.map(b => 
+            b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+              ? updatedBook
+              : b
+          ));
+          setSelectedBook(updatedBook);
         }}
         onAddBookToFolder={() => {}}
         folders={[]}
@@ -772,10 +1107,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
                         key={folder.id}
                         style={styles.folderListItem}
                         onPress={() => {
-                          // Select this folder for export
-                          setSelectedFolderForExport(folder.id);
-                          setExportAll(false);
-                          setSelectedBooksForExport(new Set());
+                          // Open folder view instead of just selecting for export
+                          setSelectedFolder(folder);
+                          setShowFolderView(true);
                           setShowFoldersModal(false);
                         }}
                         activeOpacity={0.7}
@@ -803,6 +1137,212 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose }) => {
           </View>
         </>
       )}
+
+      {/* Folder View - Full Screen Page */}
+      <Modal
+        visible={showFolderView}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        transparent={false}
+        onRequestClose={() => {
+          setShowFolderView(false);
+          setSelectedFolder(null);
+          setIsFolderSelectionMode(false);
+          setSelectedFolderBooks(new Set());
+          setFolderSearchQuery('');
+        }}
+      >
+        <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
+          <View style={[styles.header, { paddingTop: insets.top + 5 }]}>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => {
+                setShowFolderView(false);
+                setSelectedFolder(null);
+                setIsFolderSelectionMode(false);
+                setSelectedFolderBooks(new Set());
+                setFolderSearchQuery('');
+              }}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+            >
+              <Ionicons name="arrow-back" size={24} color="#ffffff" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>
+              {selectedFolder?.name || 'Folder'}
+            </Text>
+            <View style={styles.headerRight} />
+          </View>
+
+          {selectedFolder && (
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20 }}>
+              {/* Search Bar */}
+              <View style={[styles.searchContainer, { marginHorizontal: 20, marginTop: 0 }]}>
+                <TextInput
+                  style={styles.searchInput}
+                  value={folderSearchQuery}
+                  onChangeText={setFolderSearchQuery}
+                  placeholder="Search by title or author..."
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholderTextColor="#a0aec0"
+                />
+                {folderSearchQuery.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setFolderSearchQuery('')}
+                    style={{ position: 'absolute', right: 15, top: 18 }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={{ fontSize: 24, color: '#a0aec0' }}>×</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Select Button */}
+              <View style={{ paddingHorizontal: 20, marginBottom: 12 }}>
+                <TouchableOpacity
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    backgroundColor: '#4299e1',
+                    borderRadius: 8,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                  onPress={() => {
+                    setIsFolderSelectionMode(!isFolderSelectionMode);
+                    if (isFolderSelectionMode) {
+                      setSelectedFolderBooks(new Set());
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ color: '#ffffff', fontSize: 14, fontWeight: '600' }}>
+                    {isFolderSelectionMode ? 'Cancel' : 'Select'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Selection Mode Indicator */}
+              {isFolderSelectionMode && selectedFolderBooks.size > 0 && (
+                <View style={{
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  paddingHorizontal: 20,
+                  paddingVertical: 12,
+                  backgroundColor: '#e6f2ff',
+                  marginBottom: 12,
+                  borderRadius: 8,
+                  marginHorizontal: 20,
+                }}>
+                  <Text style={{ fontSize: 14, color: '#1a202c', fontWeight: '600' }}>
+                    {selectedFolderBooks.size} {selectedFolderBooks.size === 1 ? 'book' : 'books'} selected
+                  </Text>
+                  <TouchableOpacity
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      backgroundColor: '#ffffff',
+                      borderRadius: 6,
+                      borderWidth: 1,
+                      borderColor: '#4299e1',
+                    }}
+                    onPress={() => setSelectedFolderBooks(new Set())}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ color: '#4299e1', fontSize: 12, fontWeight: '600' }}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {(() => {
+                let folderBooks = books.filter(book => 
+                  book.id && selectedFolder.bookIds.includes(book.id)
+                );
+
+                // Filter books by search query if provided
+                if (folderSearchQuery.trim()) {
+                  const query = folderSearchQuery.trim().toLowerCase();
+                  folderBooks = folderBooks.filter(book => {
+                    const title = (book.title || '').toLowerCase();
+                    const author = (book.author || '').toLowerCase();
+                    return title.includes(query) || author.includes(query);
+                  });
+                }
+
+                if (folderBooks.length === 0) {
+                  return (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>
+                        {folderSearchQuery ? 'No books found' : 'No Books in Folder'}
+                      </Text>
+                      <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
+                        {folderSearchQuery ? 'Try a different search term' : 'Books you add to this folder will appear here'}
+                      </Text>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={styles.booksContainer}>
+                    {folderBooks.map((book, index) => {
+                      if (index % 4 === 0) {
+                        return (
+                          <View key={`row-${index}`} style={styles.bookGrid}>
+                            {folderBooks.slice(index, index + 4).map((b) => {
+                              const bookId = b.id || `${b.title}_${b.author}`;
+                              const isSelected = isFolderSelectionMode && selectedFolderBooks.has(bookId);
+                              return (
+                                <TouchableOpacity
+                                  key={b.id || b.title + b.author}
+                                  style={[
+                                    styles.bookCard,
+                                    isSelected && styles.bookCardSelected,
+                                  ]}
+                                  onPress={() => {
+                                    if (isFolderSelectionMode) {
+                                      setSelectedFolderBooks(prev => {
+                                        const newSet = new Set(prev);
+                                        if (newSet.has(bookId)) {
+                                          newSet.delete(bookId);
+                                        } else {
+                                          newSet.add(bookId);
+                                        }
+                                        return newSet;
+                                      });
+                                    } else {
+                                      openBookDetail(b);
+                                    }
+                                  }}
+                                >
+                                  {getBookCoverUri(b) ? (
+                                    <Image source={{ uri: getBookCoverUri(b) }} style={styles.bookCover} />
+                                  ) : (
+                                    <View style={[styles.bookCover, styles.placeholderCover]}>
+                                      <Ionicons name="book-outline" size={32} color="#a0aec0" />
+                                    </View>
+                                  )}
+                                  <View style={styles.bookInfo}>
+                                    <Text style={styles.bookTitle} numberOfLines={2}>{b.title}</Text>
+                                    {b.author && (
+                                      <Text style={styles.bookAuthor} numberOfLines={1}>{b.author}</Text>
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        );
+                      }
+                      return null;
+                    })}
+                  </View>
+                );
+              })()}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
       </SafeAreaView>
     </View>
   );
@@ -1375,6 +1915,57 @@ const styles = StyleSheet.create({
     fontSize: 9,
     color: '#718096',
     lineHeight: 11,
+  },
+  selectButton: {
+    backgroundColor: '#4299e1',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    marginHorizontal: 20,
+  },
+  selectButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  bottomActionBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  bottomActionBarText: {
+    fontSize: 14,
+    color: '#1a202c',
+    fontWeight: '600',
+    flex: 1,
+  },
+  bottomActionButton: {
+    backgroundColor: '#4299e1',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+  },
+  bottomActionButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
 

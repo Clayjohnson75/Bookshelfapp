@@ -9,9 +9,12 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Book, Photo } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
@@ -24,6 +27,7 @@ interface BookDetailModalProps {
   onClose: () => void;
   onRemove?: () => void; // Callback to refresh library after removal
   onBookUpdate?: (updatedBook: Book) => void; // Callback to update book data (e.g., when description is fetched)
+  onEditBook?: (updatedBook: Book) => void; // Callback to update book (for cover changes)
 }
 
 const BookDetailModal: React.FC<BookDetailModalProps> = ({
@@ -33,6 +37,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onClose,
   onRemove,
   onBookUpdate,
+  onEditBook,
 }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -41,6 +46,11 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [removing, setRemoving] = useState(false);
   const [isRead, setIsRead] = useState(false);
   const [togglingRead, setTogglingRead] = useState(false);
+  const [showCoverOptions, setShowCoverOptions] = useState(false);
+  const [showReplaceCoverModal, setShowReplaceCoverModal] = useState(false);
+  const [coverSearchResults, setCoverSearchResults] = useState<Array<{googleBooksId: string, coverUrl?: string}>>([]);
+  const [isLoadingCovers, setIsLoadingCovers] = useState(false);
+  const [updatingCover, setUpdatingCover] = useState(false);
 
   useEffect(() => {
     const loadReadStatus = async () => {
@@ -180,6 +190,12 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
       // Save to Supabase for production cross-device sync
       if (supabase) {
         try {
+          // Convert scannedAt to BIGINT (timestamp in milliseconds) for Supabase
+          // scanned_at is BIGINT in database, not TIMESTAMPTZ
+          const scannedAtValue = book.scannedAt 
+            ? (typeof book.scannedAt === 'number' ? book.scannedAt : new Date(book.scannedAt).getTime())
+            : null;
+
           // Upsert book read status to Supabase
           const bookData = {
             user_id: user.uid,
@@ -188,7 +204,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
             isbn: book.isbn || null,
             confidence: book.confidence || null,
             status: book.status || 'approved',
-            scanned_at: book.scannedAt || null,
+            scanned_at: scannedAtValue, // BIGINT timestamp in milliseconds
             cover_url: book.coverUrl || null,
             local_cover_path: book.localCoverPath || null,
             google_books_id: book.googleBooksId || null,
@@ -408,6 +424,351 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     return book.coverUrl;
   };
 
+  const handleCoverPress = () => {
+    if (!book) return;
+    setShowCoverOptions(true);
+  };
+
+  const handleRemoveCover = async () => {
+    if (!book || !user) return;
+    
+    setShowCoverOptions(false);
+    setUpdatingCover(true);
+    
+    try {
+      const updatedBook: Book = {
+        ...book,
+        coverUrl: undefined,
+        localCoverPath: undefined,
+      };
+
+      // Update in AsyncStorage
+      const userApprovedKey = `approved_books_${user.uid}`;
+      const approvedData = await AsyncStorage.getItem(userApprovedKey);
+      if (approvedData) {
+        const approvedBooks: Book[] = JSON.parse(approvedData);
+        const updatedBooks = approvedBooks.map(b => 
+          (b.id === book.id || (b.title === book.title && b.author === book.author))
+            ? updatedBook
+            : b
+        );
+        await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+      }
+
+      // Update in Supabase
+      const { saveBookToSupabase } = await import('../services/supabaseSync');
+      await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+      // Notify parent to update everywhere
+      if (onEditBook) {
+        onEditBook(updatedBook);
+      }
+      if (onBookUpdate) {
+        onBookUpdate(updatedBook);
+      }
+
+      Alert.alert('Cover Removed', 'The cover has been removed from this book everywhere.');
+    } catch (error) {
+      console.error('Error removing cover:', error);
+      Alert.alert('Error', 'Failed to remove cover. Please try again.');
+    } finally {
+      setUpdatingCover(false);
+    }
+  };
+
+  const handleReplaceCover = async () => {
+    if (!book) return;
+    
+    setShowCoverOptions(false);
+    setShowReplaceCoverModal(true);
+    setIsLoadingCovers(true);
+    setCoverSearchResults([]);
+
+    try {
+      const { searchMultipleBooks } = await import('../services/googleBooksService');
+      // Search using only the book title to find alternative covers
+      const results = await searchMultipleBooks(book.title, undefined, 20);
+      
+      // Filter to only show results with covers
+      const resultsWithCovers = results.filter(r => r.coverUrl && r.googleBooksId);
+      setCoverSearchResults(resultsWithCovers);
+    } catch (error) {
+      console.error('Error searching for covers:', error);
+      Alert.alert('Error', 'Failed to search for covers. Please try again.');
+    } finally {
+      setIsLoadingCovers(false);
+    }
+  };
+
+  const downloadAndCacheCover = async (coverUrl: string, googleBooksId: string): Promise<string | null> => {
+    if (!FileSystem.documentDirectory) return null;
+    
+    try {
+      const coversDir = `${FileSystem.documentDirectory}covers`;
+      const dirInfo = await FileSystem.getInfoAsync(coversDir);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+      }
+
+      const fileUri = `${coversDir}/${googleBooksId}.jpg`;
+      const downloadResult = await FileSystem.downloadAsync(coverUrl, fileUri);
+      
+      if (downloadResult.uri) {
+        // Return relative path
+        return downloadResult.uri.replace(FileSystem.documentDirectory || '', '');
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error downloading cover:', error);
+      return null;
+    }
+  };
+
+  const handleSelectCover = async (selectedCover: {googleBooksId: string, coverUrl?: string}) => {
+    if (!user || !book || !selectedCover.googleBooksId || !selectedCover.coverUrl) return;
+
+    setUpdatingCover(true);
+
+    try {
+      const { fetchBookData } = await import('../services/googleBooksService');
+      const bookData = await fetchBookData(book.title, book.author, selectedCover.googleBooksId);
+
+      if (bookData.coverUrl) {
+        // Download the cover
+        const coverUri = await downloadAndCacheCover(bookData.coverUrl, selectedCover.googleBooksId);
+        
+        const updatedBook: Book = {
+          ...book,
+          coverUrl: bookData.coverUrl,
+          localCoverPath: coverUri ? coverUri.replace(FileSystem.documentDirectory || '', '') : undefined,
+          googleBooksId: selectedCover.googleBooksId,
+          // Update other book data if available
+          description: bookData.description || book.description,
+          pageCount: bookData.pageCount || book.pageCount,
+          categories: bookData.categories || book.categories,
+          publisher: bookData.publisher || book.publisher,
+          publishedDate: bookData.publishedDate || book.publishedDate,
+          language: bookData.language || book.language,
+          averageRating: bookData.averageRating || book.averageRating,
+          ratingsCount: bookData.ratingsCount || book.ratingsCount,
+          subtitle: bookData.subtitle || book.subtitle,
+        };
+
+        // Update in AsyncStorage
+        const userApprovedKey = `approved_books_${user.uid}`;
+        const approvedData = await AsyncStorage.getItem(userApprovedKey);
+        if (approvedData) {
+          const approvedBooks: Book[] = JSON.parse(approvedData);
+          const updatedBooks = approvedBooks.map(b => 
+            (b.id === book.id || (b.title === book.title && b.author === book.author))
+              ? updatedBook
+              : b
+          );
+          await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+        }
+
+        // Update in Supabase
+        const { saveBookToSupabase } = await import('../services/supabaseSync');
+        await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+        // Notify parent to update everywhere
+        if (onEditBook) {
+          onEditBook(updatedBook);
+        }
+        if (onBookUpdate) {
+          onBookUpdate(updatedBook);
+        }
+
+        setShowReplaceCoverModal(false);
+        Alert.alert('Cover Updated', 'The book cover has been updated everywhere.');
+      }
+    } catch (error) {
+      console.error('Error updating cover:', error);
+      Alert.alert('Error', 'Failed to update cover. Please try again.');
+    } finally {
+      setUpdatingCover(false);
+    }
+  };
+
+  const handleTakePhotoForCover = async () => {
+    if (!book || !user) return;
+
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Camera permission is required to take a photo of the book cover.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 4],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setUpdatingCover(true);
+        
+        // Resize and optimize the image
+        const manipulatedImage = await ImageManipulator.manipulateAsync(
+          result.assets[0].uri,
+          [{ resize: { width: 600 } }],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+
+        // Save to local storage
+        if (FileSystem.documentDirectory) {
+          const coversDir = `${FileSystem.documentDirectory}covers`;
+          const dirInfo = await FileSystem.getInfoAsync(coversDir);
+          if (!dirInfo.exists) {
+            await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+          }
+
+          const fileName = `custom_${book.id || Date.now()}.jpg`;
+          const fileUri = `${coversDir}/${fileName}`;
+          
+          // Copy the image to our covers directory
+          await FileSystem.copyAsync({
+            from: manipulatedImage.uri,
+            to: fileUri,
+          });
+
+          const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
+
+          const updatedBook: Book = {
+            ...book,
+            coverUrl: fileUri, // Use local file URI
+            localCoverPath: localCoverPath,
+          };
+
+          // Update in AsyncStorage
+          const userApprovedKey = `approved_books_${user.uid}`;
+          const approvedData = await AsyncStorage.getItem(userApprovedKey);
+          if (approvedData) {
+            const approvedBooks: Book[] = JSON.parse(approvedData);
+            const updatedBooks = approvedBooks.map(b => 
+              (b.id === book.id || (b.title === book.title && b.author === book.author))
+                ? updatedBook
+                : b
+            );
+            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+          }
+
+          // Update in Supabase
+          const { saveBookToSupabase } = await import('../services/supabaseSync');
+          await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+          // Notify parent
+          if (onEditBook) {
+            onEditBook(updatedBook);
+          }
+          if (onBookUpdate) {
+            onBookUpdate(updatedBook);
+          }
+
+          setShowReplaceCoverModal(false);
+          Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
+        }
+      }
+    } catch (error) {
+      console.error('Error taking photo for cover:', error);
+      Alert.alert('Error', 'Failed to take photo. Please try again.');
+    } finally {
+      setUpdatingCover(false);
+    }
+  };
+
+  const handleUploadPhotoForCover = async () => {
+    if (!book || !user) return;
+
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Photo library permission is required to upload a photo.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 4],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setUpdatingCover(true);
+        
+        // Resize and optimize the image
+        const manipulatedImage = await ImageManipulator.manipulateAsync(
+          result.assets[0].uri,
+          [{ resize: { width: 600 } }],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+
+        // Save to local storage
+        if (FileSystem.documentDirectory) {
+          const coversDir = `${FileSystem.documentDirectory}covers`;
+          const dirInfo = await FileSystem.getInfoAsync(coversDir);
+          if (!dirInfo.exists) {
+            await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+          }
+
+          const fileName = `custom_${book.id || Date.now()}.jpg`;
+          const fileUri = `${coversDir}/${fileName}`;
+          
+          // Copy the image to our covers directory
+          await FileSystem.copyAsync({
+            from: manipulatedImage.uri,
+            to: fileUri,
+          });
+
+          const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
+
+          const updatedBook: Book = {
+            ...book,
+            coverUrl: fileUri, // Use local file URI
+            localCoverPath: localCoverPath,
+          };
+
+          // Update in AsyncStorage
+          const userApprovedKey = `approved_books_${user.uid}`;
+          const approvedData = await AsyncStorage.getItem(userApprovedKey);
+          if (approvedData) {
+            const approvedBooks: Book[] = JSON.parse(approvedData);
+            const updatedBooks = approvedBooks.map(b => 
+              (b.id === book.id || (b.title === book.title && b.author === book.author))
+                ? updatedBook
+                : b
+            );
+            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+          }
+
+          // Update in Supabase
+          const { saveBookToSupabase } = await import('../services/supabaseSync');
+          await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+          // Notify parent to update everywhere
+          if (onEditBook) {
+            onEditBook(updatedBook);
+          }
+          if (onBookUpdate) {
+            onBookUpdate(updatedBook);
+          }
+
+          setShowReplaceCoverModal(false);
+          Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
+        }
+      }
+    } catch (error) {
+      console.error('Error uploading photo for cover:', error);
+      Alert.alert('Error', 'Failed to upload photo. Please try again.');
+    } finally {
+      setUpdatingCover(false);
+    }
+  };
+
   if (!book) return null;
 
   return (
@@ -436,12 +797,24 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
         <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
           {/* Book Cover and Basic Info */}
           <View style={styles.bookHeader}>
-            {getBookCoverUri(book) && (
-              <Image
-                source={{ uri: getBookCoverUri(book) }}
-                style={styles.bookCover}
-              />
-            )}
+            <TouchableOpacity
+              onPress={handleCoverPress}
+              activeOpacity={0.8}
+              disabled={updatingCover}
+              style={styles.bookCoverContainer}
+            >
+              {getBookCoverUri(book) ? (
+                <Image
+                  source={{ uri: getBookCoverUri(book) }}
+                  style={styles.bookCover}
+                  pointerEvents="none"
+                />
+              ) : (
+                <View style={[styles.bookCover, styles.placeholderCover]}>
+                  <Text style={styles.placeholderCoverText}>Tap to add cover</Text>
+                </View>
+              )}
+            </TouchableOpacity>
             <View style={styles.bookInfo}>
               <Text style={styles.bookTitle}>{book.title}</Text>
               {book.author && (
@@ -589,6 +962,160 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      {/* Cover Options Action Sheet */}
+      <Modal
+        visible={showCoverOptions}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowCoverOptions(false)}
+      >
+        <TouchableOpacity
+          style={styles.actionSheetOverlay}
+          activeOpacity={1}
+          onPress={() => setShowCoverOptions(false)}
+        >
+          <View style={styles.actionSheet}>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={handleReplaceCover}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.actionSheetButtonText}>Replace Cover</Text>
+            </TouchableOpacity>
+            {getBookCoverUri(book) && (
+              <TouchableOpacity
+                style={[styles.actionSheetButton, styles.actionSheetButtonDanger]}
+                onPress={handleRemoveCover}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.actionSheetButtonText, styles.actionSheetButtonTextDanger]}>Remove Cover</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.actionSheetCancelButton}
+              onPress={() => setShowCoverOptions(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.actionSheetCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Replace Cover Modal */}
+      <Modal
+        visible={showReplaceCoverModal}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowReplaceCoverModal(false);
+          setCoverSearchResults([]);
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer} edges={['top']}>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 20 }]}>
+            <Text style={styles.modalTitle}>Replace Cover</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => {
+                setShowReplaceCoverModal(false);
+                setCoverSearchResults([]);
+              }}
+            >
+              <Text style={styles.modalCloseText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          
+          {book && (
+            <ScrollView style={styles.modalContent}>
+              <View style={styles.switchCoversHeader}>
+                <Text style={styles.switchCoversTitle}>Current Book</Text>
+                <View style={styles.currentBookCard}>
+                  {getBookCoverUri(book) ? (
+                    <Image 
+                      source={{ uri: getBookCoverUri(book) }} 
+                      style={styles.currentBookCover}
+                    />
+                  ) : (
+                    <View style={[styles.currentBookCover, styles.placeholderCover]}>
+                      <Text style={styles.placeholderText} numberOfLines={3}>
+                        {book.title}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.currentBookInfo}>
+                    <Text style={styles.currentBookTitle}>{book.title}</Text>
+                    {book.author && (
+                      <Text style={styles.currentBookAuthor}>{book.author}</Text>
+                    )}
+                  </View>
+                </View>
+              </View>
+
+              {/* Photo Options */}
+              <View style={styles.photoOptionsSection}>
+                <Text style={styles.switchCoversSectionTitle}>Take or Upload Photo</Text>
+                <View style={styles.photoOptionsRow}>
+                  <TouchableOpacity
+                    style={styles.photoOptionButton}
+                    onPress={handleTakePhotoForCover}
+                    disabled={updatingCover}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.photoOptionButtonText}>Take Photo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.photoOptionButton}
+                    onPress={handleUploadPhotoForCover}
+                    disabled={updatingCover}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.photoOptionButtonText}>Upload Photo</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.switchCoversSection}>
+                <Text style={styles.switchCoversSectionTitle}>Available Covers</Text>
+                {isLoadingCovers ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#0056CC" />
+                    <Text style={styles.loadingText}>Searching for covers...</Text>
+                  </View>
+                ) : coverSearchResults.length === 0 ? (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>No covers found</Text>
+                  </View>
+                ) : (
+                  <View style={styles.coversGrid}>
+                    {coverSearchResults.map((result, index) => (
+                      <TouchableOpacity
+                        key={result.googleBooksId || index}
+                        style={styles.coverOption}
+                        onPress={() => handleSelectCover(result)}
+                        activeOpacity={0.7}
+                        disabled={updatingCover}
+                      >
+                        {result.coverUrl ? (
+                          <Image 
+                            source={{ uri: result.coverUrl }} 
+                            style={styles.coverOptionImage}
+                          />
+                        ) : (
+                          <View style={[styles.coverOptionImage, styles.placeholderCover]}>
+                            <Text style={styles.placeholderText}>No Cover</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
     </Modal>
   );
 };
@@ -654,11 +1181,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
+  bookCoverContainer: {
+    marginRight: 20,
+  },
   bookCover: {
     width: 120,
     height: 180,
     borderRadius: 8,
-    marginRight: 20,
     backgroundColor: '#e2e8f0',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -881,6 +1410,201 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#2d3748',
     fontWeight: '500',
+  },
+  placeholderCover: {
+    backgroundColor: '#e2e8f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderCoverText: {
+    fontSize: 12,
+    color: '#718096',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  placeholderText: {
+    fontSize: 12,
+    color: '#718096',
+    textAlign: 'center',
+    padding: 10,
+  },
+  actionSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  actionSheet: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 20,
+  },
+  actionSheetButton: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  actionSheetButtonDanger: {
+    borderBottomWidth: 0,
+  },
+  actionSheetButtonText: {
+    fontSize: 18,
+    color: '#0056CC',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  actionSheetButtonTextDanger: {
+    color: '#e53e3e',
+  },
+  actionSheetCancelButton: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    marginTop: 8,
+  },
+  actionSheetCancelText: {
+    fontSize: 18,
+    color: '#718096',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  modalHeader: {
+    backgroundColor: '#2d3748',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  modalCloseButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  modalCloseText: {
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  modalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  switchCoversHeader: {
+    marginBottom: 24,
+  },
+  switchCoversTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 12,
+  },
+  currentBookCard: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  currentBookCover: {
+    width: 80,
+    height: 120,
+    borderRadius: 8,
+    marginRight: 16,
+    backgroundColor: '#e2e8f0',
+  },
+  currentBookInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  currentBookTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 6,
+  },
+  currentBookAuthor: {
+    fontSize: 14,
+    color: '#718096',
+    fontStyle: 'italic',
+  },
+  photoOptionsSection: {
+    marginBottom: 24,
+  },
+  photoOptionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  photoOptionButton: {
+    flex: 1,
+    backgroundColor: '#0056CC',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoOptionButtonText: {
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  switchCoversSection: {
+    marginBottom: 24,
+  },
+  switchCoversSectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 16,
+  },
+  loadingContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#718096',
+  },
+  emptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#a0aec0',
+  },
+  coversGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  coverOption: {
+    width: '30%',
+    aspectRatio: 2/3,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#e2e8f0',
+  },
+  coverOptionImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
   },
 });
 
