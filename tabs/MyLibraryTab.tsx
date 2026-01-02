@@ -145,9 +145,16 @@ export const MyLibraryTab: React.FC = () => {
     return byLast;
   }, [displayedBooks]);
 
+  // Load data immediately when component mounts or user changes
   useEffect(() => {
-    loadUserData();
-  }, []);
+    if (user) {
+      // Load data immediately on mount/user change
+      console.log('🔄 User changed in MyLibraryTab, loading data immediately...');
+      loadUserData().catch(error => {
+        console.error('❌ Error loading user data in MyLibraryTab:', error);
+      });
+    }
+  }, [user]);
 
   // Maintain scroll position when keyboard appears/disappears during search
   useEffect(() => {
@@ -216,11 +223,14 @@ export const MyLibraryTab: React.FC = () => {
       
       // Load from Supabase first (primary source of truth for books with cover data)
       let supabaseBooks = null;
+      let supabaseError = null;
       try {
         supabaseBooks = await loadBooksFromSupabase(user.uid);
+        console.log(`📚 Supabase returned: ${supabaseBooks?.approved?.length || 0} approved books`);
       } catch (error) {
         console.error('❌ Error loading books from Supabase:', error);
-        // Continue with local data if Supabase fails
+        supabaseError = error;
+        // Continue with local data if Supabase fails - don't lose local books!
       }
       
       // Also load from AsyncStorage for backwards compatibility
@@ -383,15 +393,38 @@ export const MyLibraryTab: React.FC = () => {
       
       // CRITICAL: Save merged books to AsyncStorage immediately to preserve them
       // This ensures books persist even if Supabase is missing some later
-      if (user && finalBooks.length > 0) {
+      // IMPORTANT: Always save, even if empty, to prevent data loss scenarios
+      if (user) {
         const userApprovedKey = `approved_books_${user.uid}`;
-        AsyncStorage.setItem(userApprovedKey, JSON.stringify(finalBooks)).catch(error => {
+        try {
+          await AsyncStorage.setItem(userApprovedKey, JSON.stringify(finalBooks));
+          console.log(`💾 Saved ${finalBooks.length} books to AsyncStorage`);
+        } catch (error) {
           console.error('❌ Error saving merged books to AsyncStorage:', error);
-        });
-        console.log(`💾 Saved ${finalBooks.length} books to AsyncStorage`);
+          // If save fails and we have books, this is critical - log it
+          if (finalBooks.length > 0) {
+            console.error('❌ CRITICAL: Failed to save books to AsyncStorage! Books may be lost on next load.');
+          }
+        }
       }
       
-      setBooks(finalBooks);
+      // CRITICAL: Only set books if we have some, OR if both Supabase and local are empty
+      // If Supabase failed but local had books, we already handled that above
+      // If both are empty, that's fine (new user or all books deleted)
+      if (finalBooks.length > 0 || (localBooks.length === 0 && (!supabaseBooks || supabaseBooks.approved.length === 0))) {
+        setBooks(finalBooks);
+      } else {
+        // This should never happen due to our safeguards, but log it if it does
+        console.error('❌ CRITICAL: Attempted to set empty books when local had books! Keeping local books instead.');
+        setBooks(localBooks);
+        // Also save local books to prevent this from happening again
+        if (user && localBooks.length > 0) {
+          const userApprovedKey = `approved_books_${user.uid}`;
+          AsyncStorage.setItem(userApprovedKey, JSON.stringify(localBooks)).catch(error => {
+            console.error('❌ Error saving local books to AsyncStorage:', error);
+          });
+        }
+      }
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
       

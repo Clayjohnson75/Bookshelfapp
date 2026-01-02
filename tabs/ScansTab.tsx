@@ -387,10 +387,91 @@ export const ScansTab: React.FC = () => {
 
   useEffect(() => {
     if (user) {
-      loadUserData();
-      loadScanUsage();
+      // Load data immediately on mount/user change
+      // Don't await - let it load in background so UI is responsive
+      // CRITICAL: Load data immediately on first mount to ensure books and buttons work
+      console.log('🔄 User changed, loading data immediately...');
+      loadUserData().catch(error => {
+        console.error('❌ Error loading user data:', error);
+        // On error, still try to load from AsyncStorage as fallback
+        loadUserDataFromStorage().catch(e => {
+          console.error('❌ Error loading from AsyncStorage fallback:', e);
+        });
+      });
+      loadScanUsage().catch(error => {
+        console.error('❌ Error loading scan usage:', error);
+        // Default to allowing scans if we can't load usage
+        setCanScan(true);
+      });
+    } else {
+      // Clear data when user signs out
+      setPendingBooks([]);
+      setApprovedBooks([]);
+      setRejectedBooks([]);
+      setPhotos([]);
+      setScanUsage(null);
+      setCanScan(true);
     }
   }, [user]);
+  
+  // Fallback function to load from AsyncStorage if Supabase fails
+  const loadUserDataFromStorage = async () => {
+    if (!user) return;
+    
+    try {
+      console.log('📥 Loading user data from AsyncStorage fallback...');
+      const userPendingKey = `pending_books_${user.uid}`;
+      const userApprovedKey = `approved_books_${user.uid}`;
+      const userRejectedKey = `rejected_books_${user.uid}`;
+      const userPhotosKey = `photos_${user.uid}`;
+      
+      const [savedPending, savedApproved, savedRejected, savedPhotos] = await Promise.all([
+        AsyncStorage.getItem(userPendingKey),
+        AsyncStorage.getItem(userApprovedKey),
+        AsyncStorage.getItem(userRejectedKey),
+        AsyncStorage.getItem(userPhotosKey),
+      ]);
+      
+      if (savedPending) {
+        try {
+          const parsed = JSON.parse(savedPending);
+          setPendingBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} pending books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing pending books:', e);
+        }
+      }
+      if (savedApproved) {
+        try {
+          const parsed = JSON.parse(savedApproved);
+          setApprovedBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} approved books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing approved books:', e);
+        }
+      }
+      if (savedRejected) {
+        try {
+          const parsed = JSON.parse(savedRejected);
+          setRejectedBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} rejected books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing rejected books:', e);
+        }
+      }
+      if (savedPhotos) {
+        try {
+          const parsed = JSON.parse(savedPhotos);
+          setPhotos(parsed);
+          console.log(`✅ Loaded ${parsed.length} photos from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing photos:', e);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading from AsyncStorage:', error);
+    }
+  };
 
   // Load scan usage when user changes
   const loadScanUsage = async () => {
@@ -3155,13 +3236,12 @@ export const ScansTab: React.FC = () => {
               }
               // If user has scans remaining OR is pro/owner, proceed normally
             } else if (user && !scanUsage) {
-              // If scanUsage not loaded yet, check with server
-              const canScanNow = await canUserScan(user.uid);
-              if (!canScanNow) {
-                setShowUpgradeModal(true);
-                loadScanUsage();
-                return;
-              }
+              // If scanUsage not loaded yet, allow the action but check in background
+              // Don't block user - load usage in background
+              loadScanUsage().catch(() => {});
+              // Proceed with image picker - we'll check limit when scan completes
+              pickImage();
+              return;
             }
             // User has scans or is pro/owner - proceed normally
             pickImage();

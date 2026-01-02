@@ -459,11 +459,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Allow username sign-in by resolving to email from Supabase
       let email = emailOrUsername.trim();
-      if (!emailOrUsername.includes('@')) {
+      const requestedUsername = !emailOrUsername.includes('@') ? emailOrUsername.toLowerCase() : null;
+      
+      if (requestedUsername) {
         try {
+          // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
+          // This ensures we always get fresh data from the server
+          await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
+          
           // Add timeout to RPC call
           const rpcPromise = supabase.rpc('get_email_by_username', {
-            username_input: emailOrUsername.toLowerCase(),
+            username_input: requestedUsername,
           });
           const rpcTimeout = new Promise((_, reject) => 
             setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
@@ -473,29 +479,44 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           
           if (!rpcError && emailData) {
             email = emailData;
+            console.log(`✅ Username "${requestedUsername}" resolved to email: ${email}`);
           } else {
-            // Fallback: check local storage for old mapping
-            const mapped = await AsyncStorage.getItem('usernameToEmail:' + emailOrUsername.toLowerCase());
-            if (mapped) {
-              email = mapped;
-            } else {
-              Alert.alert('Sign In Error', 'Username not found');
-              setLoading(false);
-              return false;
-            }
-          }
-        } catch (rpcError: any) {
-          console.warn('RPC error, trying local storage fallback:', rpcError);
-          // Fallback: check local storage for old mapping
-          const mapped = await AsyncStorage.getItem('usernameToEmail:' + emailOrUsername.toLowerCase());
-          if (mapped) {
-            email = mapped;
-          } else {
-            Alert.alert('Sign In Error', 'Username not found. Please check your connection and try again.');
+            Alert.alert('Sign In Error', 'Username not found. Please check your username and try again.');
             setLoading(false);
             return false;
           }
+        } catch (rpcError: any) {
+          console.warn('RPC error:', rpcError);
+          Alert.alert('Sign In Error', 'Could not verify username. Please check your connection and try again.');
+          setLoading(false);
+          return false;
         }
+      }
+      
+      // CRITICAL: Sign out any existing session first to prevent account switching issues
+      // This ensures we're signing in as the correct user, not reusing an old session
+      try {
+        await supabase.auth.signOut();
+        // Longer delay to ensure sign out completes and session is fully cleared
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Also clear any Supabase session data from AsyncStorage
+        try {
+          const allKeys = await AsyncStorage.getAllKeys();
+          const supabaseKeys = allKeys.filter(key => 
+            key.includes('supabase') || 
+            key.includes('sb-') || 
+            key.includes('auth-token')
+          );
+          if (supabaseKeys.length > 0) {
+            await AsyncStorage.multiRemove(supabaseKeys);
+          }
+        } catch (clearError) {
+          console.warn('Error clearing Supabase keys:', clearError);
+        }
+      } catch (signOutError) {
+        // Ignore sign out errors - might not have a session
+        console.log('No existing session to sign out:', signOutError);
       }
       
       // Add timeout to signInWithPassword call
@@ -541,8 +562,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           displayName: profile?.displayName,
           photoURL: profile?.photoURL,
         };
+        
+        // CRITICAL: Verify that the signed-in user matches the requested username
+        // This prevents signing into the wrong account due to stale mappings
+        if (requestedUsername) {
+          const signedInUsername = userData.username.toLowerCase();
+          if (signedInUsername !== requestedUsername) {
+            console.error(`❌ Username mismatch! Requested: "${requestedUsername}", Signed in: "${signedInUsername}"`);
+            // Sign out immediately - wrong account!
+            await supabase.auth.signOut();
+            Alert.alert(
+              'Sign In Error', 
+              `Username mismatch. You requested "${requestedUsername}" but signed in as "${signedInUsername}". Please try again.`
+            );
+            setLoading(false);
+            return false;
+          }
+          console.log(`✅ Verified username match: "${requestedUsername}" = "${signedInUsername}"`);
+        }
+        
         setUser(userData);
         await saveUserToStorage(userData);
+        
+        // Update the username-to-email mapping with the correct email
+        if (requestedUsername && userData.email) {
+          await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, userData.email);
+        }
+        
         setLoading(false);
         return true;
       } catch (signInError: any) {
