@@ -56,6 +56,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   const [selectedFolderBooks, setSelectedFolderBooks] = useState<Set<string>>(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedBooks, setSelectedBooks] = useState<Set<string>>(new Set());
+  const [sortBy, setSortBy] = useState<'author' | 'oldest' | 'length'>('author');
+  const [showSortModal, setShowSortModal] = useState(false);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [selectedBooksForNewFolder, setSelectedBooksForNewFolder] = useState<Set<string>>(new Set());
+  const [newFolderNameInput, setNewFolderNameInput] = useState('');
+  const [showFolderNameInput, setShowFolderNameInput] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -212,24 +218,128 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
 
   const sortedBooks = useMemo(() => {
     const extractLastName = (author?: string): string => {
-      if (!author) return 'zzz'; // Books without authors go to the end
+      if (!author) return '';
       const firstAuthor = author.split(/,|&| and /i)[0].trim();
       const parts = firstAuthor.split(/\s+/).filter(Boolean);
-      if (parts.length === 0) return 'zzz';
+      if (parts.length === 0) return '';
       return parts[parts.length - 1].replace(/,/, '').toLowerCase();
     };
 
-    return [...filteredBooks].sort((a, b) => {
-      const aLast = extractLastName(a.author);
-      const bLast = extractLastName(b.author);
-      const comparison = aLast.localeCompare(bLast);
-      // If last names are the same, sort by title
-      if (comparison === 0) {
+    const books = [...filteredBooks];
+    const booksWithData: Book[] = [];
+    const booksWithoutData: Book[] = [];
+
+    if (sortBy === 'author') {
+      // Sort by author last name (default)
+      books.forEach(book => {
+        const lastName = extractLastName(book.author);
+        if (lastName) {
+          booksWithData.push(book);
+        } else {
+          booksWithoutData.push(book);
+        }
+      });
+
+      booksWithData.sort((a, b) => {
+        const aLast = extractLastName(a.author);
+        const bLast = extractLastName(b.author);
+        const comparison = aLast.localeCompare(bLast);
+        // If last names are the same, sort by title
+        if (comparison === 0) {
+          return (a.title || '').localeCompare(b.title || '');
+        }
+        return comparison;
+      });
+
+      // Sort books without data by title
+      booksWithoutData.sort((a, b) => {
         return (a.title || '').localeCompare(b.title || '');
-      }
-      return comparison;
-    });
-  }, [filteredBooks]);
+      });
+
+      return { booksWithData, booksWithoutData };
+    } else if (sortBy === 'oldest') {
+      // Sort by oldest to newest (by publishedDate)
+      books.forEach(book => {
+        const publishedDate = book.publishedDate;
+        if (publishedDate && publishedDate.trim()) {
+          // Try to extract year from publishedDate (could be "2023", "2023-01-15", etc.)
+          const yearMatch = publishedDate.match(/\d{4}/);
+          if (yearMatch) {
+            const year = parseInt(yearMatch[0], 10);
+            if (year > 0 && year <= new Date().getFullYear() + 10) { // Reasonable year range
+              booksWithData.push(book);
+            } else {
+              booksWithoutData.push(book);
+            }
+          } else {
+            booksWithoutData.push(book);
+          }
+        } else {
+          booksWithoutData.push(book);
+        }
+      });
+
+      booksWithData.sort((a, b) => {
+        // Extract year from publishedDate
+        const aYearMatch = a.publishedDate?.match(/\d{4}/);
+        const bYearMatch = b.publishedDate?.match(/\d{4}/);
+        
+        const aYear = aYearMatch ? parseInt(aYearMatch[0], 10) : 0;
+        const bYear = bYearMatch ? parseInt(bYearMatch[0], 10) : 0;
+        
+        // If years are the same, try to compare full dates if available
+        if (aYear === bYear && aYear > 0) {
+          try {
+            const aDate = new Date(a.publishedDate || '').getTime();
+            const bDate = new Date(b.publishedDate || '').getTime();
+            if (!isNaN(aDate) && !isNaN(bDate)) {
+              return aDate - bDate; // Oldest first
+            }
+          } catch (e) {
+            // Fall back to year comparison
+          }
+        }
+        
+        return aYear - bYear; // Oldest first
+      });
+
+      // Sort books without data by title
+      booksWithoutData.sort((a, b) => {
+        return (a.title || '').localeCompare(b.title || '');
+      });
+
+      return { booksWithData, booksWithoutData };
+    } else if (sortBy === 'length') {
+      // Sort by length (pageCount)
+      books.forEach(book => {
+        const pages = book.pageCount || 0;
+        if (pages > 0) {
+          booksWithData.push(book);
+        } else {
+          booksWithoutData.push(book);
+        }
+      });
+
+      booksWithData.sort((a, b) => {
+        const aPages = a.pageCount || 0;
+        const bPages = b.pageCount || 0;
+        return bPages - aPages; // Longest first
+      });
+
+      // Sort books without data by title
+      booksWithoutData.sort((a, b) => {
+        return (a.title || '').localeCompare(b.title || '');
+      });
+
+      return { booksWithData, booksWithoutData };
+    }
+
+    return { booksWithData: books, booksWithoutData: [] };
+  }, [filteredBooks, sortBy]);
+
+  // Separate books with and without data for rendering
+  const { booksWithData = [], booksWithoutData = [] } = sortedBooks || { booksWithData: [], booksWithoutData: [] };
+  const allSortedBooks = [...booksWithData, ...booksWithoutData];
 
   const getBookCoverUri = (book: Book): string | undefined => {
     if (book.localCoverPath && FileSystem.documentDirectory) {
@@ -252,16 +362,18 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
     ) || null;
   };
 
-  const handleCreateFolder = async () => {
-    if (!newFolderName.trim() || !user) return;
+  const handleCreateFolder = async (bookIds?: string[]) => {
+    const folderName = bookIds ? newFolderNameInput.trim() : newFolderName.trim();
+    if (!folderName || !user) return;
     
     try {
       const folderId = `folder_${Date.now()}`;
       const newFolder: Folder = {
         id: folderId,
-        name: newFolderName.trim(),
-        bookIds: [],
+        name: folderName,
+        bookIds: bookIds || Array.from(selectedBooksForNewFolder),
         photoIds: [],
+        createdAt: Date.now(),
       };
       
       const updatedFolders = [...folders, newFolder];
@@ -271,7 +383,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
       await AsyncStorage.setItem(foldersKey, JSON.stringify(updatedFolders));
       
       setNewFolderName('');
-      Alert.alert('Success', `Folder "${newFolder.name}" created!`);
+      setNewFolderNameInput('');
+      setSelectedBooksForNewFolder(new Set());
+      setIsCreatingFolder(false);
+      setShowFolderNameInput(false);
+      Alert.alert('Success', `Folder "${newFolder.name}" created with ${newFolder.bookIds.length} book${newFolder.bookIds.length === 1 ? '' : 's'}!`);
     } catch (error) {
       console.error('Error creating folder:', error);
       Alert.alert('Error', 'Failed to create folder. Please try again.');
@@ -505,53 +621,31 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         <View style={styles.headerRight} />
       </View>
 
-      {/* Show Select button when filtering by read status, otherwise show Folders/Export */}
-      {filterReadStatus ? (
-        <View style={styles.exportButtonContainer}>
+      {/* Always show Folders/Export buttons at the top */}
+      <View style={styles.exportButtonContainer}>
+        <View style={styles.topActionButtonsRow}>
           <TouchableOpacity
-            style={styles.selectButton}
+            style={styles.foldersButton}
             onPress={() => {
-              setIsSelectionMode(!isSelectionMode);
-              if (isSelectionMode) {
-                setSelectedBooks(new Set());
-              }
+              setShowFolderView(true);
+              setSelectedFolder(null);
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.selectButtonText}>
-              {isSelectionMode ? 'Cancel' : 'Select'}
-            </Text>
+            <Ionicons name="folder-outline" size={20} color="#ffffff" />
+            <Text style={styles.exportButtonText}>Folders</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={styles.exportButton}
+            onPress={() => setShowExportModal(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="download-outline" size={20} color="#ffffff" />
+            <Text style={styles.exportButtonText}>Export</Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        <View style={styles.exportButtonContainer} ref={(ref) => {
-          if (ref) {
-            ref.measure((x, y, width, height, pageX, pageY) => {
-              // Store position for modal placement
-            });
-          }
-        }}>
-          <View style={styles.actionButtonsRow}>
-            <TouchableOpacity
-              style={[styles.foldersButton, styles.actionButton]}
-              onPress={() => setShowFoldersModal(true)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="folder-outline" size={20} color="#ffffff" />
-              <Text style={styles.exportButtonText}>Folders</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={[styles.exportButton, styles.actionButton]}
-              onPress={() => setShowExportModal(true)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="download-outline" size={20} color="#ffffff" />
-              <Text style={styles.exportButtonText}>Export</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
+      </View>
 
       <ScrollView 
         style={styles.mainScrollView}
@@ -613,7 +707,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                   <View style={styles.radioButton}>
                     {exportAll && !selectedFolderForExport && <View style={styles.radioButtonInner} />}
                   </View>
-                  <Text style={styles.selectionOptionText}>All Books ({sortedBooks.length})</Text>
+                  <Text style={styles.selectionOptionText}>All Books ({allSortedBooks.length})</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.selectionOption}
@@ -732,17 +826,45 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
           <Ionicons name="search" size={20} color="#a0aec0" style={styles.searchIcon} />
         </View>
 
-        {sortedBooks.length > 0 ? (
+        {/* Select and Sort Buttons */}
+        <View style={styles.actionButtonsRow}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => {
+              setIsSelectionMode(!isSelectionMode);
+              if (isSelectionMode) {
+                setSelectedBooks(new Set());
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.actionButtonText}>
+              {isSelectionMode ? 'Cancel' : 'Select'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => setShowSortModal(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="swap-vertical" size={16} color="#ffffff" style={{ marginRight: 6 }} />
+            <Text style={styles.actionButtonText}>Sort</Text>
+          </TouchableOpacity>
+        </View>
+
+        {allSortedBooks.length > 0 ? (
           <View style={styles.booksContainer}>
-            {sortedBooks.map((item, index) => {
+            {/* Books with data */}
+            {booksWithData.length > 0 && booksWithData.map((item, index) => {
               if (index % 4 === 0) {
                 return (
                   <View key={`row-${index}`} style={styles.bookGrid}>
-                    {sortedBooks.slice(index, index + 4).map((book) => {
-                      const bookId = book.id || `${book.title}_${book.author}`;
-                      const isSelectedForExport = !exportAll && !selectedFolderForExport && selectedBooksForExport.has(bookId);
-                      const isSelectedForRead = isSelectionMode && filterReadStatus && selectedBooks.has(bookId);
-                      const isSelected = isSelectedForExport || isSelectedForRead;
+                      {booksWithData.slice(index, index + 4).map((book) => {
+                        const bookId = book.id || `${book.title}_${book.author}`;
+                        const isSelectedForExport = !exportAll && !selectedFolderForExport && selectedBooksForExport.has(bookId);
+                        const isSelectedForRead = isSelectionMode && selectedBooks.has(bookId);
+                        const isSelected = isSelectedForExport || isSelectedForRead;
                       return (
                         <TouchableOpacity
                           key={book.id || book.title + book.author}
@@ -751,8 +873,87 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                             isSelected && styles.bookCardSelected,
                           ]}
                           onPress={() => {
-                            if (isSelectionMode && filterReadStatus) {
-                              // In read/unread selection mode, toggle selection
+                            if (isSelectionMode) {
+                              // In selection mode, toggle selection
+                              setSelectedBooks(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(bookId)) {
+                                  newSet.delete(bookId);
+                                } else {
+                                  newSet.add(bookId);
+                                }
+                                return newSet;
+                              });
+                            } else if (showExportModal && !exportAll && !selectedFolderForExport) {
+                              // In export mode, toggle selection
+                              const newSet = new Set(selectedBooksForExport);
+                              if (isSelectedForExport) {
+                                newSet.delete(bookId);
+                              } else {
+                                newSet.add(bookId);
+                              }
+                              setSelectedBooksForExport(newSet);
+                            } else {
+                              // Normal mode, open book detail
+                              openBookDetail(book);
+                            }
+                          }}
+                        >
+                          {getBookCoverUri(book) ? (
+                            <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
+                          ) : (
+                            <View style={[styles.bookCover, styles.placeholderCover]}>
+                              <Ionicons name="book-outline" size={32} color="#a0aec0" />
+                            </View>
+                          )}
+                          <View style={styles.bookInfo}>
+                            <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                            {book.author && (
+                              <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
+              }
+              return null;
+            })}
+
+            {/* Separator for books without data */}
+            {booksWithData.length > 0 && booksWithoutData.length > 0 && (
+              <View style={styles.noDataSeparator}>
+                <View style={styles.noDataSeparatorLine} />
+                <Text style={styles.noDataSeparatorText}>
+                  {sortBy === 'author' && 'Books without author'}
+                  {sortBy === 'oldest' && 'Books without published date'}
+                  {sortBy === 'length' && 'Books without page count'}
+                </Text>
+                <View style={styles.noDataSeparatorLine} />
+              </View>
+            )}
+
+            {/* Books without data */}
+            {booksWithoutData.length > 0 && booksWithoutData.map((item, index) => {
+              if (index % 4 === 0) {
+                return (
+                  <View key={`row-no-data-${index}`} style={styles.bookGrid}>
+                      {booksWithoutData.slice(index, index + 4).map((book) => {
+                        const bookId = book.id || `${book.title}_${book.author}`;
+                        const isSelectedForExport = !exportAll && !selectedFolderForExport && selectedBooksForExport.has(bookId);
+                        const isSelectedForRead = isSelectionMode && selectedBooks.has(bookId);
+                        const isSelected = isSelectedForExport || isSelectedForRead;
+                      return (
+                        <TouchableOpacity
+                          key={book.id || book.title + book.author}
+                          style={[
+                            styles.bookCard,
+                            isSelected && styles.bookCardSelected,
+                          ]}
+                          onPress={() => {
+                            if (isSelectionMode) {
+                              // In selection mode, toggle selection
                               setSelectedBooks(prev => {
                                 const newSet = new Set(prev);
                                 if (newSet.has(bookId)) {
@@ -1162,16 +1363,224 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 setIsFolderSelectionMode(false);
                 setSelectedFolderBooks(new Set());
                 setFolderSearchQuery('');
-              }}
+          setIsCreatingFolder(false);
+          setSelectedBooksForNewFolder(new Set());
+          setNewFolderNameInput('');
+          setShowFolderNameInput(false);
+        }}
               hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
               <Ionicons name="arrow-back" size={24} color="#ffffff" />
             </TouchableOpacity>
             <Text style={styles.headerTitle}>
-              {selectedFolder?.name || 'Folder'}
+              {selectedFolder?.name || (isCreatingFolder ? 'Create Folder' : 'Folders')}
             </Text>
             <View style={styles.headerRight} />
           </View>
+
+          {!selectedFolder && !isCreatingFolder && (
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20, paddingHorizontal: 20 }}>
+              {folders.length > 0 ? (
+                <>
+                  <Text style={styles.sectionLabel}>Your Folders</Text>
+                  {folders.map((folder) => {
+                    const folderBooks = books.filter(book => 
+                      book.id && folder.bookIds.includes(book.id)
+                    );
+                    return (
+                      <TouchableOpacity
+                        key={folder.id}
+                        style={styles.folderListItem}
+                        onPress={() => {
+                          setSelectedFolder(folder);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="folder" size={28} color="#0056CC" style={{ marginRight: 12 }} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.folderListItemName}>{folder.name}</Text>
+                          <Text style={styles.folderListItemCount}>
+                            {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color="#718096" />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              ) : (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="folder-outline" size={64} color="#cbd5e0" />
+                  <Text style={styles.emptyText}>No folders yet</Text>
+                  <Text style={{ fontSize: 14, color: '#718096', marginTop: 8, textAlign: 'center' }}>
+                    Create a folder to organize your books
+                  </Text>
+                </View>
+              )}
+
+              {/* Create Folder Button */}
+              <TouchableOpacity
+                style={styles.createFolderMainButton}
+                onPress={() => {
+                  setIsCreatingFolder(true);
+                  setSelectedBooksForNewFolder(new Set());
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="add-circle-outline" size={24} color="#ffffff" style={{ marginRight: 8 }} />
+                <Text style={styles.createFolderMainButtonText}>Create Folder</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          )}
+
+          {isCreatingFolder && !selectedFolder && (
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20 }}>
+              {!showFolderNameInput ? (
+                <>
+                  {/* Select Books Section */}
+                  <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+                    <Text style={styles.sectionLabel}>Select Books for Folder</Text>
+                    <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
+                      Tap books below to select them, then name your folder
+                    </Text>
+                  </View>
+
+                  {/* Books Grid for Selection */}
+                  <View style={styles.booksContainer}>
+                    {allSortedBooks.map((item, index) => {
+                      if (index % 4 === 0) {
+                        return (
+                          <View key={`row-${index}`} style={styles.bookGrid}>
+                            {allSortedBooks.slice(index, index + 4).map((book) => {
+                              const bookId = book.id || `${book.title}_${book.author}`;
+                              const isSelected = selectedBooksForNewFolder.has(bookId);
+                              return (
+                                <TouchableOpacity
+                                  key={book.id || book.title + book.author}
+                                  style={[
+                                    styles.bookCard,
+                                    isSelected && styles.bookCardSelected,
+                                  ]}
+                                  onPress={() => {
+                                    setSelectedBooksForNewFolder(prev => {
+                                      const newSet = new Set(prev);
+                                      if (newSet.has(bookId)) {
+                                        newSet.delete(bookId);
+                                      } else {
+                                        newSet.add(bookId);
+                                      }
+                                      return newSet;
+                                    });
+                                  }}
+                                >
+                                  {getBookCoverUri(book) ? (
+                                    <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
+                                  ) : (
+                                    <View style={[styles.bookCover, styles.placeholderCover]}>
+                                      <Ionicons name="book-outline" size={32} color="#a0aec0" />
+                                    </View>
+                                  )}
+                                  <View style={styles.bookInfo}>
+                                    <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                                    {book.author && (
+                                      <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        );
+                      }
+                      return null;
+                    })}
+                  </View>
+
+                  {/* Continue Button */}
+                  {selectedBooksForNewFolder.size > 0 && (
+                    <View style={{ paddingHorizontal: 20, paddingVertical: 20 }}>
+                      <TouchableOpacity
+                        style={styles.createFolderContinueButton}
+                        onPress={() => {
+                          setShowFolderNameInput(true);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.createFolderContinueButtonText}>
+                          Continue ({selectedBooksForNewFolder.size} {selectedBooksForNewFolder.size === 1 ? 'book' : 'books'} selected)
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {/* Back Button */}
+                  <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+                    <TouchableOpacity
+                      style={styles.createFolderBackButton}
+                      onPress={() => {
+                        setIsCreatingFolder(false);
+                        setSelectedBooksForNewFolder(new Set());
+                        setNewFolderNameInput('');
+                        setShowFolderNameInput(false);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.createFolderBackButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <>
+                  {/* Name Folder Section */}
+                  <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+                    <Text style={styles.sectionLabel}>Name Your Folder</Text>
+                    <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
+                      {selectedBooksForNewFolder.size} {selectedBooksForNewFolder.size === 1 ? 'book' : 'books'} selected
+                    </Text>
+                  </View>
+
+                  <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+                    <TextInput
+                      style={[styles.createFolderInput, { width: '100%', padding: 16, fontSize: 16 }]}
+                      placeholder="Folder name"
+                      placeholderTextColor="#a0aec0"
+                      value={newFolderNameInput}
+                      onChangeText={setNewFolderNameInput}
+                      autoFocus={true}
+                    />
+                  </View>
+
+                  <View style={{ paddingHorizontal: 20, flexDirection: 'row', gap: 12 }}>
+                    <TouchableOpacity
+                      style={[styles.createFolderActionButton, styles.createFolderCancelButton]}
+                      onPress={() => {
+                        setIsCreatingFolder(false);
+                        setSelectedBooksForNewFolder(new Set());
+                        setNewFolderNameInput('');
+                        setShowFolderNameInput(false);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.createFolderCancelButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.createFolderActionButton,
+                        styles.createFolderConfirmButton,
+                        !newFolderNameInput.trim() && styles.createFolderButtonDisabled,
+                      ]}
+                      onPress={() => handleCreateFolder()}
+                      disabled={!newFolderNameInput.trim()}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.createFolderConfirmButtonText}>Create</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          )}
 
           {selectedFolder && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20 }}>
@@ -1343,6 +1752,74 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
           )}
         </SafeAreaView>
       </Modal>
+
+      {/* Sort Modal */}
+      <Modal
+        visible={showSortModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowSortModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSortModal(false)}
+        >
+          <View style={styles.sortModalContent}>
+            <Text style={styles.sortModalTitle}>Sort Books</Text>
+            
+            <TouchableOpacity
+              style={[styles.sortOption, sortBy === 'author' && styles.sortOptionSelected]}
+              onPress={() => {
+                setSortBy('author');
+                setShowSortModal(false);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.sortOptionText, sortBy === 'author' && styles.sortOptionTextSelected]}>
+                By Author (Last Name)
+              </Text>
+              {sortBy === 'author' && <Ionicons name="checkmark" size={20} color="#0056CC" />}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.sortOption, sortBy === 'oldest' && styles.sortOptionSelected]}
+              onPress={() => {
+                setSortBy('oldest');
+                setShowSortModal(false);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.sortOptionText, sortBy === 'oldest' && styles.sortOptionTextSelected]}>
+                Oldest to Newest
+              </Text>
+              {sortBy === 'oldest' && <Ionicons name="checkmark" size={20} color="#0056CC" />}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.sortOption, sortBy === 'length' && styles.sortOptionSelected]}
+              onPress={() => {
+                setSortBy('length');
+                setShowSortModal(false);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.sortOptionText, sortBy === 'length' && styles.sortOptionTextSelected]}>
+                By Length (Pages)
+              </Text>
+              {sortBy === 'length' && <Ionicons name="checkmark" size={20} color="#0056CC" />}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.sortModalCancel}
+              onPress={() => setShowSortModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.sortModalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
       </SafeAreaView>
     </View>
   );
@@ -1382,8 +1859,9 @@ const styles = StyleSheet.create({
     width: 40,
   },
   searchContainer: {
-    padding: 10,
-    paddingTop: 6,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 8,
     position: 'relative',
   },
   searchInput: {
@@ -1404,7 +1882,7 @@ const styles = StyleSheet.create({
   searchIcon: {
     position: 'absolute',
     right: 35,
-    top: 38,
+    top: 30,
   },
   booksContainer: {
     paddingHorizontal: 20,
@@ -1488,15 +1966,13 @@ const styles = StyleSheet.create({
     position: 'relative',
     zIndex: 100,
   },
-  actionButtonsRow: {
+  topActionButtonsRow: {
     flexDirection: 'row',
     gap: 10,
   },
-  actionButton: {
-    flex: 1,
-  },
   exportButton: {
-    backgroundColor: '#2d3748',
+    flex: 1,
+    backgroundColor: '#718096',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1506,7 +1982,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   foldersButton: {
-    backgroundColor: '#0056CC',
+    flex: 1,
+    backgroundColor: '#718096',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1966,6 +2443,171 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '700',
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#718096',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  actionButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sortModalContent: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    width: '85%',
+    maxWidth: 400,
+  },
+  sortModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  sortOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: '#f8f9fa',
+  },
+  sortOptionSelected: {
+    backgroundColor: '#e6f2ff',
+    borderWidth: 2,
+    borderColor: '#0056CC',
+  },
+  sortOptionText: {
+    fontSize: 16,
+    color: '#1a202c',
+    fontWeight: '500',
+  },
+  sortOptionTextSelected: {
+    color: '#0056CC',
+    fontWeight: '600',
+  },
+  sortModalCancel: {
+    marginTop: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  sortModalCancelText: {
+    fontSize: 16,
+    color: '#718096',
+    fontWeight: '600',
+  },
+  createFolderMainButton: {
+    backgroundColor: '#718096',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  createFolderMainButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  createFolderContinueButton: {
+    backgroundColor: '#718096',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createFolderContinueButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  createFolderBackButton: {
+    backgroundColor: '#e2e8f0',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createFolderBackButtonText: {
+    color: '#4a5568',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  createFolderActionButton: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createFolderCancelButton: {
+    backgroundColor: '#e2e8f0',
+  },
+  createFolderCancelButtonText: {
+    color: '#4a5568',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  createFolderConfirmButton: {
+    backgroundColor: '#718096',
+  },
+  createFolderConfirmButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  noDataSeparator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 20,
+    marginHorizontal: 20,
+  },
+  noDataSeparatorLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#e2e8f0',
+  },
+  noDataSeparatorText: {
+    fontSize: 12,
+    color: '#a0aec0',
+    fontWeight: '500',
+    marginHorizontal: 12,
+    fontStyle: 'italic',
   },
 });
 

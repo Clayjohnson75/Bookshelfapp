@@ -796,21 +796,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const signInWithBiometric = async (): Promise<boolean> => {
     try {
-      setLoading(true);
-      
       // Get stored credentials (this will prompt for biometric)
       const credentials = await BiometricAuth.getStoredCredentials();
       
       if (!credentials) {
-        setLoading(false);
         return false;
       }
       
-      // Sign in with stored credentials
-      return await signIn(credentials.email, credentials.password);
+      // Sign in with stored credentials (signIn manages its own loading state)
+      const success = await signIn(credentials.email, credentials.password);
+      return success;
     } catch (error) {
       console.error('Biometric sign in error:', error);
-      setLoading(false);
       return false;
     }
   };

@@ -169,7 +169,7 @@ export async function getStoredCredentials(): Promise<StoredCredentials | null> 
     const biometricType = getBiometricTypeName(capabilities);
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage: `Sign in with ${biometricType}`,
-      cancelLabel: 'Cancel',
+      cancelLabel: 'Use Password',
       disableDeviceFallback: false, // Allow passcode fallback
     });
 
@@ -177,6 +177,11 @@ export async function getStoredCredentials(): Promise<StoredCredentials | null> 
       return JSON.parse(credentialsJson) as StoredCredentials;
     }
 
+    // User cancelled or authentication failed - return null silently
+    // Don't log errors for user cancellation
+    if (result.error !== 'user_cancel' && result.error !== 'user_fallback') {
+      console.log('Biometric authentication failed:', result.error);
+    }
     return null;
   } catch (error) {
     console.error('Error retrieving credentials:', error);

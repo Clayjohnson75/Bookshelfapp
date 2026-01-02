@@ -32,6 +32,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [resetLoading, setResetLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [hasAttemptedBiometric, setHasAttemptedBiometric] = useState(false);
   const { 
     signIn, 
     signInWithDemoAccount, 
@@ -48,12 +49,37 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     checkBiometricStatus();
   }, []);
 
+  // Automatically attempt Face ID when biometric is enabled (only once)
+  useEffect(() => {
+    if (biometricEnabled && biometricCapabilities?.isAvailable && !hasAttemptedBiometric && !loading) {
+      // Small delay to ensure screen is fully rendered
+      const timer = setTimeout(() => {
+        setHasAttemptedBiometric(true);
+        attemptAutomaticBiometricLogin();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [biometricEnabled, biometricCapabilities?.isAvailable, hasAttemptedBiometric, loading]);
+
   const checkBiometricStatus = async () => {
     try {
       const enabled = await isBiometricEnabled();
       setBiometricEnabled(enabled);
     } catch (error) {
       console.error('Error checking biometric status:', error);
+    }
+  };
+
+  const attemptAutomaticBiometricLogin = async () => {
+    try {
+      const success = await signInWithBiometric();
+      if (success) {
+        onAuthSuccess();
+      }
+      // Silently fail - don't show alert, just show login form
+    } catch (error) {
+      // Silently fail - don't show alert
+      console.log('Automatic biometric login failed, showing login form');
     }
   };
 
@@ -95,17 +121,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     }
   };
 
-  const handleBiometricLogin = async () => {
-    const success = await signInWithBiometric();
-    if (success) {
-      onAuthSuccess();
-    } else {
-      Alert.alert(
-        'Biometric Login Failed',
-        'Unable to sign in with biometric authentication. Please try signing in with your password.'
-      );
-    }
-  };
+  // Removed handleBiometricLogin - Face ID now works automatically
 
   const handleForgotPassword = async () => {
     const email = resetEmail.trim();
@@ -260,31 +276,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             )}
           </TouchableOpacity>
 
-          {/* Biometric Login Button */}
-          {biometricCapabilities?.isAvailable && biometricEnabled && (
-            <TouchableOpacity
-              style={[styles.button, styles.biometricButton]}
-              onPress={handleBiometricLogin}
-              disabled={loading}
-            >
-              <Ionicons 
-                name={
-                  LocalAuthentication && 
-                  biometricCapabilities.supportedTypes.includes(
-                    LocalAuthentication.AuthenticationType?.FACIAL_RECOGNITION
-                  ) 
-                    ? 'face' 
-                    : 'finger-print'
-                } 
-                size={20} 
-                color="#fff" 
-                style={{ marginRight: 8 }}
-              />
-              <Text style={styles.buttonText}>
-                Sign in with {BiometricAuth.getBiometricTypeName(biometricCapabilities)}
-              </Text>
-            </TouchableOpacity>
-          )}
+          {/* Face ID now works automatically - no button needed */}
 
           <TouchableOpacity
             style={styles.linkButton}
