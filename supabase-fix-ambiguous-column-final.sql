@@ -75,3 +75,4 @@ GRANT EXECUTE ON FUNCTION public.get_user_scan_usage(UUID) TO authenticated;
 
 
 
+

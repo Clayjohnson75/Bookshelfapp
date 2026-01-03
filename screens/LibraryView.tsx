@@ -448,6 +448,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
               
               console.log('🤖 Starting auto-sort via API...');
               
+              // Prepare existing folders info for the API
+              const existingFoldersInfo = folders.map(folder => ({
+                name: folder.name,
+                bookIds: folder.bookIds,
+              }));
+
               const response = await fetch(`${baseUrl}/api/auto-sort-books`, {
                 method: 'POST',
                 headers: {
@@ -459,6 +465,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                     title: book.title,
                     author: book.author,
                   })),
+                  existingFolders: existingFoldersInfo,
                 }),
               });
 
@@ -473,8 +480,25 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 throw new Error('Invalid response from server');
               }
 
+              // Update existing folders with new book assignments
+              const updatedFolders = folders.map(folder => {
+                const update = data.existingFolderUpdates?.find((u: any) => 
+                  u.folderName.toLowerCase() === folder.name.toLowerCase()
+                );
+                if (update && update.bookIds.length > 0) {
+                  // Add new books to existing folder (avoid duplicates)
+                  const existingBookIds = new Set(folder.bookIds);
+                  const newBookIds = update.bookIds.filter((id: string) => !existingBookIds.has(id));
+                  return {
+                    ...folder,
+                    bookIds: [...folder.bookIds, ...newBookIds],
+                  };
+                }
+                return folder;
+              });
+
               // Create new folders from the AI response
-              const newFolders: Folder[] = data.folders.map((group: { folderName: string; bookIds: string[] }) => ({
+              const newFolders: Folder[] = (data.newFolders || data.folders || []).map((group: { folderName: string; bookIds: string[] }) => ({
                 id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
                 name: group.folderName,
                 bookIds: group.bookIds,
@@ -482,20 +506,31 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 createdAt: Date.now(),
               }));
 
-              // CRITICAL: Preserve all existing folders - merge new folders with existing ones
-              // This ensures no existing folders are removed or modified
-              const updatedFolders = [...folders, ...newFolders];
-              setFolders(updatedFolders);
+              // Merge updated existing folders with new folders
+              const finalFolders = [...updatedFolders, ...newFolders];
+              setFolders(finalFolders);
               
               // Save to AsyncStorage
               const foldersKey = `folders_${user.uid}`;
-              await AsyncStorage.setItem(foldersKey, JSON.stringify(updatedFolders));
+              await AsyncStorage.setItem(foldersKey, JSON.stringify(finalFolders));
 
-              Alert.alert(
-                'Success!',
-                `Created ${newFolders.length} new folder${newFolders.length === 1 ? '' : 's'} and organized ${booksToSort.length} book${booksToSort.length === 1 ? '' : 's'}. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} ${folders.length === 1 ? 'has' : 'have'} been preserved.`,
-                [{ text: 'OK' }]
-              );
+              const updatedCount = data.existingFolderUpdates?.length || 0;
+              const newCount = newFolders.length;
+              const updatedBooksCount = data.existingFolderUpdates?.reduce((sum: number, u: any) => sum + u.bookIds.length, 0) || 0;
+              const newBooksCount = newFolders.reduce((sum, f) => sum + f.bookIds.length, 0);
+
+              let message = `Organized ${booksToSort.length} book${booksToSort.length === 1 ? '' : 's'}: `;
+              if (updatedCount > 0) {
+                message += `Added ${updatedBooksCount} to ${updatedCount} existing folder${updatedCount === 1 ? '' : 's'}`;
+                if (newCount > 0) {
+                  message += `, created ${newCount} new folder${newCount === 1 ? '' : 's'}`;
+                }
+              } else {
+                message += `Created ${newCount} new folder${newCount === 1 ? '' : 's'}`;
+              }
+              message += '.';
+
+              Alert.alert('Success!', message, [{ text: 'OK' }]);
 
               // Notify parent if callback exists
               if (onBooksUpdated) {
@@ -1398,6 +1433,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                   setSelectedBooksForNewFolder(new Set());
                   setNewFolderNameInput('');
                   setShowFolderNameInput(false);
+                } else if (selectedFolder) {
+                  // If viewing a folder, go back to folders list
+                  setSelectedFolder(null);
+                  setIsFolderSelectionMode(false);
+                  setSelectedFolderBooks(new Set());
+                  setFolderSearchQuery('');
                 } else {
                   // Otherwise, close the folder view entirely
                   setShowFolderView(false);

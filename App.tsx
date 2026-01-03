@@ -22,6 +22,7 @@ import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { LoginScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
 import { Book, Photo } from './types/BookTypes';
+import { initializeIAP } from './services/appleIAPService';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -64,6 +65,13 @@ const BookshelfScannerAppInner: React.FC = () => {
   const [editAuthorText, setEditAuthorText] = useState('');
 
   // Load user data when component mounts or user changes
+  useEffect(() => {
+    // Initialize IAP for subscriptions
+    initializeIAP().catch(error => {
+      console.error('Error initializing IAP:', error);
+    });
+  }, []);
+
   useEffect(() => {
     if (user) {
       loadUserData();

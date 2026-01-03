@@ -59,12 +59,17 @@ export const ScanLimitBanner = forwardRef<ScanLimitBannerRef, ScanLimitBannerPro
     // Don't show if unlimited scans remaining
     if (usage.scansRemaining === null || usage.scansRemaining > 0) {
       return (
-        <View style={styles.banner}>
+        <TouchableOpacity 
+          style={styles.banner}
+          onPress={onUpgradePress}
+          activeOpacity={0.7}
+        >
           <Text style={styles.bannerText}>
             {usage.scansRemaining} scan{usage.scansRemaining !== 1 ? 's' : ''} remaining this month
           </Text>
           <Text style={styles.bannerSubtext}>{formatResetDate(usage.resetAt)}</Text>
-        </View>
+          <Text style={styles.bannerHint}>Tap to upgrade to Pro for unlimited scans</Text>
+        </TouchableOpacity>
       );
     }
 
@@ -109,6 +114,13 @@ const styles = StyleSheet.create({
     color: '#718096',
     textAlign: 'center',
     marginTop: 4,
+  },
+  bannerHint: {
+    fontSize: 11,
+    color: '#4299e1',
+    textAlign: 'center',
+    marginTop: 6,
+    fontStyle: 'italic',
   },
   limitReachedText: {
     fontSize: 15,

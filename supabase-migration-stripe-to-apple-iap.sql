@@ -30,3 +30,4 @@ COMMENT ON COLUMN public.profiles.apple_product_id IS 'Apple IAP product ID (e.g
 
 
 
+

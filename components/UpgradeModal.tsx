@@ -10,10 +10,9 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-// import { purchaseProSubscription, restorePurchases, checkSubscriptionStatus } from '../services/appleIAPService';
+import { initializeIAP, purchaseProSubscription, restorePurchases, checkSubscriptionStatus as checkIAPStatus } from '../services/appleIAPService';
 import { checkSubscriptionStatus } from '../services/subscriptionService';
 import { useAuth } from '../auth/SimpleAuthContext';
-import { supabase } from '../lib/supabaseClient';
 
 interface UpgradeModalProps {
   visible: boolean;
@@ -31,12 +30,27 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [currentTier, setCurrentTier] = useState<'free' | 'pro'>('free');
+  const [products, setProducts] = useState<Array<{ productId: string; title: string; localizedPrice: string }>>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
   useEffect(() => {
     if (visible && user) {
       checkCurrentTier();
+      loadProducts();
     }
   }, [visible, user]);
+
+  const loadProducts = async () => {
+    setLoadingProducts(true);
+    try {
+      const availableProducts = await initializeIAP();
+      setProducts(availableProducts);
+    } catch (error) {
+      console.error('Error loading products:', error);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
 
   const checkCurrentTier = async () => {
     if (!user) return;
@@ -52,27 +66,20 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
     setLoading(true);
     try {
-      // TODO: When Apple IAP is implemented, use purchaseProSubscription() here
-      // For now, show message that IAP is coming soon
-      Alert.alert(
-        'Coming Soon',
-        'In-App Purchase integration is coming soon! For now, Pro accounts can be activated manually for testing.\n\nContact support to upgrade your account.',
-        [
-          { text: 'OK', onPress: () => setLoading(false) }
-        ]
-      );
+      // Purchase is handled by appleIAPService which updates Supabase automatically
+      await purchaseProSubscription();
       
-      // Uncomment this when IAP is ready:
-      // await purchaseProSubscription();
-      // setTimeout(async () => {
-      //   await checkCurrentTier();
-      //   if (onUpgradeComplete) {
-      //     onUpgradeComplete();
-      //   }
-      //   setLoading(false);
-      // }, 2000);
+      // Wait a moment for the purchase to process
+      setTimeout(async () => {
+        await checkCurrentTier();
+        if (onUpgradeComplete) {
+          onUpgradeComplete();
+        }
+        setLoading(false);
+      }, 2000);
     } catch (error: any) {
       console.error('Purchase error:', error);
+      // Error alerts are handled by appleIAPService
       setLoading(false);
     }
   };
@@ -80,23 +87,30 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const handleRestore = async () => {
     setRestoring(true);
     try {
-      // TODO: When Apple IAP is implemented, use restorePurchases() here
-      Alert.alert(
-        'Coming Soon',
-        'Purchase restoration will be available when In-App Purchases are enabled.',
-        [{ text: 'OK', onPress: () => setRestoring(false) }]
-      );
+      const restored = await restorePurchases();
       
-      // Uncomment this when IAP is ready:
-      // const restored = await restorePurchases();
-      // if (restored) {
-      //   await checkCurrentTier();
-      //   if (onUpgradeComplete) {
-      //     onUpgradeComplete();
-      //   }
-      // }
+      if (restored) {
+        // Wait a moment for restore to process
+        setTimeout(async () => {
+          await checkCurrentTier();
+          const newTier = await checkIAPStatus();
+          
+          if (newTier === 'pro') {
+            Alert.alert('Success', 'Your Pro subscription has been restored!');
+            if (onUpgradeComplete) {
+              onUpgradeComplete();
+            }
+          } else {
+            Alert.alert('No Subscription', 'No active Pro subscription found to restore.');
+          }
+          setRestoring(false);
+        }, 2000);
+      } else {
+        setRestoring(false);
+      }
     } catch (error: any) {
       console.error('Restore error:', error);
+      // Error alerts are handled by appleIAPService
       setRestoring(false);
     }
   };
@@ -136,10 +150,23 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
         </View>
 
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-          <View style={styles.pricingCard}>
-            <Text style={styles.price}>$4.99</Text>
-            <Text style={styles.pricePeriod}>per month</Text>
-          </View>
+          {loadingProducts ? (
+            <View style={styles.pricingCard}>
+              <ActivityIndicator size="large" color="#4299e1" />
+              <Text style={styles.pricePeriod}>Loading subscription...</Text>
+            </View>
+          ) : products.length > 0 ? (
+            <View style={styles.pricingCard}>
+              <Text style={styles.price}>{products[0].localizedPrice}</Text>
+              <Text style={styles.pricePeriod}>per month</Text>
+              <Text style={styles.productTitle}>{products[0].title}</Text>
+            </View>
+          ) : (
+            <View style={styles.pricingCard}>
+              <Text style={styles.price}>$4.99</Text>
+              <Text style={styles.pricePeriod}>per month</Text>
+            </View>
+          )}
 
           <View style={styles.benefitsSection}>
             <Text style={styles.benefitsTitle}>Pro Features</Text>
@@ -245,6 +272,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#718096',
     marginTop: 4,
+  },
+  productTitle: {
+    fontSize: 14,
+    color: '#718096',
+    marginTop: 8,
+    textAlign: 'center',
   },
   benefitsSection: {
     backgroundColor: '#ffffff',

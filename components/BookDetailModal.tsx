@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [coverSearchResults, setCoverSearchResults] = useState<Array<{googleBooksId: string, coverUrl?: string}>>([]);
   const [isLoadingCovers, setIsLoadingCovers] = useState(false);
   const [updatingCover, setUpdatingCover] = useState(false);
+  const [isHandlingPhoto, setIsHandlingPhoto] = useState(false); // Guard to prevent multiple simultaneous calls
 
   useEffect(() => {
     const loadReadStatus = async () => {
@@ -592,15 +593,24 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   };
 
   const handleTakePhotoForCover = async () => {
-    if (!book || !user) return;
+    // Guard: Prevent multiple simultaneous calls
+    if (isHandlingPhoto || updatingCover || !book || !user) {
+      console.log('Take photo handler: Already processing or invalid state', { isHandlingPhoto, updatingCover, hasBook: !!book, hasUser: !!user });
+      return;
+    }
+
+    setIsHandlingPhoto(true);
+    console.log('Take photo handler: Starting...');
 
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission Required', 'Camera permission is required to take a photo of the book cover.');
+        setIsHandlingPhoto(false);
         return;
       }
 
+      console.log('Take photo handler: Launching camera...');
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -608,88 +618,109 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
         quality: 0.8,
       });
 
+      console.log('Take photo handler: Camera result', { canceled: result.canceled, hasAssets: !!result.assets?.[0] });
+      
       if (!result.canceled && result.assets[0]) {
         setUpdatingCover(true);
         
-        // Resize and optimize the image
-        const manipulatedImage = await ImageManipulator.manipulateAsync(
-          result.assets[0].uri,
-          [{ resize: { width: 600 } }],
-          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
-        );
+        try {
+          // Resize and optimize the image
+          const manipulatedImage = await ImageManipulator.manipulateAsync(
+            result.assets[0].uri,
+            [{ resize: { width: 600 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          );
 
-        // Save to local storage
-        if (FileSystem.documentDirectory) {
-          const coversDir = `${FileSystem.documentDirectory}covers`;
-          const dirInfo = await FileSystem.getInfoAsync(coversDir);
-          if (!dirInfo.exists) {
-            await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+          // Save to local storage
+          if (FileSystem.documentDirectory) {
+            const coversDir = `${FileSystem.documentDirectory}covers`;
+            const dirInfo = await FileSystem.getInfoAsync(coversDir);
+            if (!dirInfo.exists) {
+              await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+            }
+
+            const fileName = `custom_${book.id || Date.now()}.jpg`;
+            const fileUri = `${coversDir}/${fileName}`;
+            
+            // Copy the image to our covers directory
+            await FileSystem.copyAsync({
+              from: manipulatedImage.uri,
+              to: fileUri,
+            });
+
+            const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
+
+            const updatedBook: Book = {
+              ...book,
+              coverUrl: fileUri, // Use local file URI
+              localCoverPath: localCoverPath,
+            };
+
+            // Update in AsyncStorage
+            const userApprovedKey = `approved_books_${user.uid}`;
+            const approvedData = await AsyncStorage.getItem(userApprovedKey);
+            if (approvedData) {
+              const approvedBooks: Book[] = JSON.parse(approvedData);
+              const updatedBooks = approvedBooks.map(b => 
+                (b.id === book.id || (b.title === book.title && b.author === book.author))
+                  ? updatedBook
+                  : b
+              );
+              await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+            }
+
+            // Update in Supabase
+            const { saveBookToSupabase } = await import('../services/supabaseSync');
+            await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+            // Notify parent
+            if (onEditBook) {
+              onEditBook(updatedBook);
+            }
+            if (onBookUpdate) {
+              onBookUpdate(updatedBook);
+            }
+
+            setShowReplaceCoverModal(false);
+            Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
           }
-
-          const fileName = `custom_${book.id || Date.now()}.jpg`;
-          const fileUri = `${coversDir}/${fileName}`;
-          
-          // Copy the image to our covers directory
-          await FileSystem.copyAsync({
-            from: manipulatedImage.uri,
-            to: fileUri,
-          });
-
-          const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
-
-          const updatedBook: Book = {
-            ...book,
-            coverUrl: fileUri, // Use local file URI
-            localCoverPath: localCoverPath,
-          };
-
-          // Update in AsyncStorage
-          const userApprovedKey = `approved_books_${user.uid}`;
-          const approvedData = await AsyncStorage.getItem(userApprovedKey);
-          if (approvedData) {
-            const approvedBooks: Book[] = JSON.parse(approvedData);
-            const updatedBooks = approvedBooks.map(b => 
-              (b.id === book.id || (b.title === book.title && b.author === book.author))
-                ? updatedBook
-                : b
-            );
-            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
-          }
-
-          // Update in Supabase
-          const { saveBookToSupabase } = await import('../services/supabaseSync');
-          await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
-
-          // Notify parent
-          if (onEditBook) {
-            onEditBook(updatedBook);
-          }
-          if (onBookUpdate) {
-            onBookUpdate(updatedBook);
-          }
-
-          setShowReplaceCoverModal(false);
-          Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
+        } catch (processingError) {
+          console.error('Error processing photo for cover:', processingError);
+          Alert.alert('Error', 'Failed to process photo. Please try again.');
+        } finally {
+          setUpdatingCover(false);
         }
+      } else {
+        console.log('Take photo handler: User canceled or no asset');
       }
     } catch (error) {
       console.error('Error taking photo for cover:', error);
       Alert.alert('Error', 'Failed to take photo. Please try again.');
     } finally {
+      setIsHandlingPhoto(false);
       setUpdatingCover(false);
     }
   };
 
   const handleUploadPhotoForCover = async () => {
-    if (!book || !user) return;
+    // Guard: Prevent multiple simultaneous calls
+    if (isHandlingPhoto || updatingCover || !book || !user) {
+      console.log('Upload photo handler: Already processing or invalid state', { isHandlingPhoto, updatingCover, hasBook: !!book, hasUser: !!user });
+      return;
+    }
+
+    setIsHandlingPhoto(true);
+    console.log('Upload photo handler: Starting...');
 
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission Required', 'Photo library permission is required to upload a photo.');
+        setIsHandlingPhoto(false);
         return;
       }
 
+      console.log('Upload photo handler: Launching image library...');
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -697,74 +728,86 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
         quality: 0.8,
       });
 
+      console.log('Upload photo handler: Image library result', { canceled: result.canceled, hasAssets: !!result.assets?.[0] });
+      
       if (!result.canceled && result.assets[0]) {
         setUpdatingCover(true);
         
-        // Resize and optimize the image
-        const manipulatedImage = await ImageManipulator.manipulateAsync(
-          result.assets[0].uri,
-          [{ resize: { width: 600 } }],
-          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
-        );
+        try {
+          // Resize and optimize the image
+          const manipulatedImage = await ImageManipulator.manipulateAsync(
+            result.assets[0].uri,
+            [{ resize: { width: 600 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          );
 
-        // Save to local storage
-        if (FileSystem.documentDirectory) {
-          const coversDir = `${FileSystem.documentDirectory}covers`;
-          const dirInfo = await FileSystem.getInfoAsync(coversDir);
-          if (!dirInfo.exists) {
-            await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+          // Save to local storage
+          if (FileSystem.documentDirectory) {
+            const coversDir = `${FileSystem.documentDirectory}covers`;
+            const dirInfo = await FileSystem.getInfoAsync(coversDir);
+            if (!dirInfo.exists) {
+              await FileSystem.makeDirectoryAsync(coversDir, { intermediates: true });
+            }
+
+            const fileName = `custom_${book.id || Date.now()}.jpg`;
+            const fileUri = `${coversDir}/${fileName}`;
+            
+            // Copy the image to our covers directory
+            await FileSystem.copyAsync({
+              from: manipulatedImage.uri,
+              to: fileUri,
+            });
+
+            const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
+
+            const updatedBook: Book = {
+              ...book,
+              coverUrl: fileUri, // Use local file URI
+              localCoverPath: localCoverPath,
+            };
+
+            // Update in AsyncStorage
+            const userApprovedKey = `approved_books_${user.uid}`;
+            const approvedData = await AsyncStorage.getItem(userApprovedKey);
+            if (approvedData) {
+              const approvedBooks: Book[] = JSON.parse(approvedData);
+              const updatedBooks = approvedBooks.map(b => 
+                (b.id === book.id || (b.title === book.title && b.author === book.author))
+                  ? updatedBook
+                  : b
+              );
+              await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+            }
+
+            // Update in Supabase
+            const { saveBookToSupabase } = await import('../services/supabaseSync');
+            await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
+
+            // Notify parent to update everywhere
+            if (onEditBook) {
+              onEditBook(updatedBook);
+            }
+            if (onBookUpdate) {
+              onBookUpdate(updatedBook);
+            }
+
+            setShowReplaceCoverModal(false);
+            Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
           }
-
-          const fileName = `custom_${book.id || Date.now()}.jpg`;
-          const fileUri = `${coversDir}/${fileName}`;
-          
-          // Copy the image to our covers directory
-          await FileSystem.copyAsync({
-            from: manipulatedImage.uri,
-            to: fileUri,
-          });
-
-          const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
-
-          const updatedBook: Book = {
-            ...book,
-            coverUrl: fileUri, // Use local file URI
-            localCoverPath: localCoverPath,
-          };
-
-          // Update in AsyncStorage
-          const userApprovedKey = `approved_books_${user.uid}`;
-          const approvedData = await AsyncStorage.getItem(userApprovedKey);
-          if (approvedData) {
-            const approvedBooks: Book[] = JSON.parse(approvedData);
-            const updatedBooks = approvedBooks.map(b => 
-              (b.id === book.id || (b.title === book.title && b.author === book.author))
-                ? updatedBook
-                : b
-            );
-            await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
-          }
-
-          // Update in Supabase
-          const { saveBookToSupabase } = await import('../services/supabaseSync');
-          await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
-
-          // Notify parent to update everywhere
-          if (onEditBook) {
-            onEditBook(updatedBook);
-          }
-          if (onBookUpdate) {
-            onBookUpdate(updatedBook);
-          }
-
-          setShowReplaceCoverModal(false);
-          Alert.alert('Cover Updated', 'Your photo has been set as the book cover everywhere.');
+        } catch (processingError) {
+          console.error('Error processing photo for cover:', processingError);
+          Alert.alert('Error', 'Failed to process photo. Please try again.');
+        } finally {
+          setUpdatingCover(false);
         }
+      } else {
+        console.log('Upload photo handler: User canceled or no asset');
       }
     } catch (error) {
       console.error('Error uploading photo for cover:', error);
       Alert.alert('Error', 'Failed to upload photo. Please try again.');
     } finally {
+      setIsHandlingPhoto(false);
       setUpdatingCover(false);
     }
   };
@@ -1060,7 +1103,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   <TouchableOpacity
                     style={styles.photoOptionButton}
                     onPress={handleTakePhotoForCover}
-                    disabled={updatingCover}
+                    disabled={updatingCover || isHandlingPhoto}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.photoOptionButtonText}>Take Photo</Text>
@@ -1068,7 +1111,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   <TouchableOpacity
                     style={styles.photoOptionButton}
                     onPress={handleUploadPhotoForCover}
-                    disabled={updatingCover}
+                    disabled={updatingCover || isHandlingPhoto}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.photoOptionButtonText}>Upload Photo</Text>

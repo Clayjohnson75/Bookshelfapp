@@ -183,7 +183,25 @@ export async function uploadPhotoToStorage(
       });
 
     if (error) {
-      console.error('Error uploading photo to storage:', error);
+      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      
+      if (error.code === '404' || errorMessage.includes('Bucket not found') || errorMessage.includes('does not exist')) {
+        console.error('❌ Photo Storage Error: Storage bucket "photos" does not exist');
+        console.error('   SOLUTION: Create the "photos" bucket in Supabase Dashboard:');
+        console.error('   1. Go to Storage → New bucket');
+        console.error('   2. Name: "photos"');
+        console.error('   3. Make it Public');
+        console.error('   4. Click Create bucket');
+      } else if (error.code === '42501' || errorMessage.includes('row-level security') || errorMessage.includes('violates row-level security policy')) {
+        console.error('❌ Photo Storage Error: RLS policy violation');
+        console.error('   SOLUTION: Set up storage bucket policies in Supabase SQL Editor');
+        console.error('   See SUPABASE_SETUP_INSTRUCTIONS.md for the policy SQL');
+      } else {
+        console.error('Error uploading photo to storage:', errorMessage);
+        console.error('   Error code:', error.code);
+        console.error('   Photo ID:', photoId);
+        console.error('   User ID:', userId);
+      }
       return null;
     }
 
@@ -303,7 +321,12 @@ export async function savePhotoToSupabase(
           storageUrl = existingPhoto.storage_url;
         } else {
           // No existing storage info and upload failed - skip saving
-          console.error(`Cannot save photo ${photo.id}: no storage path and upload failed`);
+          console.error(`❌ Cannot save photo ${photo.id}: no storage path and upload failed`);
+          console.error('   This usually means:');
+          console.error('   1. The storage bucket "photos" does not exist');
+          console.error('   2. Storage bucket RLS policies are not set up');
+          console.error('   3. The photo file does not exist locally');
+          console.error('   SOLUTION: Check SUPABASE_SETUP_INSTRUCTIONS.md for storage setup');
           return false;
         }
       } else {
@@ -464,6 +487,25 @@ export async function saveBookToSupabase(
   }
 
   try {
+    // CRITICAL: Verify user session before attempting to save
+    // RLS policies require auth.uid() to match user_id
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !sessionData?.session) {
+      console.error('❌ No Supabase session found. User must be authenticated to save books.');
+      console.error('   Session error:', sessionError?.message || 'No session');
+      console.error('   Attempted user_id:', userId);
+      return false;
+    }
+
+    const authenticatedUserId = sessionData.session.user.id;
+    if (authenticatedUserId !== userId) {
+      console.error('❌ User ID mismatch! Authenticated user does not match book user_id.');
+      console.error('   Authenticated user:', authenticatedUserId);
+      console.error('   Book user_id:', userId);
+      console.error('   This violates RLS policies. Book will not be saved.');
+      return false;
+    }
     // Convert scannedAt to BIGINT (timestamp in milliseconds) for Supabase
     // scanned_at is BIGINT in database, not TIMESTAMPTZ
     const scannedAtValue = book.scannedAt 
@@ -604,6 +646,16 @@ export async function saveBookToSupabase(
           console.error('   Book title:', book.title);
           console.error('   scanned_at value:', bookData.scanned_at);
           // Don't log full book data for this error to reduce noise
+        } else if (insertError.code === '42501' || errorMessage.includes('row-level security') || errorMessage.includes('violates row-level security policy')) {
+          console.error('❌ RLS Policy Violation: Cannot insert book - row-level security policy violation');
+          console.error('   This usually means:');
+          console.error('   1. The user session is invalid or expired');
+          console.error('   2. The user_id does not match auth.uid()');
+          console.error('   3. RLS policies are not set up correctly in Supabase');
+          console.error('   Authenticated user:', authenticatedUserId);
+          console.error('   Book user_id:', userId);
+          console.error('   Book title:', book.title);
+          console.error('   SOLUTION: Ensure user is properly authenticated and RLS policies allow inserts');
         } else {
           console.error('Error inserting book to Supabase:', errorMessage);
           console.error('Book data:', JSON.stringify(bookData, null, 2));

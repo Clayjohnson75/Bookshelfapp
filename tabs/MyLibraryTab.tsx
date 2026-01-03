@@ -722,9 +722,28 @@ export const MyLibraryTab: React.FC = () => {
       return;
     }
 
+    // Get all book IDs that are already in existing folders
+    const booksInExistingFolders = new Set<string>();
+    folders.forEach(folder => {
+      folder.bookIds.forEach(bookId => {
+        booksInExistingFolders.add(bookId);
+      });
+    });
+
+    // Only include books that are NOT already in folders
+    const booksToSort = books.filter(book => {
+      const bookId = book.id || `${book.title}_${book.author || ''}`;
+      return !booksInExistingFolders.has(bookId);
+    });
+
+    if (booksToSort.length === 0) {
+      Alert.alert('All Books Organized', 'All your books are already in folders. No books to sort.');
+      return;
+    }
+
     Alert.alert(
       'Auto-Sort Books',
-      `This will organize all ${books.length} books into folders based on similarity. Existing folders will be preserved. Continue?`,
+      `This will organize ${booksToSort.length} unorganized books into folders based on similarity. Books will be matched to existing folders when possible. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} will be preserved. Continue?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -741,17 +760,24 @@ export const MyLibraryTab: React.FC = () => {
               
               console.log('🤖 Starting auto-sort via API...');
               
+              // Prepare existing folders info for the API
+              const existingFoldersInfo = folders.map(folder => ({
+                name: folder.name,
+                bookIds: folder.bookIds,
+              }));
+
               const response = await fetch(`${baseUrl}/api/auto-sort-books`, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                  books: books.map(book => ({
+                  books: booksToSort.map(book => ({
                     id: book.id || `${book.title}_${book.author || ''}`,
                     title: book.title,
                     author: book.author,
                   })),
+                  existingFolders: existingFoldersInfo,
                 }),
               });
 
@@ -766,8 +792,25 @@ export const MyLibraryTab: React.FC = () => {
                 throw new Error('Invalid response from server');
               }
 
+              // Update existing folders with new book assignments
+              const updatedFolders = folders.map(folder => {
+                const update = data.existingFolderUpdates?.find((u: any) => 
+                  u.folderName.toLowerCase() === folder.name.toLowerCase()
+                );
+                if (update && update.bookIds.length > 0) {
+                  // Add new books to existing folder (avoid duplicates)
+                  const existingBookIds = new Set(folder.bookIds);
+                  const newBookIds = update.bookIds.filter((id: string) => !existingBookIds.has(id));
+                  return {
+                    ...folder,
+                    bookIds: [...folder.bookIds, ...newBookIds],
+                  };
+                }
+                return folder;
+              });
+
               // Create new folders from the AI response
-              const newFolders: Folder[] = data.folders.map((group: { folderName: string; bookIds: string[] }) => ({
+              const newFolders: Folder[] = (data.newFolders || data.folders || []).map((group: { folderName: string; bookIds: string[] }) => ({
                 id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
                 name: group.folderName,
                 bookIds: group.bookIds,
@@ -775,15 +818,27 @@ export const MyLibraryTab: React.FC = () => {
                 createdAt: Date.now(),
               }));
 
-              // Merge with existing folders (preserve existing ones)
-              const updatedFolders = [...folders, ...newFolders];
-              await saveFolders(updatedFolders);
+              // Merge updated existing folders with new folders
+              const finalFolders = [...updatedFolders, ...newFolders];
+              await saveFolders(finalFolders);
 
-              Alert.alert(
-                'Success!',
-                `Created ${newFolders.length} folders and organized ${books.length} books.`,
-                [{ text: 'OK' }]
-              );
+              const updatedCount = data.existingFolderUpdates?.length || 0;
+              const newCount = newFolders.length;
+              const updatedBooksCount = data.existingFolderUpdates?.reduce((sum: number, u: any) => sum + u.bookIds.length, 0) || 0;
+              const newBooksCount = newFolders.reduce((sum, f) => sum + f.bookIds.length, 0);
+
+              let message = `Organized ${books.length} book${books.length === 1 ? '' : 's'}: `;
+              if (updatedCount > 0) {
+                message += `Added ${updatedBooksCount} to ${updatedCount} existing folder${updatedCount === 1 ? '' : 's'}`;
+                if (newCount > 0) {
+                  message += `, created ${newCount} new folder${newCount === 1 ? '' : 's'}`;
+                }
+              } else {
+                message += `Created ${newCount} new folder${newCount === 1 ? '' : 's'}`;
+              }
+              message += '.';
+
+              Alert.alert('Success!', message, [{ text: 'OK' }]);
 
               // Close folder view and refresh
               setShowFolderView(false);

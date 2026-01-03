@@ -108,7 +108,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_tokens: 2000, // GPT-4o uses max_tokens, not max_completion_tokens
+        max_tokens: 4000, // Increased to handle more books without truncation
       }),
     });
     if (!res.ok) {
@@ -181,6 +181,84 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
       }
     }
     
+    // Third try: Handle truncated JSON by trying to fix incomplete entries
+    // Find the start of the array and try to extract complete book objects
+    const arrayStart = content.indexOf('[');
+    if (arrayStart !== -1) {
+      let jsonContent = content.substring(arrayStart);
+      
+      // Try to fix incomplete JSON by closing brackets and quotes
+      // Count open brackets and close them
+      let openBrackets = (jsonContent.match(/\[/g) || []).length;
+      let closeBrackets = (jsonContent.match(/\]/g) || []).length;
+      let openBraces = (jsonContent.match(/\{/g) || []).length;
+      let closeBraces = (jsonContent.match(/\}/g) || []).length;
+      
+      // Close incomplete structures
+      while (openBrackets > closeBrackets) {
+        jsonContent += ']';
+        closeBrackets++;
+      }
+      while (openBraces > closeBraces) {
+        jsonContent += '}';
+        closeBraces++;
+      }
+      
+      // Try to fix incomplete string values (if JSON ends mid-string)
+      // Find the last incomplete string and close it
+      const lastQuote = jsonContent.lastIndexOf('"');
+      const lastColon = jsonContent.lastIndexOf(':');
+      if (lastQuote < lastColon) {
+        // Might be incomplete string value
+        const beforeLastQuote = jsonContent.substring(0, lastQuote + 1);
+        const afterLastQuote = jsonContent.substring(lastQuote + 1);
+        // If there's text after the last quote without a comma or closing brace, it might be incomplete
+        if (afterLastQuote.trim() && !afterLastQuote.match(/^[\s,}\]]/)) {
+          // Try to find where the string should end
+          const nextComma = afterLastQuote.indexOf(',');
+          const nextBrace = afterLastQuote.indexOf('}');
+          if (nextComma !== -1 && (nextBrace === -1 || nextComma < nextBrace)) {
+            jsonContent = beforeLastQuote + afterLastQuote.substring(0, nextComma) + '"' + afterLastQuote.substring(nextComma);
+          } else if (nextBrace !== -1) {
+            jsonContent = beforeLastQuote + afterLastQuote.substring(0, nextBrace) + '"' + afterLastQuote.substring(nextBrace);
+          }
+        }
+      }
+      
+      try {
+        parsed = JSON.parse(jsonContent);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[API] OpenAI parsed ${parsed.length} books (fixed truncated JSON)`);
+          return parsed;
+        }
+      } catch (e) {
+        // If fixing didn't work, try extracting individual complete book objects
+        console.log(`[API] Attempting to extract individual book objects from truncated JSON...`);
+        
+        // Extract all complete book objects using regex
+        const bookPattern = /\{\s*"title"\s*:\s*"[^"]*"\s*,\s*"author"\s*:\s*"[^"]*"\s*,\s*"confidence"\s*:\s*"[^"]*"\s*\}/g;
+        const bookMatches = jsonContent.match(bookPattern);
+        
+        if (bookMatches && bookMatches.length > 0) {
+          const extractedBooks: any[] = [];
+          for (const match of bookMatches) {
+            try {
+              const book = JSON.parse(match);
+              if (book.title && book.author && book.confidence) {
+                extractedBooks.push(book);
+              }
+            } catch (e) {
+              // Skip invalid book objects
+            }
+          }
+          if (extractedBooks.length > 0) {
+            console.log(`[API] OpenAI extracted ${extractedBooks.length} complete books from truncated response`);
+            return extractedBooks;
+          }
+        }
+      }
+    }
+    
     console.error(`[API] OpenAI response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
     return [];
   } catch (e: any) {
@@ -227,7 +305,7 @@ async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-
             ],
           },
         ],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 6000 },
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
       }),
     }
   );
@@ -296,6 +374,84 @@ async function scanWithGemini(imageDataURL: string, modelName: string = 'gemini-
       }
     } catch (e) {
       console.error(`[API] Gemini failed to parse extracted JSON:`, e);
+    }
+  }
+  
+  // Third try: Handle truncated JSON by trying to fix incomplete entries
+  // Find the start of the array and try to extract complete book objects
+  const arrayStart = content.indexOf('[');
+  if (arrayStart !== -1) {
+    let jsonContent = content.substring(arrayStart);
+    
+    // Try to fix incomplete JSON by closing brackets and quotes
+    // Count open brackets and close them
+    let openBrackets = (jsonContent.match(/\[/g) || []).length;
+    let closeBrackets = (jsonContent.match(/\]/g) || []).length;
+    let openBraces = (jsonContent.match(/\{/g) || []).length;
+    let closeBraces = (jsonContent.match(/\}/g) || []).length;
+    
+    // Close incomplete structures
+    while (openBrackets > closeBrackets) {
+      jsonContent += ']';
+      closeBrackets++;
+    }
+    while (openBraces > closeBraces) {
+      jsonContent += '}';
+      closeBraces++;
+    }
+    
+    // Try to fix incomplete string values (if JSON ends mid-string)
+    // Find the last incomplete string and close it
+    const lastQuote = jsonContent.lastIndexOf('"');
+    const lastColon = jsonContent.lastIndexOf(':');
+    if (lastQuote < lastColon) {
+      // Might be incomplete string value
+      const beforeLastQuote = jsonContent.substring(0, lastQuote + 1);
+      const afterLastQuote = jsonContent.substring(lastQuote + 1);
+      // If there's text after the last quote without a comma or closing brace, it might be incomplete
+      if (afterLastQuote.trim() && !afterLastQuote.match(/^[\s,}\]]/)) {
+        // Try to find where the string should end
+        const nextComma = afterLastQuote.indexOf(',');
+        const nextBrace = afterLastQuote.indexOf('}');
+        if (nextComma !== -1 && (nextBrace === -1 || nextComma < nextBrace)) {
+          jsonContent = beforeLastQuote + afterLastQuote.substring(0, nextComma) + '"' + afterLastQuote.substring(nextComma);
+        } else if (nextBrace !== -1) {
+          jsonContent = beforeLastQuote + afterLastQuote.substring(0, nextBrace) + '"' + afterLastQuote.substring(nextBrace);
+        }
+      }
+    }
+    
+    try {
+      parsed = JSON.parse(jsonContent);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        console.log(`[API] Gemini parsed ${parsed.length} books (fixed truncated JSON)`);
+        return parsed;
+      }
+    } catch (e) {
+      // If fixing didn't work, try extracting individual complete book objects
+      console.log(`[API] Attempting to extract individual book objects from truncated JSON...`);
+      
+      // Extract all complete book objects using regex
+      const bookPattern = /\{\s*"title"\s*:\s*"[^"]*"\s*,\s*"author"\s*:\s*"[^"]*"\s*,\s*"confidence"\s*:\s*"[^"]*"\s*\}/g;
+      const bookMatches = jsonContent.match(bookPattern);
+      
+      if (bookMatches && bookMatches.length > 0) {
+        const extractedBooks: any[] = [];
+        for (const match of bookMatches) {
+          try {
+            const book = JSON.parse(match);
+            if (book.title && book.author && book.confidence) {
+              extractedBooks.push(book);
+            }
+          } catch (e) {
+            // Skip invalid book objects
+          }
+        }
+        if (extractedBooks.length > 0) {
+          console.log(`[API] Gemini extracted ${extractedBooks.length} complete books from truncated response`);
+          return extractedBooks;
+        }
+      }
     }
   }
   

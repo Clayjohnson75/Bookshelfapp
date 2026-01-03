@@ -7,8 +7,8 @@ import * as StoreKit from 'expo-storekit';
 
 // Product IDs - Update these to match your App Store Connect products
 export const SUBSCRIPTION_PRODUCT_IDS = {
-  MONTHLY: 'com.clayjohnson75.bookshelf-scanner.pro.monthly',
-  YEARLY: 'com.clayjohnson75.bookshelf-scanner.pro.yearly',
+  MONTHLY: 'com.bookshelfscanner.pro.monthly',
+  // YEARLY: 'com.bookshelfscanner.pro.yearly', // Uncomment when you create yearly subscription
 } as const;
 
 export type SubscriptionProductId = typeof SUBSCRIPTION_PRODUCT_IDS[keyof typeof SUBSCRIPTION_PRODUCT_IDS];
