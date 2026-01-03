@@ -20,12 +20,21 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import Constants from 'expo-constants';
 import { Book, Photo, UserProfile, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
 import { LibraryView } from '../screens/LibraryView';
 import { loadBooksFromSupabase, deletePhotoFromSupabase } from '../services/supabaseSync';
+
+// Helper to read env vars
+const getEnvVar = (key: string): string => {
+  return Constants.expoConfig?.extra?.[key] || 
+         Constants.manifest?.extra?.[key] || 
+         process.env[key] || 
+         '';
+};
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -61,6 +70,7 @@ export const MyLibraryTab: React.FC = () => {
   const [selectedFolderBooks, setSelectedFolderBooks] = useState<Set<string>>(new Set());
   const [showReadBooks, setShowReadBooks] = useState(false);
   const [showUnreadBooks, setShowUnreadBooks] = useState(false);
+  const [isAutoSorting, setIsAutoSorting] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const searchBarRef = useRef<View>(null);
@@ -198,15 +208,35 @@ export const MyLibraryTab: React.FC = () => {
     };
   }, [librarySearch, booksSectionY, isSelectionMode, selectedBooks.size]);
 
-  // Update userProfile when user changes (display name, username)
+  // Initialize userProfile immediately when user is available
   useEffect(() => {
-    if (user && userProfile) {
-      setUserProfile(prev => prev ? {
-        ...prev,
-        displayName: user.displayName || user.username || 'User',
-      } : null);
+    if (user) {
+      // Initialize profile immediately with user data
+      setUserProfile(prev => {
+        if (prev) {
+          // Update existing profile with new user data
+          return {
+            ...prev,
+            displayName: user.displayName || user.username || 'User',
+            email: user.email || prev.email || '',
+          };
+        } else {
+          // Create new profile from user data
+          return {
+            displayName: user.displayName || user.username || 'User',
+            email: user.email || '',
+            createdAt: new Date(),
+            lastLogin: new Date(),
+            totalBooks: 0,
+            totalPhotos: 0,
+          };
+        }
+      });
+    } else {
+      // Clear profile when user signs out
+      setUserProfile(null);
     }
-  }, [user?.displayName, user?.username]);
+  }, [user]);
 
   // Reload data when tab is focused
   useFocusEffect(
@@ -484,17 +514,19 @@ export const MyLibraryTab: React.FC = () => {
         );
       }).length;
       
-      // Create user profile from auth user
+      // Update user profile with book/photo counts (preserve existing profile data)
       if (user) {
-        const profile: UserProfile = {
-          displayName: user.displayName || user.username || 'User',
-          email: user.email || '',
-          createdAt: new Date(),
-          lastLogin: new Date(),
-          totalBooks: mergedBooks.length,
-          totalPhotos: scansWithApprovedBooks,
-        };
-        setUserProfile(profile);
+        setUserProfile(prev => {
+          const profile: UserProfile = {
+            displayName: prev?.displayName || user.displayName || user.username || 'User',
+            email: prev?.email || user.email || '',
+            createdAt: prev?.createdAt || new Date(),
+            lastLogin: new Date(),
+            totalBooks: mergedBooks.length,
+            totalPhotos: scansWithApprovedBooks,
+          };
+          return profile;
+        });
       }
     } catch (error) {
       console.error('Error loading user data:', error);
@@ -680,6 +712,93 @@ export const MyLibraryTab: React.FC = () => {
             }
           }
         }
+      ]
+    );
+  };
+
+  const autoSortBooksIntoFolders = async () => {
+    if (!user || books.length === 0) {
+      Alert.alert('No Books', 'You need books in your library to auto-sort them.');
+      return;
+    }
+
+    Alert.alert(
+      'Auto-Sort Books',
+      `This will organize all ${books.length} books into folders based on similarity. Existing folders will be preserved. Continue?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sort',
+          onPress: async () => {
+            setIsAutoSorting(true);
+            try {
+              // Get API base URL
+              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+              
+              if (!baseUrl) {
+                throw new Error('API server URL not configured');
+              }
+              
+              console.log('🤖 Starting auto-sort via API...');
+              
+              const response = await fetch(`${baseUrl}/api/auto-sort-books`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  books: books.map(book => ({
+                    id: book.id || `${book.title}_${book.author || ''}`,
+                    title: book.title,
+                    author: book.author,
+                  })),
+                }),
+              });
+
+              if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Failed to sort books');
+              }
+
+              const data = await response.json();
+              
+              if (!data.success || !data.folders || !Array.isArray(data.folders)) {
+                throw new Error('Invalid response from server');
+              }
+
+              // Create new folders from the AI response
+              const newFolders: Folder[] = data.folders.map((group: { folderName: string; bookIds: string[] }) => ({
+                id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+                name: group.folderName,
+                bookIds: group.bookIds,
+                photoIds: [],
+                createdAt: Date.now(),
+              }));
+
+              // Merge with existing folders (preserve existing ones)
+              const updatedFolders = [...folders, ...newFolders];
+              await saveFolders(updatedFolders);
+
+              Alert.alert(
+                'Success!',
+                `Created ${newFolders.length} folders and organized ${books.length} books.`,
+                [{ text: 'OK' }]
+              );
+
+              // Close folder view and refresh
+              setShowFolderView(false);
+              setSelectedFolder(null);
+            } catch (error: any) {
+              console.error('Error auto-sorting books:', error);
+              Alert.alert(
+                'Error',
+                error?.message || 'Failed to auto-sort books. Please try again.'
+              );
+            } finally {
+              setIsAutoSorting(false);
+            }
+          },
+        },
       ]
     );
   };
@@ -2042,16 +2161,33 @@ export const MyLibraryTab: React.FC = () => {
             <Text style={styles.modalHeaderTitle}>
               {selectedFolder?.name || 'Folder'}
             </Text>
-            {selectedFolder && (
-              <TouchableOpacity
-                style={styles.modalDeleteButton}
-                onPress={() => deleteFolder(selectedFolder.id)}
-                activeOpacity={0.7}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="trash-outline" size={22} color="#ffffff" />
-              </TouchableOpacity>
-            )}
+            <View style={styles.modalHeaderButtons}>
+              {selectedFolder && (
+                <TouchableOpacity
+                  style={[styles.modalHeaderButton, styles.autoSortHeaderButton]}
+                  onPress={autoSortBooksIntoFolders}
+                  activeOpacity={0.7}
+                  disabled={isAutoSorting || books.length === 0}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  {isAutoSorting ? (
+                    <Text style={styles.modalHeaderButtonText}>Sorting...</Text>
+                  ) : (
+                    <Text style={styles.modalHeaderButtonText}>Auto-Sort</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              {selectedFolder && (
+                <TouchableOpacity
+                  style={styles.modalDeleteButton}
+                  onPress={() => deleteFolder(selectedFolder.id)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="trash-outline" size={22} color="#ffffff" />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
 
           {selectedFolder && (
@@ -2607,6 +2743,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   selectButton: {
+    flex: 1,
     paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#4299e1',
@@ -2661,8 +2798,14 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   folderSelectButtonContainer: {
+    flexDirection: 'row',
+    gap: 12,
     paddingHorizontal: 20,
     marginBottom: 12,
+  },
+  autoSortButton: {
+    backgroundColor: '#48bb78',
+    flex: 1,
   },
   librarySearchInput: {
     flex: 1,
@@ -2874,6 +3017,27 @@ const styles = StyleSheet.create({
   },
   modalHeaderSpacer: {
     minWidth: 80,
+  },
+  modalHeaderButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalHeaderButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalHeaderButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  autoSortHeaderButton: {
+    backgroundColor: 'rgba(72, 187, 120, 0.3)',
   },
   modalDeleteButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',

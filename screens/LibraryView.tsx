@@ -19,9 +19,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import Constants from 'expo-constants';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
 import BookDetailModal from '../components/BookDetailModal';
+
+// Helper to read env vars
+const getEnvVar = (key: string): string => {
+  return Constants.expoConfig?.extra?.[key] || 
+         Constants.manifest?.extra?.[key] || 
+         process.env[key] || 
+         '';
+};
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -43,7 +52,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [showBookDetail, setShowBookDetail] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [showFoldersModal, setShowFoldersModal] = useState(false);
   const [exportFormat, setExportFormat] = useState<'MLA' | 'APA' | 'Chicago'>('MLA');
   const [selectedBooksForExport, setSelectedBooksForExport] = useState<Set<string>>(new Set());
   const [selectedFolderForExport, setSelectedFolderForExport] = useState<string | null>(null);
@@ -62,6 +70,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   const [selectedBooksForNewFolder, setSelectedBooksForNewFolder] = useState<Set<string>>(new Set());
   const [newFolderNameInput, setNewFolderNameInput] = useState('');
   const [showFolderNameInput, setShowFolderNameInput] = useState(false);
+  const [isAutoSorting, setIsAutoSorting] = useState(false);
+  const [createFolderSearchQuery, setCreateFolderSearchQuery] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -392,6 +402,118 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
       console.error('Error creating folder:', error);
       Alert.alert('Error', 'Failed to create folder. Please try again.');
     }
+  };
+
+  const autoSortBooksIntoFolders = async () => {
+    if (!user || books.length === 0) {
+      Alert.alert('No Books', 'You need books in your library to auto-sort them.');
+      return;
+    }
+
+    // Get all book IDs that are already in existing folders
+    const booksInExistingFolders = new Set<string>();
+    folders.forEach(folder => {
+      folder.bookIds.forEach(bookId => {
+        booksInExistingFolders.add(bookId);
+      });
+    });
+
+    // Only include books that are NOT already in folders
+    const booksToSort = books.filter(book => {
+      const bookId = book.id || `${book.title}_${book.author || ''}`;
+      return !booksInExistingFolders.has(bookId);
+    });
+
+    if (booksToSort.length === 0) {
+      Alert.alert('All Books Organized', 'All your books are already in folders. No books to sort.');
+      return;
+    }
+
+    Alert.alert(
+      'Auto-Sort Books',
+      `This will organize ${booksToSort.length} unorganized books into folders based on similarity. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} will be preserved. Continue?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sort',
+          onPress: async () => {
+            setIsAutoSorting(true);
+            try {
+              // Get API base URL
+              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+              
+              if (!baseUrl) {
+                throw new Error('API server URL not configured');
+              }
+              
+              console.log('🤖 Starting auto-sort via API...');
+              
+              const response = await fetch(`${baseUrl}/api/auto-sort-books`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  books: booksToSort.map(book => ({
+                    id: book.id || `${book.title}_${book.author || ''}`,
+                    title: book.title,
+                    author: book.author,
+                  })),
+                }),
+              });
+
+              if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Failed to sort books');
+              }
+
+              const data = await response.json();
+              
+              if (!data.success || !data.folders || !Array.isArray(data.folders)) {
+                throw new Error('Invalid response from server');
+              }
+
+              // Create new folders from the AI response
+              const newFolders: Folder[] = data.folders.map((group: { folderName: string; bookIds: string[] }) => ({
+                id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+                name: group.folderName,
+                bookIds: group.bookIds,
+                photoIds: [],
+                createdAt: Date.now(),
+              }));
+
+              // CRITICAL: Preserve all existing folders - merge new folders with existing ones
+              // This ensures no existing folders are removed or modified
+              const updatedFolders = [...folders, ...newFolders];
+              setFolders(updatedFolders);
+              
+              // Save to AsyncStorage
+              const foldersKey = `folders_${user.uid}`;
+              await AsyncStorage.setItem(foldersKey, JSON.stringify(updatedFolders));
+
+              Alert.alert(
+                'Success!',
+                `Created ${newFolders.length} new folder${newFolders.length === 1 ? '' : 's'} and organized ${booksToSort.length} book${booksToSort.length === 1 ? '' : 's'}. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} ${folders.length === 1 ? 'has' : 'have'} been preserved.`,
+                [{ text: 'OK' }]
+              );
+
+              // Notify parent if callback exists
+              if (onBooksUpdated) {
+                onBooksUpdated();
+              }
+            } catch (error: any) {
+              console.error('Error auto-sorting books:', error);
+              Alert.alert(
+                'Error',
+                error?.message || 'Failed to auto-sort books. Please try again.'
+              );
+            } finally {
+              setIsAutoSorting(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const openBookDetail = (book: Book) => {
@@ -726,7 +848,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                   onPress={() => {
                     setExportAll(false);
                     setSelectedBooksForExport(new Set());
-                    setShowFoldersModal(true);
+                    setShowFolderView(true);
+                    setSelectedFolder(null);
                   }}
                 >
                   <View style={styles.radioButton}>
@@ -1250,95 +1373,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         folders={[]}
       />
 
-      {/* Folders Modal */}
-      {showFoldersModal && (
-        <>
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            activeOpacity={1}
-            onPress={() => setShowFoldersModal(false)}
-          />
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Folders</Text>
-              <TouchableOpacity
-                onPress={() => setShowFoldersModal(false)}
-                style={styles.modalCloseButton}
-              >
-                <Ionicons name="close" size={24} color="#1a202c" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.modalBody}>
-              {/* Create New Folder */}
-              <View style={styles.createFolderSection}>
-                <Text style={styles.sectionLabel}>Create New Folder</Text>
-                <View style={styles.createFolderInputRow}>
-                  <TextInput
-                    style={styles.createFolderInput}
-                    placeholder="Folder name"
-                    placeholderTextColor="#a0aec0"
-                    value={newFolderName}
-                    onChangeText={setNewFolderName}
-                  />
-                  <TouchableOpacity
-                    style={[
-                      styles.createFolderButton,
-                      !newFolderName.trim() && styles.createFolderButtonDisabled,
-                    ]}
-                    onPress={handleCreateFolder}
-                    disabled={!newFolderName.trim()}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.createFolderButtonText}>Create</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Existing Folders */}
-              {folders.length > 0 ? (
-                <View style={styles.foldersListSection}>
-                  <Text style={styles.sectionLabel}>Your Folders</Text>
-                  {folders.map((folder) => {
-                    const folderBooks = books.filter(book => 
-                      book.id && folder.bookIds.includes(book.id)
-                    );
-                    return (
-                      <TouchableOpacity
-                        key={folder.id}
-                        style={styles.folderListItem}
-                        onPress={() => {
-                          // Open folder view instead of just selecting for export
-                          setSelectedFolder(folder);
-                          setShowFolderView(true);
-                          setShowFoldersModal(false);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons name="folder" size={28} color="#0056CC" style={{ marginRight: 12 }} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.folderListItemName}>{folder.name}</Text>
-                          <Text style={styles.folderListItemCount}>
-                            {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
-                          </Text>
-                        </View>
-                        <Ionicons name="chevron-forward" size={20} color="#718096" />
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ) : (
-                <View style={styles.emptyFoldersContainer}>
-                  <Ionicons name="folder-outline" size={64} color="#cbd5e0" />
-                  <Text style={styles.emptyFoldersText}>No folders yet</Text>
-                  <Text style={styles.emptyFoldersSubtext}>Create a folder to organize your books</Text>
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </>
-      )}
-
       {/* Folder View - Full Screen Page */}
       <Modal
         visible={showFolderView}
@@ -1358,16 +1392,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
             <TouchableOpacity
               style={styles.backButton}
               onPress={() => {
-                setShowFolderView(false);
-                setSelectedFolder(null);
-                setIsFolderSelectionMode(false);
-                setSelectedFolderBooks(new Set());
-                setFolderSearchQuery('');
-          setIsCreatingFolder(false);
-          setSelectedBooksForNewFolder(new Set());
-          setNewFolderNameInput('');
-          setShowFolderNameInput(false);
-        }}
+                if (isCreatingFolder) {
+                  // If creating folder, just go back to folders list
+                  setIsCreatingFolder(false);
+                  setSelectedBooksForNewFolder(new Set());
+                  setNewFolderNameInput('');
+                  setShowFolderNameInput(false);
+                } else {
+                  // Otherwise, close the folder view entirely
+                  setShowFolderView(false);
+                  setSelectedFolder(null);
+                  setIsFolderSelectionMode(false);
+                  setSelectedFolderBooks(new Set());
+                  setFolderSearchQuery('');
+                }
+              }}
               hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
               <Ionicons name="arrow-back" size={24} color="#ffffff" />
@@ -1380,9 +1419,39 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
 
           {!selectedFolder && !isCreatingFolder && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20, paddingHorizontal: 20 }}>
+              {/* Action Buttons Row */}
+              <View style={styles.foldersActionButtonsRow}>
+                <TouchableOpacity
+                  style={styles.createFolderMainButton}
+                  onPress={() => {
+                    setIsCreatingFolder(true);
+                    setSelectedBooksForNewFolder(new Set());
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="add-circle-outline" size={20} color="#ffffff" />
+                  <Text style={styles.createFolderMainButtonText}>Create</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[
+                    styles.autoSortButtonFullPage,
+                    (isAutoSorting || books.length === 0) && styles.autoSortButtonDisabled,
+                  ]}
+                  onPress={autoSortBooksIntoFolders}
+                  activeOpacity={0.8}
+                  disabled={isAutoSorting || books.length === 0}
+                >
+                  <Ionicons name="sparkles" size={20} color="#ffffff" />
+                  <Text style={styles.autoSortButtonText}>
+                    {isAutoSorting ? 'Sorting...' : 'Auto-Sort'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
               {folders.length > 0 ? (
                 <>
-                  <Text style={styles.sectionLabel}>Your Folders</Text>
+                  <Text style={[styles.sectionLabel, { marginTop: 24 }]}>Your Folders</Text>
                   {folders.map((folder) => {
                     const folderBooks = books.filter(book => 
                       book.id && folder.bookIds.includes(book.id)
@@ -1418,120 +1487,111 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 </View>
               )}
 
-              {/* Create Folder Button */}
-              <TouchableOpacity
-                style={styles.createFolderMainButton}
-                onPress={() => {
-                  setIsCreatingFolder(true);
-                  setSelectedBooksForNewFolder(new Set());
-                }}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="add-circle-outline" size={24} color="#ffffff" style={{ marginRight: 8 }} />
-                <Text style={styles.createFolderMainButtonText}>Create Folder</Text>
-              </TouchableOpacity>
             </ScrollView>
           )}
 
           {isCreatingFolder && !selectedFolder && (
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20 }}>
-              {!showFolderNameInput ? (
-                <>
-                  {/* Select Books Section */}
-                  <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
-                    <Text style={styles.sectionLabel}>Select Books for Folder</Text>
-                    <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
-                      Tap books below to select them, then name your folder
-                    </Text>
-                  </View>
-
-                  {/* Books Grid for Selection */}
-                  <View style={styles.booksContainer}>
-                    {allSortedBooks.map((item, index) => {
-                      if (index % 4 === 0) {
-                        return (
-                          <View key={`row-${index}`} style={styles.bookGrid}>
-                            {allSortedBooks.slice(index, index + 4).map((book) => {
-                              const bookId = book.id || `${book.title}_${book.author}`;
-                              const isSelected = selectedBooksForNewFolder.has(bookId);
-                              return (
-                                <TouchableOpacity
-                                  key={book.id || book.title + book.author}
-                                  style={[
-                                    styles.bookCard,
-                                    isSelected && styles.bookCardSelected,
-                                  ]}
-                                  onPress={() => {
-                                    setSelectedBooksForNewFolder(prev => {
-                                      const newSet = new Set(prev);
-                                      if (newSet.has(bookId)) {
-                                        newSet.delete(bookId);
-                                      } else {
-                                        newSet.add(bookId);
-                                      }
-                                      return newSet;
-                                    });
-                                  }}
-                                >
-                                  {getBookCoverUri(book) ? (
-                                    <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
-                                  ) : (
-                                    <View style={[styles.bookCover, styles.placeholderCover]}>
-                                      <Ionicons name="book-outline" size={32} color="#a0aec0" />
-                                    </View>
-                                  )}
-                                  <View style={styles.bookInfo}>
-                                    <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                                    {book.author && (
-                                      <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
-                                    )}
-                                  </View>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </View>
-                        );
-                      }
-                      return null;
-                    })}
-                  </View>
-
-                  {/* Continue Button */}
-                  {selectedBooksForNewFolder.size > 0 && (
-                    <View style={{ paddingHorizontal: 20, paddingVertical: 20 }}>
-                      <TouchableOpacity
-                        style={styles.createFolderContinueButton}
-                        onPress={() => {
-                          setShowFolderNameInput(true);
-                        }}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.createFolderContinueButtonText}>
-                          Continue ({selectedBooksForNewFolder.size} {selectedBooksForNewFolder.size === 1 ? 'book' : 'books'} selected)
-                        </Text>
-                      </TouchableOpacity>
+            <>
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 20, paddingBottom: 100 }}>
+                {!showFolderNameInput ? (
+                  <>
+                    {/* Select Books Section */}
+                    <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+                      <Text style={styles.sectionLabel}>Select Books for Folder</Text>
+                      <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
+                        Tap books below to select them, then name your folder
+                      </Text>
                     </View>
-                  )}
 
-                  {/* Back Button */}
-                  <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
-                    <TouchableOpacity
-                      style={styles.createFolderBackButton}
-                      onPress={() => {
-                        setIsCreatingFolder(false);
-                        setSelectedBooksForNewFolder(new Set());
-                        setNewFolderNameInput('');
-                        setShowFolderNameInput(false);
-                      }}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.createFolderBackButtonText}>Cancel</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              ) : (
-                <>
-                  {/* Name Folder Section */}
+                    {/* Search Bar */}
+                    <View style={[styles.searchContainer, { marginHorizontal: 20, marginBottom: 20 }]}>
+                      <Ionicons name="search" size={20} color="#718096" style={styles.searchIcon} />
+                      <TextInput
+                        style={styles.searchInput}
+                        value={createFolderSearchQuery}
+                        onChangeText={setCreateFolderSearchQuery}
+                        placeholder="Search by title or author..."
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        clearButtonMode="never"
+                      />
+                      {createFolderSearchQuery.length > 0 && (
+                        <TouchableOpacity
+                          onPress={() => setCreateFolderSearchQuery('')}
+                          style={styles.librarySearchClear}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={styles.librarySearchClearText}>×</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+
+                    {/* Books Grid for Selection */}
+                    <View style={styles.booksContainer}>
+                      {(() => {
+                        // Filter books based on search query
+                        let filteredBooks = allSortedBooks;
+                        if (createFolderSearchQuery.trim()) {
+                          const query = createFolderSearchQuery.trim().toLowerCase();
+                          filteredBooks = allSortedBooks.filter(book => {
+                            const title = (book.title || '').toLowerCase();
+                            const author = (book.author || '').toLowerCase();
+                            return title.includes(query) || author.includes(query);
+                          });
+                        }
+                        return filteredBooks.map((item, index) => {
+                          if (index % 4 === 0) {
+                            return (
+                              <View key={`row-${index}`} style={styles.bookGrid}>
+                                {filteredBooks.slice(index, index + 4).map((book) => {
+                                  const bookId = book.id || `${book.title}_${book.author}`;
+                                  const isSelected = selectedBooksForNewFolder.has(bookId);
+                                  return (
+                                    <TouchableOpacity
+                                      key={book.id || book.title + book.author}
+                                      style={[
+                                        styles.bookCard,
+                                        isSelected && styles.bookCardSelected,
+                                      ]}
+                                      onPress={() => {
+                                        setSelectedBooksForNewFolder(prev => {
+                                          const newSet = new Set(prev);
+                                          if (newSet.has(bookId)) {
+                                            newSet.delete(bookId);
+                                          } else {
+                                            newSet.add(bookId);
+                                          }
+                                          return newSet;
+                                        });
+                                      }}
+                                    >
+                                      {getBookCoverUri(book) ? (
+                                        <Image source={{ uri: getBookCoverUri(book) }} style={styles.bookCover} />
+                                      ) : (
+                                        <View style={[styles.bookCover, styles.placeholderCover]}>
+                                          <Ionicons name="book-outline" size={32} color="#a0aec0" />
+                                        </View>
+                                      )}
+                                      <View style={styles.bookInfo}>
+                                        <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                                        {book.author && (
+                                          <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
+                                        )}
+                                      </View>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            );
+                          }
+                          return null;
+                        });
+                      })()}
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    {/* Name Folder Section */}
                   <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
                     <Text style={styles.sectionLabel}>Name Your Folder</Text>
                     <Text style={{ fontSize: 14, color: '#718096', marginTop: 8 }}>
@@ -1577,9 +1637,27 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                       <Text style={styles.createFolderConfirmButtonText}>Create</Text>
                     </TouchableOpacity>
                   </View>
-                </>
+                  </>
+                )}
+              </ScrollView>
+              
+              {/* Bottom Create Folder Button - Only show when selecting books */}
+              {!showFolderNameInput && selectedBooksForNewFolder.size > 0 && (
+                <View style={styles.createFolderBottomTab}>
+                  <TouchableOpacity
+                    style={styles.createFolderBottomButton}
+                    onPress={() => {
+                      setShowFolderNameInput(true);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.createFolderBottomButtonText}>
+                      Create Folder ({selectedBooksForNewFolder.size} {selectedBooksForNewFolder.size === 1 ? 'book' : 'books'})
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               )}
-            </ScrollView>
+            </>
           )}
 
           {selectedFolder && (
@@ -1884,6 +1962,22 @@ const styles = StyleSheet.create({
     right: 35,
     top: 30,
   },
+  librarySearchClear: {
+    position: 'absolute',
+    right: 15,
+    top: 18,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e2e8f0',
+  },
+  librarySearchClearText: {
+    fontSize: 18,
+    color: '#718096',
+    lineHeight: 20,
+  },
   booksContainer: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -1991,6 +2085,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     borderRadius: 12,
     gap: 8,
+  },
+  autoSortButton: {
+    flex: 1,
+    backgroundColor: '#48bb78',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+    opacity: 1,
   },
   exportButtonText: {
     color: '#ffffff',
@@ -2208,6 +2314,38 @@ const styles = StyleSheet.create({
   folderSelectCount: {
     fontSize: 13,
     color: '#718096',
+  },
+  autoSortSection: {
+    marginBottom: 24,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  autoSortButtonModal: {
+    backgroundColor: '#48bb78',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+    marginBottom: 8,
+  },
+  autoSortButtonDisabled: {
+    backgroundColor: '#cbd5e0',
+    opacity: 0.6,
+  },
+  autoSortButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  autoSortDescription: {
+    fontSize: 13,
+    color: '#718096',
+    textAlign: 'center',
+    marginTop: 4,
   },
   createFolderSection: {
     marginBottom: 24,
@@ -2525,16 +2663,32 @@ const styles = StyleSheet.create({
     color: '#718096',
     fontWeight: '600',
   },
+  foldersActionButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  autoSortButtonFullPage: {
+    flex: 1,
+    backgroundColor: '#48bb78',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
   createFolderMainButton: {
+    flex: 1,
     backgroundColor: '#718096',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
-    paddingHorizontal: 24,
+    paddingHorizontal: 16,
     borderRadius: 12,
-    marginTop: 20,
-    marginBottom: 20,
+    gap: 8,
   },
   createFolderMainButtonText: {
     color: '#ffffff',
@@ -2608,6 +2762,36 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginHorizontal: 12,
     fontStyle: 'italic',
+  },
+  createFolderBottomTab: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#ffffff',
+    paddingTop: 12,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  createFolderBottomButton: {
+    backgroundColor: '#0056CC',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createFolderBottomButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 
