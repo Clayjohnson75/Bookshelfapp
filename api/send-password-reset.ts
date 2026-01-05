@@ -85,6 +85,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Attempt to send custom email using Resend SDK
     const emailApiKey = process.env.EMAIL_API_KEY;
+    // Default to Resend's test email if no sender is configured
+    // To use a custom domain, verify it in Resend first, then set EMAIL_FROM
     const emailFrom = process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
     if (emailApiKey) {
