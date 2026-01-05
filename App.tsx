@@ -24,6 +24,15 @@ import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
 import { Book, Photo } from './types/BookTypes';
 import { initializeIAP } from './services/appleIAPService';
+import Constants from 'expo-constants';
+
+// Helper to read env vars
+const getEnvVar = (key: string): string => {
+  return Constants.expoConfig?.extra?.[key] || 
+         Constants.manifest?.extra?.[key] || 
+         process.env[key] || 
+         '';
+};
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -168,90 +177,32 @@ const BookshelfScannerAppInner: React.FC = () => {
 
   const scanImageWithAI = async (imageDataURL: string, sectionInfo: string = ''): Promise<Book[]> => {
     try {
-      console.log('🤖 Scanning image with AI...');
+      console.log('🤖 Scanning image with AI via server API...');
       
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      // Use server API endpoint instead of direct OpenAI calls (security)
+      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+      
+      const response = await fetch(`${baseUrl}/api/scan`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: 'gpt-5',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `Scan this image and return ALL visible book spines as JSON.
-
-Read each book spine from left to right. For each spine:
-- Extract the title (larger text, usually at top)
-- Extract the author (smaller text, usually at bottom, or "Unknown" if not visible)
-- Assign confidence: "high" (both clear), "medium" (title clear), "low" (unclear)
-
-RETURN ONLY JSON (no explanations):
-[
-  {"title": "Book Title", "author": "Author Name or Unknown", "confidence": "high/medium/low"},
-  {"title": "Next Book", "author": "Next Author", "confidence": "high"}
-]
-
-Return the JSON array now. Do not include any text before or after the array.${sectionInfo}`
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: imageDataURL
-                  }
-                }
-              ]
-            }
-          ],
-          max_tokens: 4000,
-          temperature: 0.1,
+          imageDataURL,
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status} - ${await response.text()}`);
+        throw new Error(`API error: ${response.status} - ${await response.text()}`);
       }
 
       const data = await response.json();
-      let content = data.choices[0].message.content;
-
-      // Clean up markdown formatting if present
-      if (content.includes('```json')) {
-        content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      }
-
-      // Additional cleanup for common issues
-      content = content.trim();
-      
-      // Handle cases where AI returns non-JSON content
-      if (!content.startsWith('[') && !content.startsWith('{')) {
-        console.warn('⚠️ AI returned non-JSON content, attempting to extract JSON...');
-        
-        // Try to extract JSON array from the response
-        const jsonMatch = content.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-          content = jsonMatch[0];
-          console.log('✅ Extracted JSON from response');
-        } else {
-          console.error('❌ Could not extract JSON from AI response:', content.substring(0, 200));
-          return [];
-        }
-      }
-
-      const detectedBooks = JSON.parse(content);
+      const detectedBooks = data.books || [];
       console.log('✅ AI detected books:', detectedBooks);
       
       return Array.isArray(detectedBooks) ? detectedBooks : [];
     } catch (error) {
       console.error('AI scanning error:', error);
-      if (error instanceof SyntaxError) {
-        console.error('JSON parsing failed. Raw content may be:', error.message);
-      }
       return [];
     }
   };
