@@ -886,7 +886,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
               ) : (
                 <>
                   <Text style={[styles.readButtonText, isRead && styles.readButtonTextActive]}>
-                    {isRead ? '✓ Mark as Unread' : "I've Read This"}
+                    {isRead ? 'Marked as Read' : 'Marked as Unread'}
                   </Text>
                   {isRead && book.readAt && (
                     <Text style={styles.readDateText}>
@@ -1260,6 +1260,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#a0aec0',
     fontWeight: '500',
+  },
+  readStatusContainer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  readStatusText: {
+    fontSize: 14,
+    color: '#a0aec0',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  readStatusTextActive: {
+    color: '#4299e1',
   },
   section: {
     backgroundColor: '#ffffff',

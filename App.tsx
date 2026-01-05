@@ -307,93 +307,14 @@ const BookshelfScannerAppInner: React.FC = () => {
     return similarity >= 0.7; // 70% similarity threshold (more aggressive)
   };
 
+  // SECURITY: Removed client-side OpenAI API call
+  // All book validation now happens server-side via /api/scan endpoint
+  // This prevents API keys from being exposed to the client
   const analyzeBookWithChatGPT = async (book: Book): Promise<Book> => {
-    try {
-      console.log(`🧠 Analyzing book with ChatGPT: "${book.title}" by "${book.author}"`);
-      
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-5',
-          messages: [
-            {
-              role: 'user',
-              content: `You are a book expert analyzing a detected book from a bookshelf scan.
-
-DETECTED BOOK:
-Title: "${book.title}"
-Author: "${book.author}"
-Confidence: ${book.confidence}
-
-TASK: Analyze this book and determine if it's a real book. If it is, correct any OCR errors and return the proper title and author.
-
-RULES:
-1. If the title and author are swapped, fix them
-2. Fix obvious OCR errors (e.g., "owmen" → "women")
-3. Clean up titles (remove publisher prefixes, series numbers)
-4. Validate that the author looks like a real person's name
-5. If it's not a real book, mark it as invalid
-
-RETURN FORMAT (JSON only):
-{
-  "isValid": true/false,
-  "title": "Corrected Title",
-  "author": "Corrected Author Name",
-  "confidence": "high/medium/low",
-  "reason": "Brief explanation of changes made"
-}
-
-EXAMPLES:
-Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
-Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
-
-Input: Title="controlling owmen", Author="Unknown"
-Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book"}
-
-Input: Title="The Great Gatsby", Author="F. Scott Fitzgerald"
-Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "confidence": "high", "reason": "Already correct"}`
-            }
-          ],
-          max_tokens: 500,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices[0].message.content.trim();
-      
-      // Clean up JSON if needed
-      let jsonContent = content;
-      if (content.includes('```json')) {
-        jsonContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      }
-      
-      const analysis = JSON.parse(jsonContent);
-      
-      if (analysis.isValid) {
-        console.log(`✅ ChatGPT validated: "${book.title}" → "${analysis.title}" by ${analysis.author} (${analysis.reason})`);
-        return {
-          title: analysis.title,
-          author: analysis.author,
-          confidence: analysis.confidence,
-          isbn: book.isbn || ''
-        };
-      } else {
-        console.log(`❌ ChatGPT rejected: "${book.title}" by ${book.author} (${analysis.reason})`);
-        return { ...book, confidence: 'low' };
-      }
-      
-    } catch (error) {
-      console.log(`Error analyzing book "${book.title}":`, error);
-      return book; // Return original if analysis fails
-    }
+    // This function is kept for backwards compatibility but no longer makes API calls
+    // The server-side /api/scan endpoint already validates books with ChatGPT
+    console.log(`⚠️ Client-side validation removed for security. Book "${book.title}" will be validated server-side.`);
+    return book;
   };
 
   const calculateSimilarity = (str1: string, str2: string): number => {
@@ -632,46 +553,21 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
     const uniqueBooks = removeDuplicateBooks(cleanedBooks);
     console.log(`🔄 After duplicate removal: ${uniqueBooks.length}`);
     
-    // Step 3: ChatGPT analysis ONLY for questionable books (save time & money!)
-    console.log(`🧠 Analyzing ${uniqueBooks.length} unique books with ChatGPT...`);
-    const analyzedBooks = [];
+    // SECURITY: Client-side ChatGPT validation removed
+    // All validation now happens server-side via /api/scan endpoint
+    // This prevents API keys from being exposed to the client
+    console.log(`✅ Using server-side validation (all books validated via /api/scan endpoint)`);
+    const analyzedBooks = uniqueBooks; // Use books as-is, validation happens server-side
     
-    for (let i = 0; i < uniqueBooks.length; i++) {
-      const book = uniqueBooks[i];
-      
-      // ONLY send to ChatGPT if it needs validation (low confidence, suspicious patterns)
-      const needsValidation = 
-        book.confidence === 'low' || 
-        !book.author || 
-        book.author === 'Unknown' ||
-        book.title.length < 3 ||
-        book.title.split(' ').length === 1; // Single word titles
-      
-      if (!needsValidation) {
-        // High confidence books with clear titles/authors don't need ChatGPT
-        analyzedBooks.push(book);
-        continue;
-      }
-      
-      console.log(`🔍 Validating book ${i + 1}/${uniqueBooks.length}: "${book.title}" by ${book.author}`);
-      
-      try {
-        const analyzedBook = await analyzeBookWithChatGPT(book);
-        analyzedBooks.push(analyzedBook);
-        
-        // Reduced delay to speed things up
-        await new Promise(resolve => setTimeout(resolve, 50));
-      } catch (error) {
-        console.log(`Error analyzing book "${book.title}":`, error);
-        analyzedBooks.push(book); // Keep original if analysis fails
-      }
-    }
+    // Step 4: Filter out obviously invalid books (basic client-side filtering only)
+    const validBooks = analyzedBooks.filter(book => 
+      book.title && 
+      book.title.length >= 2 && 
+      book.confidence !== 'low'
+    );
+    console.log(`✅ After basic filtering: ${validBooks.length}`);
     
-    // Step 4: Filter out invalid books (confidence = 'low' from ChatGPT rejection)
-    const validBooks = analyzedBooks.filter(book => book.confidence !== 'low');
-    console.log(`✅ After ChatGPT validation: ${validBooks.length}`);
-    
-    // Step 5: Final duplicate removal (ChatGPT might have created new duplicates)
+    // Step 5: Final duplicate removal
     const finalUniqueBooks = removeDuplicateBooks(validBooks);
     console.log(`🔄 Final duplicate removal: ${finalUniqueBooks.length}`);
     

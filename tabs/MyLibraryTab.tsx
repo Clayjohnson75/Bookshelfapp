@@ -743,8 +743,8 @@ export const MyLibraryTab: React.FC = () => {
     }
 
     Alert.alert(
-      'Auto-Sort Books',
-      `This will organize ${booksToSort.length} unorganized books into folders based on similarity. Books will be matched to existing folders when possible. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} will be preserved. Continue?`,
+      'Auto-Sort Books by Genre',
+      `This will organize ${booksToSort.length} unorganized books into folders by genre. Books will be matched to existing genre folders when possible. Your existing ${folders.length} folder${folders.length === 1 ? '' : 's'} will be preserved. Continue?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -821,6 +821,11 @@ export const MyLibraryTab: React.FC = () => {
 
               // Merge updated existing folders with new folders
               const finalFolders = [...updatedFolders, ...newFolders];
+              
+              // Update state immediately so UI reflects changes
+              setFolders(finalFolders);
+              
+              // Then save to AsyncStorage
               await saveFolders(finalFolders);
 
               const updatedCount = data.existingFolderUpdates?.length || 0;
@@ -828,7 +833,7 @@ export const MyLibraryTab: React.FC = () => {
               const updatedBooksCount = data.existingFolderUpdates?.reduce((sum: number, u: any) => sum + u.bookIds.length, 0) || 0;
               const newBooksCount = newFolders.reduce((sum, f) => sum + f.bookIds.length, 0);
 
-              let message = `Organized ${books.length} book${books.length === 1 ? '' : 's'}: `;
+              let message = `Organized ${booksToSort.length} book${booksToSort.length === 1 ? '' : 's'}: `;
               if (updatedCount > 0) {
                 message += `Added ${updatedBooksCount} to ${updatedCount} existing folder${updatedCount === 1 ? '' : 's'}`;
                 if (newCount > 0) {
@@ -841,7 +846,7 @@ export const MyLibraryTab: React.FC = () => {
 
               Alert.alert('Success!', message, [{ text: 'OK' }]);
 
-              // Close folder view and refresh
+              // Close folder view
               setShowFolderView(false);
               setSelectedFolder(null);
             } catch (error: any) {
@@ -968,6 +973,56 @@ export const MyLibraryTab: React.FC = () => {
       }
       return newSet;
     });
+  };
+
+  const deleteSelectedBooks = async () => {
+    if (!user || selectedBooks.size === 0) return;
+
+    const bookCount = selectedBooks.size;
+    Alert.alert(
+      'Delete Books',
+      `Are you sure you want to delete ${bookCount} book${bookCount === 1 ? '' : 's'} from your library? This action cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Get the books to delete
+              const booksToDelete = books.filter(book => {
+                const bookId = book.id || `${book.title}_${book.author || ''}`;
+                return selectedBooks.has(bookId);
+              });
+
+              // Delete from Supabase
+              const { deleteBookFromSupabase } = await import('../services/supabaseSync');
+              for (const book of booksToDelete) {
+                await deleteBookFromSupabase(user.uid, book);
+              }
+
+              // Update local state immediately
+              setBooks(prev => prev.filter(book => {
+                const bookId = book.id || `${book.title}_${book.author || ''}`;
+                return !selectedBooks.has(bookId);
+              }));
+
+              // Clear selection and exit selection mode
+              setSelectedBooks(new Set());
+              setIsSelectionMode(false);
+
+              // Reload to ensure sync
+              await loadUserData();
+
+              Alert.alert('Success', `${bookCount} book${bookCount === 1 ? '' : 's'} deleted.`);
+            } catch (error) {
+              console.error('Error deleting books:', error);
+              Alert.alert('Error', 'Failed to delete books. Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const renderBook = ({ item, index }: { item: Book; index: number }) => {
@@ -1568,6 +1623,20 @@ export const MyLibraryTab: React.FC = () => {
                       setSelectedFolder(folder);
                       setShowFolderView(true);
                     }}
+                    onLongPress={() => {
+                      Alert.alert(
+                        'Delete Folder',
+                        `Are you sure you want to delete "${folder.name}"? This will not delete the books, they will remain in your library.`,
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Delete',
+                            style: 'destructive',
+                            onPress: () => deleteFolder(folder.id),
+                          },
+                        ]
+                      );
+                    }}
                   >
                     <View style={styles.folderIcon}>
                       <Ionicons name="folder" size={32} color="#0056CC" />
@@ -1601,22 +1670,6 @@ export const MyLibraryTab: React.FC = () => {
             <Text style={styles.sectionSubtitle}>{sortedDisplayedBooks.length} {sortedDisplayedBooks.length === 1 ? 'book' : 'books'}</Text>
           </View>
         </View>
-        
-        {/* Selection Mode Indicator */}
-        {isSelectionMode && selectedBooks.size > 0 && (
-          <View style={styles.selectionBar}>
-            <Text style={styles.selectionCount}>
-              {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'} selected
-            </Text>
-            <TouchableOpacity
-              style={styles.clearSelectionButton}
-              onPress={() => setSelectedBooks(new Set())}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.clearSelectionText}>Clear</Text>
-            </TouchableOpacity>
-          </View>
-        )}
         
         {/* Library Search Bar */}
         <View ref={searchBarRef} style={styles.librarySearchContainer}>
@@ -1698,6 +1751,36 @@ export const MyLibraryTab: React.FC = () => {
         )}
       </View>
     </ScrollView>
+
+      {/* Bottom Delete Bar - Appears when books are selected */}
+      {isSelectionMode && selectedBooks.size > 0 && (
+        <SafeAreaView style={styles.bottomDeleteBarContainer} edges={['bottom']}>
+          <View style={styles.bottomDeleteBar}>
+            <View style={styles.bottomDeleteBarLeft}>
+              <Text style={styles.bottomDeleteBarCount}>
+                {selectedBooks.size} {selectedBooks.size === 1 ? 'book' : 'books'} selected
+              </Text>
+            </View>
+            <View style={styles.bottomDeleteBarRight}>
+              <TouchableOpacity
+                style={[styles.bottomDeleteBarClearButton, { marginRight: 12 }]}
+                onPress={() => setSelectedBooks(new Set())}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.bottomDeleteBarClearText}>Clear</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.bottomDeleteBarDeleteButton}
+                onPress={deleteSelectedBooks}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={20} color="#ffffff" style={{ marginRight: 6 }} />
+                <Text style={styles.bottomDeleteBarDeleteText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      )}
 
       {/* Settings Modal */}
       <SettingsModal
@@ -2205,15 +2288,9 @@ export const MyLibraryTab: React.FC = () => {
         }}
       >
         <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
-          <LinearGradient
-            colors={['#f5f7fa', '#1a1a2e']}
-            style={{ height: insets.top }}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0, y: 1 }}
-          />
-          <View style={styles.modalHeader}>
+          <View style={[styles.folderViewHeader, { paddingTop: insets.top + 5 }]}>
             <TouchableOpacity
-              style={styles.modalBackButton}
+              style={styles.folderViewBackButton}
               onPress={() => {
                 setShowFolderView(false);
                 setSelectedFolder(null);
@@ -2222,32 +2299,17 @@ export const MyLibraryTab: React.FC = () => {
                 setFolderSearchQuery('');
               }}
               activeOpacity={0.7}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
-              <Text style={styles.modalBackButtonLabel}>Back</Text>
+              <Ionicons name="arrow-back" size={24} color="#ffffff" />
             </TouchableOpacity>
-            <Text style={styles.modalHeaderTitle}>
+            <Text style={styles.folderViewHeaderTitle}>
               {selectedFolder?.name || 'Folder'}
             </Text>
-            <View style={styles.modalHeaderButtons}>
+            <View style={styles.folderViewHeaderRight}>
               {selectedFolder && (
                 <TouchableOpacity
-                  style={[styles.modalHeaderButton, styles.autoSortHeaderButton]}
-                  onPress={autoSortBooksIntoFolders}
-                  activeOpacity={0.7}
-                  disabled={isAutoSorting || books.length === 0}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  {isAutoSorting ? (
-                    <Text style={styles.modalHeaderButtonText}>Sorting...</Text>
-                  ) : (
-                    <Text style={styles.modalHeaderButtonText}>Auto-Sort</Text>
-                  )}
-                </TouchableOpacity>
-              )}
-              {selectedFolder && (
-                <TouchableOpacity
-                  style={styles.modalDeleteButton}
+                  style={styles.folderViewDeleteButton}
                   onPress={() => deleteFolder(selectedFolder.id)}
                   activeOpacity={0.7}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -2306,13 +2368,73 @@ export const MyLibraryTab: React.FC = () => {
                   <Text style={styles.selectionCount}>
                     {selectedFolderBooks.size} {selectedFolderBooks.size === 1 ? 'book' : 'books'} selected
                   </Text>
-                  <TouchableOpacity
-                    style={styles.clearSelectionButton}
-                    onPress={() => setSelectedFolderBooks(new Set())}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.clearSelectionText}>Clear</Text>
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      style={styles.clearSelectionButton}
+                      onPress={() => setSelectedFolderBooks(new Set())}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.clearSelectionText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.removeFromFolderButton}
+                      onPress={async () => {
+                        if (!selectedFolder || !user || selectedFolderBooks.size === 0) return;
+                        
+                        const bookCount = selectedFolderBooks.size;
+                        Alert.alert(
+                          'Remove from Folder',
+                          `Remove ${bookCount} book${bookCount === 1 ? '' : 's'} from "${selectedFolder.name}"? The books will remain in your library.`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            {
+                              text: 'Remove',
+                              style: 'destructive',
+                              onPress: async () => {
+                                try {
+                                  // Remove selected books from folder
+                                  const updatedBookIds = selectedFolder.bookIds.filter(
+                                    bookId => !selectedFolderBooks.has(bookId)
+                                  );
+                                  
+                                  // Update folder
+                                  const updatedFolder = {
+                                    ...selectedFolder,
+                                    bookIds: updatedBookIds,
+                                  };
+                                  
+                                  // Update folders array
+                                  const updatedFolders = folders.map(f =>
+                                    f.id === selectedFolder.id ? updatedFolder : f
+                                  );
+                                  setFolders(updatedFolders);
+                                  
+                                  // Save to AsyncStorage
+                                  const foldersKey = `folders_${user.uid}`;
+                                  await AsyncStorage.setItem(foldersKey, JSON.stringify(updatedFolders));
+                                  
+                                  // Clear selection
+                                  setSelectedFolderBooks(new Set());
+                                  setIsFolderSelectionMode(false);
+                                  
+                                  // Update selectedFolder if it's still being viewed
+                                  setSelectedFolder(updatedFolder);
+                                  
+                                  Alert.alert('Success', `${bookCount} book${bookCount === 1 ? '' : 's'} removed from folder.`);
+                                } catch (error) {
+                                  console.error('Error removing books from folder:', error);
+                                  Alert.alert('Error', 'Failed to remove books from folder. Please try again.');
+                                }
+                              },
+                            },
+                          ]
+                        );
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.removeFromFolderButtonText}>Remove</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
 
@@ -2419,6 +2541,64 @@ export const MyLibraryTab: React.FC = () => {
               })()}
             </ScrollView>
           )}
+
+          {/* Book Detail Modal - Inside folder view so it appears on top */}
+          <BookDetailModal
+            visible={showBookDetail}
+            book={selectedBook}
+            photo={selectedPhoto}
+            onClose={() => {
+              setShowBookDetail(false);
+              setSelectedBook(null);
+              setSelectedPhoto(null);
+            }}
+            onRemove={async () => {
+              // Immediately update local state to remove the book
+              if (selectedBook) {
+                setBooks(prev => prev.filter(b => {
+                  // Match by ID if both have IDs
+                  if (selectedBook.id && b.id && selectedBook.id === b.id) return false;
+                  // Match by title and author
+                  if (b.title === selectedBook.title && b.author === selectedBook.author) return false;
+                  return true;
+                }));
+              }
+              // Then reload from Supabase to ensure sync
+              await loadUserData();
+            }}
+            onBookUpdate={(updatedBook) => {
+              // Update the book in state when description/stats are fetched
+              setBooks(prev => prev.map(b => 
+                b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+                  ? updatedBook
+                  : b
+              ));
+              setSelectedBook(updatedBook); // Update the selected book too
+            }}
+            onEditBook={async (updatedBook) => {
+              // Update book when cover is changed
+              if (!user) return;
+              try {
+                // Update local state immediately
+                const userApprovedKey = `approved_books_${user.uid}`;
+                const updatedBooks = books.map(b => 
+                  b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
+                    ? updatedBook
+                    : b
+                );
+                setBooks(updatedBooks);
+                setSelectedBook(updatedBook);
+                await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
+                
+                // Reload from Supabase to ensure all views are updated
+                setTimeout(() => {
+                  loadUserData();
+                }, 500);
+              } catch (error) {
+                console.error('Error updating book:', error);
+              }
+            }}
+          />
         </SafeAreaView>
       </Modal>
 
@@ -2811,17 +2991,30 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   selectButton: {
-    flex: 1,
     paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#4299e1',
     borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 2,
   },
   selectButtonText: {
     color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  cancelSelectButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: 'transparent',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#718096',
+  },
+  cancelSelectButtonText: {
+    color: '#718096',
     fontSize: 14,
     fontWeight: '600',
   },
@@ -2852,6 +3045,93 @@ const styles = StyleSheet.create({
   clearSelectionText: {
     color: '#4299e1',
     fontSize: 12,
+    fontWeight: '600',
+  },
+  removeFromFolderButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#e53e3e',
+    borderRadius: 6,
+  },
+  removeFromFolderButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  cancelSelectButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: 'transparent',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#718096',
+  },
+  cancelSelectButtonText: {
+    color: '#718096',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  // Bottom Delete Bar
+  bottomDeleteBarContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'transparent',
+  },
+  bottomDeleteBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: '#2d3748',
+    borderTopWidth: 1,
+    borderTopColor: '#4a5568',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  bottomDeleteBarLeft: {
+    flex: 1,
+  },
+  bottomDeleteBarCount: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  bottomDeleteBarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  bottomDeleteBarClearButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'transparent',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#718096',
+  },
+  bottomDeleteBarClearText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  bottomDeleteBarDeleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#e53e3e',
+    borderRadius: 8,
+  },
+  bottomDeleteBarDeleteText: {
+    color: '#ffffff',
+    fontSize: 14,
     fontWeight: '600',
   },
   librarySearchContainer: {
@@ -2907,7 +3187,7 @@ const styles = StyleSheet.create({
   },
   foldersSection: {
     marginHorizontal: 15,
-    marginBottom: 20,
+    marginBottom: 15,
   },
   foldersSectionHeader: {
     flexDirection: 'row',
@@ -3070,6 +3350,41 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   // Photo Modal Styles
+  folderViewHeader: {
+    backgroundColor: '#2d3748',
+    paddingTop: 0,
+    paddingBottom: 6,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  folderViewBackButton: {
+    padding: 6,
+    marginLeft: -6,
+    minWidth: 36,
+    minHeight: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  folderViewHeaderTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#ffffff',
+    flex: 1,
+    textAlign: 'center',
+  },
+  folderViewHeaderRight: {
+    width: 40,
+    alignItems: 'flex-end',
+  },
+  folderViewDeleteButton: {
+    padding: 6,
+    minWidth: 36,
+    minHeight: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   modalHeader: {
     backgroundColor: '#2d3748',
     paddingVertical: 16,

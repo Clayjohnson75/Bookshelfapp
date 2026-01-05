@@ -56,7 +56,7 @@ module.exports = {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-      buildNumber: "26",
+      buildNumber: "27",
       infoPlist: {
         ITSAppUsesNonExemptEncryption: false
       }
