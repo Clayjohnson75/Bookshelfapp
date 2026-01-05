@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { URL } from 'url';
+import { Resend } from 'resend';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Add CORS headers
@@ -82,97 +83,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
     const webFallbackUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
 
-    // Attempt to send custom email using an external service
-    const emailServiceUrl = process.env.EMAIL_SERVICE_URL;
+    // Attempt to send custom email using Resend SDK
     const emailApiKey = process.env.EMAIL_API_KEY;
-    const emailFrom = process.env.EMAIL_FROM || 'noreply@bookshelfscanner.app';
+    const emailFrom = process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
-    if (emailServiceUrl && emailApiKey) {
+    if (emailApiKey) {
       try {
-        // Support both Resend and generic email service formats
-        const isResend = emailServiceUrl.includes('resend.com');
+        // Use Resend SDK for better reliability
+        const resend = new Resend(emailApiKey);
         
-        const emailPayload = isResend ? {
+        const emailHtml = `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Reset Your Password</title>
+            </head>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
+                <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
+                <p style="color: #666; margin-bottom: 30px;">
+                  You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
+                </p>
+                <a href="${deepLink}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
+                  Reset Password
+                </a>
+                <p style="color: #999; font-size: 12px; margin-top: 30px;">
+                  If the button doesn't work, copy and paste this link into your browser:
+                  <br>
+                  <a href="${webFallbackUrl}" style="color: #007AFF; text-decoration: underline;">${webFallbackUrl}</a>
+                </p>
+                <p style="color: #999; font-size: 12px; margin-top: 20px;">
+                  If you did not request a password reset, please ignore this email.
+                </p>
+              </div>
+            </body>
+          </html>
+        `;
+        
+        const result = await resend.emails.send({
           from: emailFrom,
           to: email,
           subject: 'Reset Your Bookshelf Scanner Password',
-          html: `
-              <!DOCTYPE html>
-              <html>
-                <head>
-                  <meta charset="utf-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>Reset Your Password</title>
-                </head>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-                  <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
-                    <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
-                    <p style="color: #666; margin-bottom: 30px;">
-                      You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
-                    </p>
-                    <a href="${deepLink}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
-                      Reset Password
-                    </a>
-                    <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                      If the button doesn't work, copy and paste this link into your browser:
-                      <br>
-                      <a href="${webFallbackUrl}" style="color: #007AFF; text-decoration: underline;">${webFallbackUrl}</a>
-                    </p>
-                    <p style="color: #999; font-size: 12px; margin-top: 20px;">
-                      If you did not request a password reset, please ignore this email.
-                    </p>
-                  </div>
-                </body>
-              </html>
-            `,
-        } : {
-          from: emailFrom,
-          to: email,
-          subject: 'Reset Your Bookshelf Scanner Password',
-          html: `
-              <!DOCTYPE html>
-              <html>
-                <head>
-                  <meta charset="utf-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>Reset Your Password</title>
-                </head>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-                  <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
-                    <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
-                    <p style="color: #666; margin-bottom: 30px;">
-                      You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
-                    </p>
-                    <a href="${deepLink}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
-                      Reset Password
-                    </a>
-                    <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                      If the button doesn't work, copy and paste this link into your browser:
-                      <br>
-                      <a href="${webFallbackUrl}" style="color: #007AFF; text-decoration: underline;">${webFallbackUrl}</a>
-                    </p>
-                    <p style="color: #999; font-size: 12px; margin-top: 20px;">
-                      If you did not request a password reset, please ignore this email.
-                    </p>
-                  </div>
-                </body>
-              </html>
-            `,
-        };
-        
-        const customEmailResponse = await fetch(emailServiceUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${emailApiKey}`,
-          },
-          body: JSON.stringify(emailPayload),
+          html: emailHtml,
         });
 
-        if (!customEmailResponse.ok) {
-          throw new Error('Custom email service failed');
+        if (result.error) {
+          throw new Error(result.error.message || 'Failed to send email');
         }
-        console.log('[API] Custom password reset email sent successfully.');
+        console.log('[API] Password reset email sent successfully via Resend:', result.data?.id);
       } catch (customEmailError) {
         console.error('[API] Error sending custom email:', customEmailError);
         // Fallback to Supabase's default email
