@@ -89,17 +89,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (emailServiceUrl && emailApiKey) {
       try {
-        const customEmailResponse = await fetch(emailServiceUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${emailApiKey}`,
-          },
-          body: JSON.stringify({
-            from: emailFrom,
-            to: email,
-            subject: 'Reset Your Bookshelf Scanner Password',
-            html: `
+        // Support both Resend and generic email service formats
+        const isResend = emailServiceUrl.includes('resend.com');
+        
+        const emailPayload = isResend ? {
+          from: emailFrom,
+          to: email,
+          subject: 'Reset Your Bookshelf Scanner Password',
+          html: `
               <!DOCTYPE html>
               <html>
                 <head>
@@ -128,7 +125,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 </body>
               </html>
             `,
-          }),
+        } : {
+          from: emailFrom,
+          to: email,
+          subject: 'Reset Your Bookshelf Scanner Password',
+          html: `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>Reset Your Password</title>
+                </head>
+                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                  <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
+                    <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
+                    <p style="color: #666; margin-bottom: 30px;">
+                      You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
+                    </p>
+                    <a href="${deepLink}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
+                      Reset Password
+                    </a>
+                    <p style="color: #999; font-size: 12px; margin-top: 30px;">
+                      If the button doesn't work, copy and paste this link into your browser:
+                      <br>
+                      <a href="${webFallbackUrl}" style="color: #007AFF; text-decoration: underline;">${webFallbackUrl}</a>
+                    </p>
+                    <p style="color: #999; font-size: 12px; margin-top: 20px;">
+                      If you did not request a password reset, please ignore this email.
+                    </p>
+                  </div>
+                </body>
+              </html>
+            `,
+        };
+        
+        const customEmailResponse = await fetch(emailServiceUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${emailApiKey}`,
+          },
+          body: JSON.stringify(emailPayload),
         });
 
         if (!customEmailResponse.ok) {
