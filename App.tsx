@@ -18,8 +18,9 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NavigationContainer } from '@react-navigation/native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import * as Linking from 'expo-linking';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
-import { LoginScreen } from './auth/AuthScreens';
+import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
 import { Book, Photo } from './types/BookTypes';
 import { initializeIAP } from './services/appleIAPService';
@@ -2292,6 +2293,23 @@ const styles = StyleSheet.create({
 // Show Login if not authenticated, otherwise show the app
 const AppWithAuth: React.FC = () => {
   const { user, loading } = useAuth();
+  const [resetToken, setResetToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleDeepLink = ({ url }: { url: string }) => {
+      const parsedUrl = Linking.parse(url);
+      if (parsedUrl.path === 'reset-password' && parsedUrl.queryParams?.token) {
+        setResetToken(parsedUrl.queryParams.token as string);
+      }
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink({ url });
+    });
+
+    const subscription = Linking.addEventListener('url', handleDeepLink);
+    return () => subscription.remove();
+  }, []);
 
   if (loading) {
     return (
@@ -2299,6 +2317,11 @@ const AppWithAuth: React.FC = () => {
         <ActivityIndicator size="large" color="#2c3e50" />
       </View>
     );
+  }
+
+  // Show password reset screen if deep link was opened
+  if (resetToken) {
+    return <PasswordResetScreen onAuthSuccess={() => setResetToken(null)} accessToken={resetToken} />;
   }
 
   if (!user) {

@@ -43,3 +43,4 @@ And when the app connects, it should use: `https://gsfkjwmdwhptakgcbuxe.supabase
 
 
 
+

@@ -565,3 +565,105 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
 });
+
+export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: string }> = ({ onAuthSuccess, accessToken }) => {
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const { updatePassword } = useAuth();
+
+  const handleResetPassword = async () => {
+    if (!newPassword || !confirmPassword) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+    if (newPassword.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const success = await updatePassword(accessToken, newPassword);
+      if (success) {
+        onAuthSuccess(); // Go to main app after successful reset
+      }
+    } catch (error) {
+      console.error('Password reset error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScrollView contentContainerStyle={styles.scrollContainer}>
+        <View style={styles.header}>
+          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>Set New Password</Text>
+          <Text style={styles.subtitle}>Enter your new password below</Text>
+        </View>
+
+        <View style={styles.form}>
+          <View style={styles.passwordContainer}>
+            <TextInput
+              style={[styles.inputField, styles.passwordInput]}
+              placeholder="New Password (min 6 characters)"
+              value={newPassword}
+              onChangeText={setNewPassword}
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              textContentType="newPassword"
+              autoComplete="new-password"
+            />
+            <TouchableOpacity 
+              style={styles.eyeButton}
+              onPress={() => setShowPassword(!showPassword)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Hide' : 'Show'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.passwordContainer}>
+            <TextInput
+              style={[styles.inputField, styles.passwordInput]}
+              placeholder="Confirm New Password"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry={!showConfirmPassword}
+              autoCapitalize="none"
+              textContentType="newPassword"
+              autoComplete="new-password"
+            />
+            <TouchableOpacity 
+              style={styles.eyeButton}
+              onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.eyeButtonPlain}>{showConfirmPassword ? 'Hide' : 'Show'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.button, styles.primaryButton]}
+            onPress={handleResetPassword}
+            disabled={loading || !newPassword.trim() || !confirmPassword.trim()}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Reset Password</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+};
