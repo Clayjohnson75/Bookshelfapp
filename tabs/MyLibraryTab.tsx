@@ -69,6 +69,7 @@ export const MyLibraryTab: React.FC = () => {
   const [isFolderSelectionMode, setIsFolderSelectionMode] = useState(false);
   const [selectedFolderBooks, setSelectedFolderBooks] = useState<Set<string>>(new Set());
   const [showReadBooks, setShowReadBooks] = useState(false);
+  const [showFoldersExpanded, setShowFoldersExpanded] = useState(false);
   const [showUnreadBooks, setShowUnreadBooks] = useState(false);
   const [isAutoSorting, setIsAutoSorting] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -1537,39 +1538,51 @@ export const MyLibraryTab: React.FC = () => {
       {/* Folders Section - Only show if folders exist */}
       {folders.length > 0 && (
         <View style={styles.foldersSection}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Folders</Text>
-          </View>
-          <View style={styles.foldersGrid}>
-            {folders.map((folder) => {
-              // Get books that belong to this folder
-              const folderBooks = books.filter(book => 
-                book.id && folder.bookIds.includes(book.id)
-              );
-              
-              return (
-                <TouchableOpacity
-                  key={folder.id}
-                  style={styles.folderCard}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    setSelectedFolder(folder);
-                    setShowFolderView(true);
-                  }}
-                >
-                  <View style={styles.folderIcon}>
-                    <Ionicons name="folder" size={32} color="#0056CC" />
-                  </View>
-                  <Text style={styles.folderName} numberOfLines={1}>
-                    {folder.name}
-                  </Text>
-                  <Text style={styles.folderBookCount}>
-                    {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          <TouchableOpacity
+            style={styles.foldersSectionHeader}
+            onPress={() => setShowFoldersExpanded(!showFoldersExpanded)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.foldersSectionHeaderText}>Folders</Text>
+            <Ionicons 
+              name={showFoldersExpanded ? "chevron-up" : "chevron-down"} 
+              size={20} 
+              color="#4299e1" 
+              style={{ marginLeft: 8 }}
+            />
+          </TouchableOpacity>
+          {showFoldersExpanded && (
+            <View style={styles.foldersGrid}>
+              {folders.map((folder) => {
+                // Get books that belong to this folder
+                const folderBooks = books.filter(book => 
+                  book.id && folder.bookIds.includes(book.id)
+                );
+                
+                return (
+                  <TouchableOpacity
+                    key={folder.id}
+                    style={styles.folderCard}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setSelectedFolder(folder);
+                      setShowFolderView(true);
+                    }}
+                  >
+                    <View style={styles.folderIcon}>
+                      <Ionicons name="folder" size={32} color="#0056CC" />
+                    </View>
+                    <Text style={styles.folderName} numberOfLines={1}>
+                      {folder.name}
+                    </Text>
+                    <Text style={styles.folderBookCount}>
+                      {folderBooks.length} {folderBooks.length === 1 ? 'book' : 'books'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
         </View>
       )}
 
@@ -2895,6 +2908,29 @@ const styles = StyleSheet.create({
   foldersSection: {
     marginHorizontal: 15,
     marginBottom: 20,
+  },
+  foldersSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  foldersSectionHeaderText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a202c',
+    letterSpacing: 0.3,
   },
   foldersGrid: {
     flexDirection: 'row',

@@ -1,9 +1,18 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { supabase } from '../lib/supabaseClient';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import * as BiometricAuth from '../services/biometricAuth';
+
+// Helper to read env vars
+const getEnvVar = (key: string): string => {
+  return Constants.expoConfig?.extra?.[key] || 
+         Constants.manifest?.extra?.[key] || 
+         process.env[key] || 
+         '';
+};
 
 interface User {
   uid: string;
@@ -21,9 +30,14 @@ interface AuthContextType {
   signUp: (email: string, password: string, username: string, displayName: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<boolean>;
+  updatePassword: (accessToken: string, newPassword: string) => Promise<boolean>;
   searchUsers: (query: string) => Promise<User[]>;
   getUserByUsername: (username: string) => Promise<User | null>;
   deleteAccount: () => Promise<void>;
+  biometricCapabilities: BiometricAuth.BiometricCapabilities | null;
+  isBiometricEnabled: () => Promise<boolean>;
+  enableBiometric: (email: string, password: string) => Promise<void>;
+  disableBiometric: () => Promise<void>;
   demoCredentials: {
     username: string;
     email: string;
@@ -937,18 +951,73 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return false;
       }
       
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: 'https://bookshelfapp-five.vercel.app/password-reset',
+      // Call custom API endpoint to send reset email
+      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+      const response = await fetch(`${baseUrl}/api/send-password-reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
       });
-      if (error) {
-        Alert.alert('Password Reset Error', error.message);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to send reset email');
+      }
+
+      const data = await response.json();
+      Alert.alert('Password Reset', data.message || 'Check your email for a reset link.');
+      return true;
+    } catch (error: any) {
+      console.error('Password reset error:', error);
+      Alert.alert('Password Reset Error', error.message || 'An error occurred. Please try again.');
+      return false;
+    }
+  };
+
+  const updatePassword = async (recoveryToken: string, newPassword: string): Promise<boolean> => {
+    try {
+      if (!supabase) {
+        Alert.alert('Password Update Error', 'Supabase not configured.');
         return false;
       }
-      Alert.alert('Password Reset', 'Check your email for a reset link.');
+
+      // Verify the recovery token - this will set the session
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        token_hash: recoveryToken,
+        type: 'recovery',
+      });
+
+      if (verifyError || !data) {
+        // If verifyOtp doesn't work, try using the token as a recovery token directly
+        // Some Supabase versions use the token differently
+        console.log('verifyOtp failed, trying alternative method:', verifyError);
+        
+        // Alternative: Try to exchange the token for a session
+        // The token from the URL might need to be used with exchangeCodeForSession
+        // But for recovery tokens, we can try setting it directly
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: recoveryToken,
+          refresh_token: '',
+        });
+        
+        if (sessionError) {
+          console.error('Error setting session for password update:', sessionError);
+          Alert.alert('Password Update Error', 'Invalid or expired reset link. Please request a new one.');
+          return false;
+        }
+      }
+
+      // Update the user's password
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) {
+        Alert.alert('Password Update Error', error.message);
+        return false;
+      }
+      Alert.alert('Success', 'Your password has been updated!');
       return true;
-    } catch (error) {
-      console.error('Password reset error:', error);
-      Alert.alert('Password Reset Error', 'An error occurred. Please try again.');
+    } catch (error: any) {
+      console.error('Password update error:', error);
+      Alert.alert('Password Update Error', error.message || 'An error occurred. Please try again.');
       return false;
     }
   };
@@ -1120,10 +1189,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     loading,
     signIn,
     signInWithDemoAccount,
-    signInWithBiometric,
     signUp,
     signOut,
     resetPassword,
+    updatePassword,
     searchUsers,
     getUserByUsername,
     deleteAccount,

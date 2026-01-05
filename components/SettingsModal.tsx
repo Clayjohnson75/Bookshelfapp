@@ -463,7 +463,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
                         biometricCapabilities.supportedTypes.includes(
                           LocalAuthentication.AuthenticationType?.FACIAL_RECOGNITION
                         ) 
-                          ? 'face' 
+                          ? 'person' 
                           : 'finger-print'
                       } 
                       size={20} 

@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Platform, View, ActivityIndicator, StyleSheet } from 'react-native';
 import { enableScreens } from 'react-native-screens';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as Linking from 'expo-linking';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { ScanningProvider } from './contexts/ScanningContext';
-import { LoginScreen } from './auth/AuthScreens';
+import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { NavigationContainer } from '@react-navigation/native';
 import { TabNavigator } from './TabNavigator';
 
@@ -20,6 +21,23 @@ if (__DEV__) {
 
 const AppContent: React.FC = () => {
   const { user, loading } = useAuth();
+  const [resetToken, setResetToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleDeepLink = ({ url }: { url: string }) => {
+      const parsedUrl = Linking.parse(url);
+      if (parsedUrl.path === 'reset-password' && parsedUrl.queryParams?.token) {
+        setResetToken(parsedUrl.queryParams.token as string);
+      }
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink({ url });
+    });
+
+    const subscription = Linking.addEventListener('url', handleDeepLink);
+    return () => subscription.remove();
+  }, []);
 
   if (loading) {
     return (
@@ -27,6 +45,11 @@ const AppContent: React.FC = () => {
         <ActivityIndicator size="large" color="#2c3e50" />
       </View>
     );
+  }
+
+  // Show password reset screen if deep link was opened
+  if (resetToken) {
+    return <PasswordResetScreen onAuthSuccess={() => setResetToken(null)} accessToken={resetToken} />;
   }
 
   if (!user) {
