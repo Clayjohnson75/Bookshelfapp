@@ -739,6 +739,42 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return false;
       }
       
+      // CRITICAL: Check if email already exists BEFORE attempting signup
+      // This prevents creating duplicate unconfirmed users
+      try {
+        const apiBaseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+        const checkResponse = await fetch(`${apiBaseUrl}/api/check-email-exists`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        
+        if (checkResponse.ok) {
+          const checkData = await checkResponse.json();
+          console.log('Email check result:', checkData);
+          
+          if (checkData.exists) {
+            // Email exists - check if it's confirmed
+            if (checkData.confirmed) {
+              // Confirmed user exists - this is definitely a duplicate
+              Alert.alert('Sign Up Error', 'This email is already registered. Please sign in instead or use a different email.');
+              setLoading(false);
+              return false;
+            } else {
+              // Unconfirmed user exists - we could allow this, but it's better to prevent duplicates
+              Alert.alert('Sign Up Error', 'An account with this email is pending confirmation. Please check your email or use a different email address.');
+              setLoading(false);
+              return false;
+            }
+          }
+        } else {
+          console.warn('Email check API failed, continuing with signup');
+        }
+      } catch (checkErr) {
+        console.warn('Email check failed, continuing with signup:', checkErr);
+        // Continue - the check is optional but recommended
+      }
+      
       // Check if username is already taken (with timeout)
       try {
         const usernameCheckPromise = supabase
@@ -763,11 +799,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
       
       // Sign up with metadata so trigger can create profile (with timeout)
+      // Enable email confirmation - user must confirm email before accessing account
       try {
         const signUpPromise = supabase.auth.signUp({
           email,
           password,
           options: {
+            emailRedirectTo: 'bookshelfscanner://confirm-email',
             data: {
               username: username.toLowerCase(),
               display_name: displayName,
@@ -780,11 +818,66 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         const { data, error } = await Promise.race([signUpPromise, signUpTimeout]) as any;
         
-        if (error || !data?.user) {
-          const errorMessage = getSignUpErrorMessage(error);
-          Alert.alert('Sign Up Error', errorMessage);
+        // Log the full response for debugging
+        console.log('Signup response:', { 
+          hasUser: !!data?.user, 
+          hasSession: !!data?.session,
+          userEmail: data?.user?.email,
+          error: error?.message,
+          errorCode: error?.code 
+        });
+        
+        if (error) {
+          // Check for duplicate email error specifically
+          const errorMessage = error?.message || '';
+          const errorCode = error?.code || '';
+          
+          console.log('Signup error details:', { errorMessage, errorCode, fullError: error });
+          
+          // Check all possible duplicate email error patterns
+          const isDuplicateEmail = 
+            errorMessage.toLowerCase().includes('user already registered') || 
+            errorMessage.toLowerCase().includes('already registered') ||
+            errorMessage.toLowerCase().includes('email_address_already_exists') ||
+            errorMessage.toLowerCase().includes('email already registered') ||
+            errorMessage.toLowerCase().includes('user with this email already exists') ||
+            errorMessage.toLowerCase().includes('email address is already registered') ||
+            errorMessage.toLowerCase().includes('email already in use') ||
+            errorCode === 'email_address_already_exists' ||
+            errorCode === 'user_already_registered' ||
+            errorCode === 'signup_disabled';
+          
+          if (isDuplicateEmail) {
+            Alert.alert('Sign Up Error', 'This email is already registered. Please sign in instead or use a different email.');
+            setLoading(false);
+            return false;
+          }
+          
+          const friendlyErrorMessage = getSignUpErrorMessage(error);
+          Alert.alert('Sign Up Error', friendlyErrorMessage);
           setLoading(false);
           return false;
+        }
+        
+        if (!data?.user) {
+          Alert.alert('Sign Up Error', 'Failed to create account. Please try again.');
+          setLoading(false);
+          return false;
+        }
+        
+        // Check if email confirmation is required
+        if (data.user && !data.session) {
+          // No session = email confirmation required
+          console.log('Email confirmation required for user:', data.user.email);
+          
+          // Email confirmation required - show alert
+          Alert.alert(
+            'Check Your Email',
+            'We\'ve sent you a confirmation email. Please check your inbox (and spam folder) and click the confirmation link to activate your account. You won\'t be able to sign in until you confirm your email.',
+            [{ text: 'OK' }]
+          );
+          setLoading(false);
+          return true; // Return true because signup was successful, just needs confirmation
         }
         
         const uid = data.user.id;

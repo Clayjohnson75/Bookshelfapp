@@ -22,12 +22,27 @@ if (__DEV__) {
 const AppContent: React.FC = () => {
   const { user, loading } = useAuth();
   const [resetToken, setResetToken] = useState<string | null>(null);
+  const [confirmingEmail, setConfirmingEmail] = useState(false);
 
   useEffect(() => {
-    const handleDeepLink = ({ url }: { url: string }) => {
+    const handleDeepLink = async ({ url }: { url: string }) => {
       const parsedUrl = Linking.parse(url);
+      
+      // Handle password reset
       if (parsedUrl.path === 'reset-password' && parsedUrl.queryParams?.token) {
         setResetToken(parsedUrl.queryParams.token as string);
+        return;
+      }
+      
+      // Handle email confirmation
+      if (parsedUrl.path === 'confirm-email') {
+        setConfirmingEmail(true);
+        // Supabase automatically handles email confirmation when the deep link opens
+        // The session token is in the URL hash, which Supabase client processes automatically
+        // The auth context will detect the session change and update the user state
+        setTimeout(() => {
+          setConfirmingEmail(false);
+        }, 2000); // Give Supabase time to process the session
       }
     };
 
@@ -39,7 +54,7 @@ const AppContent: React.FC = () => {
     return () => subscription.remove();
   }, []);
 
-  if (loading) {
+  if (loading || confirmingEmail) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#2c3e50" />

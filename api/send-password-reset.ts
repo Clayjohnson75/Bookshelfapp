@@ -42,6 +42,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
+    // First, check if user exists
+    const { data: users, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+    
+    if (listError) {
+      console.error('[API] Error listing users:', listError);
+    } else {
+      const userExists = users?.users?.some((user: any) => 
+        user.email?.toLowerCase() === email.toLowerCase()
+      );
+      
+      if (!userExists) {
+        console.log('[API] User not found, but returning success to prevent email enumeration');
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      }
+    }
+
     // Request a password reset from Supabase to get the token
     const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
       type: 'recovery',
@@ -51,10 +70,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (supabaseError) {
       console.error('[API] Supabase generateLink error:', supabaseError);
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a password reset link has been sent.'
-      });
+      
+      // Check if user doesn't exist
+      if (supabaseError.message?.includes('User not found') || 
+          supabaseError.message?.includes('user_not_found')) {
+        // Still return success to prevent email enumeration
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      }
+      
+      // For other errors, try fallback method
+      console.log('[API] Trying fallback password reset method...');
+      try {
+        await supabaseAdmin.auth.resetPasswordForEmail(email, {
+          redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset`,
+        });
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      } catch (fallbackError) {
+        console.error('[API] Fallback password reset also failed:', fallbackError);
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      }
     }
 
     if (!data?.properties?.action_link) {
@@ -132,27 +175,88 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
 
         if (result.error) {
+          console.error('[API] Resend error:', result.error);
           throw new Error(result.error.message || 'Failed to send email');
         }
-        console.log('[API] Password reset email sent successfully via Resend:', result.data?.id);
-      } catch (customEmailError) {
-        console.error('[API] Error sending custom email:', customEmailError);
-        // Fallback to Supabase's default email
-        await supabaseAdmin.auth.resetPasswordForEmail(email, {
-          redirectTo: deepLink,
+        console.log('[API] ✅ Password reset email sent successfully via Resend:', result.data?.id);
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
         });
+      } catch (customEmailError: any) {
+        console.error('[API] ❌ Error sending custom email via Resend:', customEmailError);
+        console.error('[API] Error details:', {
+          message: customEmailError?.message,
+          stack: customEmailError?.stack,
+          name: customEmailError?.name
+        });
+        console.error('[API] Falling back to Supabase default email...');
+        
+        // Fallback to Supabase's default email
+        try {
+          console.error('[API] Attempting Supabase fallback for email:', email);
+          const { error: fallbackError, data: fallbackData } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+            redirectTo: webFallbackUrl, // Use web fallback URL for Supabase email
+          });
+          
+          if (fallbackError) {
+            console.error('[API] ❌ Supabase fallback email also failed:', fallbackError);
+            console.error('[API] Fallback error details:', {
+              message: fallbackError?.message,
+              status: fallbackError?.status
+            });
+            return res.status(200).json({ 
+              success: true,
+              message: 'If an account exists with this email, a password reset link has been sent.'
+            });
+          }
+          
+          console.error('[API] ✅ Password reset email sent via Supabase fallback');
+          return res.status(200).json({ 
+            success: true,
+            message: 'If an account exists with this email, a password reset link has been sent.'
+          });
+        } catch (fallbackError: any) {
+          console.error('[API] ❌ All email methods failed:', fallbackError);
+          console.error('[API] Final fallback error:', {
+            message: fallbackError?.message,
+            stack: fallbackError?.stack
+          });
+          return res.status(200).json({ 
+            success: true,
+            message: 'If an account exists with this email, a password reset link has been sent.'
+          });
+        }
       }
     } else {
       // If custom email service not configured, use Supabase's default email
-      await supabaseAdmin.auth.resetPasswordForEmail(email, {
-        redirectTo: deepLink,
-      });
+      console.log('[API] No Resend API key configured, using Supabase default email');
+      try {
+        const { error: supabaseEmailError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+          redirectTo: webFallbackUrl,
+        });
+        
+        if (supabaseEmailError) {
+          console.error('[API] ❌ Supabase email error:', supabaseEmailError);
+          return res.status(200).json({ 
+            success: true,
+            message: 'If an account exists with this email, a password reset link has been sent.'
+          });
+        }
+        
+        console.log('[API] ✅ Password reset email sent via Supabase');
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      } catch (supabaseError: any) {
+        console.error('[API] ❌ Supabase email failed:', supabaseError);
+        return res.status(200).json({ 
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.'
+        });
+      }
     }
-
-    return res.status(200).json({ 
-      success: true,
-      message: 'If an account exists with this email, a password reset link has been sent.'
-    });
   } catch (error: any) {
     console.error('[API] Error in send-password-reset:', error);
     return res.status(500).json({

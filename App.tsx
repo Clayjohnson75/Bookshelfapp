@@ -23,7 +23,18 @@ import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
 import { Book, Photo } from './types/BookTypes';
-import { initializeIAP } from './services/appleIAPService';
+// Lazy import IAP service to avoid loading in Expo Go
+const getIAPService = async () => {
+  if (Constants.appOwnership === 'expo') {
+    return null;
+  }
+  try {
+    return await import('./services/appleIAPService');
+  } catch (error) {
+    console.warn('IAP service not available:', error);
+    return null;
+  }
+};
 import Constants from 'expo-constants';
 
 // Helper to read env vars
@@ -76,10 +87,16 @@ const BookshelfScannerAppInner: React.FC = () => {
 
   // Load user data when component mounts or user changes
   useEffect(() => {
-    // Initialize IAP for subscriptions
-    initializeIAP().catch(error => {
-      console.error('Error initializing IAP:', error);
-    });
+    // Initialize IAP for subscriptions (only if not in Expo Go)
+    if (Constants.appOwnership !== 'expo') {
+      getIAPService().then(service => {
+        if (service) {
+          service.initializeIAP().catch(error => {
+            console.error('Error initializing IAP:', error);
+          });
+        }
+      });
+    }
   }, []);
 
   useEffect(() => {
