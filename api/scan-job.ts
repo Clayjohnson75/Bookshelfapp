@@ -103,61 +103,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
   
-  if (req.method === 'GET') {
-    // Check status of a scan job
-    try {
-      const { jobId } = req.query;
-      if (!jobId || typeof jobId !== 'string') {
-        return res.status(400).json({ error: 'jobId required' });
-      }
-      
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      
-      if (!supabaseUrl || !supabaseServiceKey) {
-        return res.status(500).json({ error: 'Database not configured' });
-      }
-      
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      });
-      
-      const { data, error } = await supabase
-        .from('scan_jobs')
-        .select('*')
-        .eq('id', jobId)
-        .single();
-      
-      if (error || !data) {
-        return res.status(404).json({ error: 'Job not found' });
-      }
-      
-      return res.status(200).json({
-        jobId: data.id,
-        status: data.status,
-        books: data.books || [],
-        error: data.error || null,
-        createdAt: data.created_at,
-        updatedAt: data.updated_at
-      });
-      
-    } catch (e: any) {
-      console.error('[API] Error checking scan job status:', e);
-      return res.status(500).json({ error: 'status_check_failed', detail: e?.message || String(e) });
-    }
-  }
-  
-  // Handle processing pending jobs (can be called by cron or manually)
-  // Cron job calls this endpoint every minute to process pending jobs
-  // Vercel cron jobs send GET requests, check for action in query or use special header
+  // Check if this is a cron request BEFORE handling regular GET requests
   const isCronRequest = req.headers['user-agent']?.includes('vercel-cron') || 
                         req.headers['x-vercel-cron'] === '1' ||
                         req.query?.action === 'process-pending';
   
+  // Handle cron job processing (GET or PUT from cron)
   if ((req.method === 'PUT' || req.method === 'GET') && isCronRequest) {
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -216,6 +167,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'process_failed', detail: e?.message || String(e) });
     }
   }
+  
+  if (req.method === 'GET') {
+    // Check status of a scan job (regular GET request, not cron)
+    try {
+      const { jobId } = req.query;
+      if (!jobId || typeof jobId !== 'string') {
+        return res.status(400).json({ error: 'jobId required' });
+      }
+      
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (!supabaseUrl || !supabaseServiceKey) {
+        return res.status(500).json({ error: 'Database not configured' });
+      }
+      
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      
+      const { data, error } = await supabase
+        .from('scan_jobs')
+        .select('*')
+        .eq('id', jobId)
+        .single();
+      
+      if (error || !data) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      
+      return res.status(200).json({
+        jobId: data.id,
+        status: data.status,
+        books: data.books || [],
+        error: data.error || null,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at
+      });
+      
+    } catch (e: any) {
+      console.error('[API] Error checking scan job status:', e);
+      return res.status(500).json({ error: 'status_check_failed', detail: e?.message || String(e) });
+    }
+  }
+  
   
   return res.status(405).json({ error: 'Method not allowed' });
 }
