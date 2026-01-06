@@ -66,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       type: 'recovery',
       email: email,
       options: {
-        redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset`,
+        redirectTo: 'https://bookshelfscan.app/api/password-reset',
       },
     });
 
@@ -87,7 +87,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log('[API] Trying fallback password reset method...');
       try {
         await supabaseAdmin.auth.resetPasswordForEmail(email, {
-          redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset`,
+          redirectTo: 'https://bookshelfscan.app/api/password-reset',
         });
         return res.status(200).json({ 
           success: true,
@@ -125,7 +125,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Create web URL that will verify and redirect to app
-    const webResetUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/api/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
+    // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
+    const baseUrl = 'https://bookshelfscan.app';
+    const webResetUrl = `${baseUrl}/api/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
+    const webFallbackUrl = webResetUrl; // Same URL for fallback
     const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
 
     // Attempt to send custom email using Resend SDK

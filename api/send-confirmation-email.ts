@@ -46,7 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       type: 'signup',
       email: email,
       options: {
-        redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/api/confirm-email`,
+        redirectTo: 'https://bookshelfscan.app/api/confirm-email',
       },
     });
 
@@ -110,7 +110,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Create web URL that will verify and redirect to app
-    const webConfirmUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/api/confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
+    // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
+    const baseUrl = 'https://bookshelfscan.app';
+    const webConfirmUrl = `${baseUrl}/api/confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
     const deepLink = `bookshelfscanner://confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
 
     // Send custom email using Resend
