@@ -65,7 +65,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
       type: 'recovery',
       email: email,
-      redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset`,
+      options: {
+        redirectTo: `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset`,
+      },
     });
 
     if (supabaseError) {
@@ -122,9 +124,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Create deep link that will open the app
+    // Create web URL that will verify and redirect to app
+    const webResetUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/api/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
     const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
-    const webFallbackUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app'}/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
 
     // Attempt to send custom email using Resend SDK
     const emailApiKey = process.env.EMAIL_API_KEY;
@@ -151,13 +153,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 <p style="color: #666; margin-bottom: 30px;">
                   You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
                 </p>
-                <a href="${deepLink}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
+                <a href="${webResetUrl}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
                   Reset Password
                 </a>
                 <p style="color: #999; font-size: 12px; margin-top: 30px;">
                   If the button doesn't work, copy and paste this link into your browser:
                   <br>
-                  <a href="${webFallbackUrl}" style="color: #007AFF; text-decoration: underline;">${webFallbackUrl}</a>
+                  <a href="${webResetUrl}" style="color: #007AFF; text-decoration: underline;">${webResetUrl}</a>
                 </p>
                 <p style="color: #999; font-size: 12px; margin-top: 20px;">
                   If you did not request a password reset, please ignore this email.

@@ -870,6 +870,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           // No session = email confirmation required
           console.log('Email confirmation required for user:', data.user.email);
           
+          // Send confirmation email via our custom API (uses Resend)
+          try {
+            const apiBaseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+            await fetch(`${apiBaseUrl}/api/send-confirmation-email`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email }),
+            });
+            console.log('Confirmation email sent via custom API');
+          } catch (emailError) {
+            console.warn('Failed to send confirmation email via API, Supabase will handle it:', emailError);
+            // Supabase will send the email as fallback
+          }
+          
           // Email confirmation required - show alert
           Alert.alert(
             'Check Your Email',

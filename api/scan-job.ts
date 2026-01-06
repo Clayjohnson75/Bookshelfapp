@@ -60,7 +60,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[API] Starting background processing of scan job ${finalJobId}...`);
       
       // Get the host from the request to use for calling the scan API
-      const requestHost = req.headers.host || req.headers['x-forwarded-host'] || undefined;
+      const hostHeader = req.headers.host || req.headers['x-forwarded-host'];
+      const requestHost = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader || undefined;
       
       // Start processing but don't wait for it - return immediately
       // This allows the function to work even if the app is closed
