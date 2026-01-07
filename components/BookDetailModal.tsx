@@ -650,9 +650,17 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
             const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
 
+            // Upload cover to Supabase Storage so it's accessible on the web
+            const { uploadBookCoverToStorage, saveBookToSupabase } = await import('../services/supabaseSync');
+            const bookId = book.id || `${book.title}_${book.author || ''}_${Date.now()}`;
+            const uploadResult = await uploadBookCoverToStorage(user.uid, bookId, fileUri);
+            
+            // Use storage URL if upload succeeded, otherwise fall back to local path
+            const coverUrl = uploadResult?.storageUrl || fileUri;
+
             const updatedBook: Book = {
               ...book,
-              coverUrl: fileUri, // Use local file URI
+              coverUrl: coverUrl, // Use storage URL for web access, or local path as fallback
               localCoverPath: localCoverPath,
             };
 
@@ -669,8 +677,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
               await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
             }
 
-            // Update in Supabase
-            const { saveBookToSupabase } = await import('../services/supabaseSync');
+            // Update in Supabase (this will save the storage URL to cover_url)
             await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
 
             // Notify parent
@@ -760,9 +767,17 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
             const localCoverPath = fileUri.replace(FileSystem.documentDirectory || '', '');
 
+            // Upload cover to Supabase Storage so it's accessible on the web
+            const { uploadBookCoverToStorage, saveBookToSupabase } = await import('../services/supabaseSync');
+            const bookId = book.id || `${book.title}_${book.author || ''}_${Date.now()}`;
+            const uploadResult = await uploadBookCoverToStorage(user.uid, bookId, fileUri);
+            
+            // Use storage URL if upload succeeded, otherwise fall back to local path
+            const coverUrl = uploadResult?.storageUrl || fileUri;
+
             const updatedBook: Book = {
               ...book,
-              coverUrl: fileUri, // Use local file URI
+              coverUrl: coverUrl, // Use storage URL for web access, or local path as fallback
               localCoverPath: localCoverPath,
             };
 
@@ -779,8 +794,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
               await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
             }
 
-            // Update in Supabase
-            const { saveBookToSupabase } = await import('../services/supabaseSync');
+            // Update in Supabase (this will save the storage URL to cover_url)
             await saveBookToSupabase(user.uid, updatedBook, book.status || 'approved');
 
             // Notify parent to update everywhere

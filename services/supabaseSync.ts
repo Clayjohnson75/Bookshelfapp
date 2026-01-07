@@ -13,6 +13,112 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 
 /**
+ * Upload a book cover to Supabase Storage and return the public URL
+ */
+export async function uploadBookCoverToStorage(
+  userId: string,
+  bookId: string,
+  localUri: string
+): Promise<{ storagePath: string; storageUrl: string } | null> {
+  if (!supabase) {
+    console.warn('Supabase not available, skipping cover upload');
+    return null;
+  }
+
+  try {
+    // Check if file exists first
+    let fileInfo = await FileSystem.getInfoAsync(localUri);
+    if (!fileInfo.exists) {
+      console.warn('Cover file does not exist:', localUri);
+      return null;
+    }
+
+    // Resize and optimize the image if needed
+    let imageUri = localUri;
+    try {
+      const manipulatedImage = await ImageManipulator.manipulateAsync(
+        localUri,
+        [{ resize: { width: 600 } }],
+        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      imageUri = manipulatedImage.uri;
+    } catch (manipError) {
+      console.warn('Error manipulating cover image, using original:', manipError);
+      imageUri = localUri;
+    }
+    
+    // Read the file as base64
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    // Decode base64 to binary for Supabase Storage
+    const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+      const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      const lookup = new Uint8Array(256);
+      for (let i = 0; i < chars.length; i++) {
+        lookup[chars.charCodeAt(i)] = i;
+      }
+      
+      let bufferLength = cleanBase64.length * 0.75;
+      if (cleanBase64[cleanBase64.length - 1] === '=') {
+        bufferLength--;
+        if (cleanBase64[cleanBase64.length - 2] === '=') {
+          bufferLength--;
+        }
+      }
+      
+      const bytes = new Uint8Array(bufferLength);
+      let p = 0;
+      
+      for (let i = 0; i < cleanBase64.length; i += 4) {
+        const encoded1 = lookup[cleanBase64.charCodeAt(i)];
+        const encoded2 = lookup[cleanBase64.charCodeAt(i + 1)];
+        const encoded3 = lookup[cleanBase64.charCodeAt(i + 2)];
+        const encoded4 = lookup[cleanBase64.charCodeAt(i + 3)];
+        
+        bytes[p++] = (encoded1 << 2) | (encoded2 >> 4);
+        bytes[p++] = ((encoded2 & 15) << 4) | (encoded3 >> 2);
+        bytes[p++] = ((encoded3 & 3) << 6) | (encoded4 & 63);
+      }
+      
+      return bytes.buffer;
+    };
+
+    const arrayBuffer = base64ToArrayBuffer(base64);
+
+    // Upload to Supabase Storage (use 'photos' bucket or create 'covers' bucket)
+    const storagePath = `${userId}/covers/${bookId}.jpg`;
+    const { data, error } = await supabase.storage
+      .from('photos')
+      .upload(storagePath, arrayBuffer, {
+        contentType: 'image/jpeg',
+        upsert: true, // Overwrite if exists
+      });
+
+    if (error) {
+      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      console.error('Error uploading cover to storage:', errorMessage);
+      return null;
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('photos')
+      .getPublicUrl(storagePath);
+
+    return {
+      storagePath,
+      storageUrl: urlData.publicUrl,
+    };
+  } catch (error) {
+    console.error('Error uploading cover:', error);
+    return null;
+  }
+}
+
+/**
  * Upload a photo to Supabase Storage and return the public URL
  */
 export async function uploadPhotoToStorage(
