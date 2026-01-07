@@ -205,8 +205,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       <body>
         <div class="container">
           <img src="/logo.png" alt="Bookshelf Scanner Logo" class="logo">
-          <h1>Reset Your Password</h1>
-          <p class="subtitle">Enter your new password below</p>
+          <h1 id="pageTitle">Reset Your Password</h1>
+          <p class="subtitle" id="pageSubtitle">Enter your new password below</p>
           
           <form id="resetForm">
             <div class="form-group">
@@ -238,6 +238,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const formError = document.getElementById('formError');
           const successMessage = document.getElementById('successMessage');
           const submitBtn = document.getElementById('submitBtn');
+          const pageTitle = document.getElementById('pageTitle');
+          const pageSubtitle = document.getElementById('pageSubtitle');
           
           const urlParams = new URLSearchParams(window.location.search);
           const token = urlParams.get('token');
@@ -302,7 +304,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const data = await response.json();
               
               if (response.ok && data.success) {
-                // Show success message
+                // Update title and subtitle
+                pageTitle.textContent = 'Password Reset Successful';
+                pageSubtitle.textContent = 'Your password has been successfully updated!';
+                pageSubtitle.style.color = '#27ae60';
+                pageSubtitle.style.fontWeight = '600';
+                
+                // Hide form and show success message
                 form.style.display = 'none';
                 successMessage.classList.add('show');
                 
