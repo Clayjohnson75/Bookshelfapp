@@ -37,6 +37,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // Log which Supabase instance we're using (for debugging)
+    const isDevSupabase = supabaseUrl.includes('gsfkjwmdwhptakgcbuxe');
+    console.log('[API] Using Supabase:', isDevSupabase ? 'DEV' : 'PRODUCTION', supabaseUrl);
+
     // Use service role key to bypass RLS for public profiles
     // This is safe because we're only reading profiles marked as public
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
@@ -152,9 +156,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       
       // Profile doesn't exist at all
       console.error('[API] Profile not found. Username searched:', username.toLowerCase());
+      console.error('[API] Supabase URL:', supabaseUrl);
       return res.status(404).json({ 
         error: 'Profile not found',
-        message: `No profile found with username "${username}". Please check the username and try again.`
+        message: `No profile found with username "${username}" in ${isDevSupabase ? 'DEV' : 'PRODUCTION'} database. Please check the username and ensure you're testing with the correct database.`,
+        debug: {
+          supabaseUrl: supabaseUrl,
+          usernameSearched: username.toLowerCase(),
+          isDevDatabase: isDevSupabase
+        }
       });
     }
 

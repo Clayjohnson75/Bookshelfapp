@@ -11,7 +11,7 @@ ALTER TABLE public.profiles
   ADD COLUMN IF NOT EXISTS profile_bio TEXT,
   ADD COLUMN IF NOT EXISTS profile_updated_at TIMESTAMPTZ DEFAULT NOW();
 
--- Enable public profiles for all existing users (for testing)
+-- Enable public profiles for ALL existing users (everyone gets a website by default)
 UPDATE public.profiles 
 SET public_profile_enabled = true 
 WHERE public_profile_enabled IS NULL OR public_profile_enabled = false;
@@ -79,4 +79,27 @@ CREATE TRIGGER update_profile_updated_at
   WHEN (OLD.public_profile_enabled IS DISTINCT FROM NEW.public_profile_enabled 
         OR OLD.profile_bio IS DISTINCT FROM NEW.profile_bio)
   EXECUTE FUNCTION public.update_profile_updated_at();
+
+-- ============================================================
+-- Update handle_new_user function to set public_profile_enabled = true
+-- ============================================================
+-- This ensures all new users get public profiles by default
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, username, display_name, public_profile_enabled)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'username', 'user_' || substr(NEW.id::text, 1, 8)),
+    NEW.raw_user_meta_data->>'display_name',
+    true  -- All new users get public profiles by default
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    username = EXCLUDED.username,
+    display_name = EXCLUDED.display_name,
+    public_profile_enabled = COALESCE(EXCLUDED.public_profile_enabled, true);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
