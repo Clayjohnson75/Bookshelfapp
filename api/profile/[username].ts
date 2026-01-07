@@ -965,11 +965,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         <div class="container">
           <div class="profile-header">
-            ${isEditMode ? `
-              <div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 8px; padding: 12px; margin-bottom: 20px; text-align: center;">
-                <span style="color: #2e7d32; font-weight: 600; font-size: 14px;">You are viewing your own profile</span>
-              </div>
-            ` : ''}
             <h1 class="profile-name">${profileData.displayName}</h1>
             <div class="profile-username">@${profileData.username}</div>
             ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
