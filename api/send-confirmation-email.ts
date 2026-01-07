@@ -47,7 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email: email,
       options: {
         redirectTo: 'https://bookshelfscan.app/api/confirm-email',
-      },
+      } as any,
     });
 
     if (supabaseError) {
