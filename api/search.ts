@@ -269,14 +269,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }, 300);
         }
 
-        // Check if user is signed in on page load
+        // Button always says "Profile" now
         window.addEventListener('DOMContentLoaded', () => {
-          const session = localStorage.getItem('supabase_session');
-          const profileButton = document.getElementById('profileButton');
-          if (session && profileButton) {
-            profileButton.textContent = 'Profile';
-          }
-
           // If there's a query parameter, search immediately
           const urlParams = new URLSearchParams(window.location.search);
           const query = urlParams.get('q');
