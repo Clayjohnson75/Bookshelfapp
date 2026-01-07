@@ -27,9 +27,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Get Supabase credentials
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!supabaseUrl || !supabaseAnonKey) {
+    if (!supabaseUrl || !supabaseServiceKey) {
       console.error('[API] Missing Supabase credentials');
       return res.status(500).json({ 
         error: 'Server configuration error',
@@ -37,8 +37,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Create Supabase client (anon key is fine for public data)
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    // Use service role key to bypass RLS for public profiles
+    // This is safe because we're only reading profiles marked as public
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
       auth: {
         autoRefreshToken: false,
         persistSession: false
