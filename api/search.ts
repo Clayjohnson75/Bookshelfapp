@@ -248,11 +248,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 // Use requestAnimationFrame for smooth DOM updates
                 requestAnimationFrame(() => {
                   resultsDiv.innerHTML = \`
-                    <div style="padding: 20px; background: white; border-radius: 12px; margin-bottom: 15px; border: 1px solid #e0e0e0;">
+                    <div style="padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 2px solid #34495e;">
                       <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
-                      <p style="color: #666; margin-bottom: 15px;">@\${data.profile.username}</p>
-                      <p style="color: #666; margin-bottom: 15px;">\${data.stats.totalBooks} books</p>
-                      <a href="/\${data.profile.username}" style="display: inline-block; background: #007AFF; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Profile</a>
+                      <p style="color: #666; margin-bottom: 10px;">@\${data.profile.username}</p>
+                      <div style="display: flex; gap: 20px; margin-bottom: 15px; flex-wrap: wrap;">
+                        <div>
+                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.totalBooks}</span> 
+                          <span style="color: #666; font-size: 14px;">Total Books</span>
+                        </div>
+                        <div>
+                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.readBooks}</span> 
+                          <span style="color: #666; font-size: 14px;">Read</span>
+                        </div>
+                        <div>
+                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.unreadBooks}</span> 
+                          <span style="color: #666; font-size: 14px;">Unread</span>
+                        </div>
+                      </div>
+                      <a href="/\${data.profile.username}" target="_blank" style="display: inline-block; background: #34495e; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 2px solid #2c3e50;">View Profile</a>
                     </div>
                   \`;
                 });

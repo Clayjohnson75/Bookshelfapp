@@ -1225,29 +1225,89 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             window.location.href = \`/\${username}\`;
           }
 
-          function handleProfileNavClick() {
+          async function handleProfileNavClick() {
             const session = localStorage.getItem('supabase_session');
             if (session) {
-              // User is signed in, show their profile in edit mode
-              window.location.href = \`/\${username}?edit=true\`;
+              try {
+                // Check if the signed-in user owns this profile
+                const sessionData = JSON.parse(session);
+                const response = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
+                });
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  const signedInUsername = data.username?.toLowerCase();
+                  const profileUsername = '${profileData.username}'.toLowerCase();
+                  
+                  if (signedInUsername === profileUsername) {
+                    // User owns this profile, redirect to their profile edit page
+                    window.location.href = \`/\${data.username}?edit=true\`;
+                  } else {
+                    // User is signed in but viewing someone else's profile, go to their own profile
+                    window.location.href = \`/\${data.username}?edit=true\`;
+                  }
+                } else {
+                  // Error getting username, go to profile page
+                  window.location.href = '/profile';
+                }
+              } catch (error) {
+                console.error('Error checking profile ownership:', error);
+                window.location.href = '/profile';
+              }
             } else {
-              // User not signed in, open sign in modal
-              openSignInModal();
+              // User not signed in, go to profile page (which will show sign-in form)
+              window.location.href = '/profile';
             }
           }
 
-          // Check if user is signed in on page load
-          window.addEventListener('DOMContentLoaded', () => {
+          // Check if user is signed in and owns this profile on page load
+          window.addEventListener('DOMContentLoaded', async () => {
             const session = localStorage.getItem('supabase_session');
             const urlParams = new URLSearchParams(window.location.search);
             const isEditMode = urlParams.get('edit') === 'true';
             
-            if (session && !isEditMode) {
-              // User has session but not in edit mode, redirect to edit mode
-              window.location.href = \`/\${username}?edit=true\`;
-            } else if (!session && isEditMode) {
+            if (!session && isEditMode) {
               // User in edit mode but no session, redirect to regular view
               window.location.href = \`/\${username}\`;
+              return;
+            }
+            
+            if (session) {
+              try {
+                // Check if the signed-in user owns this profile
+                const sessionData = JSON.parse(session);
+                const response = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
+                });
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  const signedInUsername = data.username?.toLowerCase();
+                  const profileUsername = '${profileData.username}'.toLowerCase();
+                  
+                  if (signedInUsername === profileUsername) {
+                    // User owns this profile
+                    if (!isEditMode) {
+                      // Redirect to edit mode if viewing own profile and not already in edit mode
+                      window.location.href = \`/\${username}?edit=true\`;
+                    }
+                  } else {
+                    // User is signed in but viewing someone else's profile
+                    if (isEditMode) {
+                      // Redirect to regular view - can't edit someone else's profile
+                      window.location.href = \`/\${username}\`;
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error('Error checking profile ownership:', error);
+                // On error, just stay on current page
+              }
             }
           });
 
