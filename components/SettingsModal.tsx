@@ -17,6 +17,8 @@ import { useAuth } from '../auth/SimpleAuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import * as BiometricAuth from '../services/biometricAuth';
+import { UpgradeModal } from './UpgradeModal';
+import { checkSubscriptionStatus } from '../services/subscriptionService';
 
 // Safe import for LocalAuthentication
 let LocalAuthentication: any = null;
@@ -48,6 +50,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
   const [clearingAccount, setClearingAccount] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricLoading, setBiometricLoading] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<'free' | 'pro'>('free');
 
   // Update username when user changes or modal opens
   React.useEffect(() => {
@@ -57,12 +61,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
     }
   }, [user, visible]);
 
-  // Check biometric status when modal opens
+  // Check biometric status and subscription when modal opens
   useEffect(() => {
     if (visible) {
       loadBiometricStatus();
+      checkSubscriptionTier();
     }
-  }, [visible]);
+  }, [visible, user]);
 
   const loadBiometricStatus = async () => {
     try {
@@ -70,6 +75,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       setBiometricEnabled(enabled);
     } catch (error) {
       console.error('Error loading biometric status:', error);
+    }
+  };
+
+  const checkSubscriptionTier = async () => {
+    if (!user) return;
+    try {
+      const tier = await checkSubscriptionStatus();
+      setSubscriptionTier(tier);
+    } catch (error) {
+      console.error('Error checking subscription tier:', error);
     }
   };
 
@@ -448,6 +463,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
             </View>
           </View>
 
+          {/* Subscription Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Subscription</Text>
+            
+            <View style={styles.infoRow}>
+              <View style={styles.infoContent}>
+                <Text style={styles.infoLabel}>Current Plan</Text>
+                <Text style={[styles.infoValue, subscriptionTier === 'pro' && { color: '#27ae60', fontWeight: '700' }]}>
+                  {subscriptionTier === 'pro' ? 'Pro' : 'Free'}
+                </Text>
+              </View>
+            </View>
+
+            {subscriptionTier === 'free' && (
+              <TouchableOpacity
+                style={styles.upgradeButton}
+                onPress={() => setShowUpgradeModal(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.upgradeButtonText}>Upgrade to Pro</Text>
+              </TouchableOpacity>
+            )}
+
+            {subscriptionTier === 'pro' && (
+              <View style={styles.proBadge}>
+                <Text style={styles.proBadgeText}>✓ Unlimited Scans</Text>
+              </View>
+            )}
+          </View>
+
           {/* Additional Settings Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Preferences</Text>
@@ -566,6 +611,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
             </TouchableOpacity>
           </View>
         </ScrollView>
+
+        {/* Upgrade Modal */}
+        <UpgradeModal
+          visible={showUpgradeModal}
+          onClose={() => {
+            setShowUpgradeModal(false);
+            checkSubscriptionTier(); // Refresh subscription status
+          }}
+          onUpgradeComplete={() => {
+            setShowUpgradeModal(false);
+            checkSubscriptionTier(); // Refresh subscription status
+          }}
+        />
       </SafeAreaView>
     </Modal>
   );
@@ -762,6 +820,38 @@ const styles = StyleSheet.create({
   },
   bottomSection: {
     marginBottom: 30,
+  },
+  upgradeButton: {
+    backgroundColor: '#34495e',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginTop: 15,
+    borderWidth: 1,
+    borderColor: '#2c3e50',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  upgradeButtonText: {
+    color: '#ecf0f1',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  proBadge: {
+    backgroundColor: '#e8f5e9',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 15,
+    alignItems: 'center',
+  },
+  proBadgeText: {
+    color: '#27ae60',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 
