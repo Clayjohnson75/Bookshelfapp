@@ -197,7 +197,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         <div class="nav-buttons-content">
           <button class="nav-button" onclick="window.location.href='/'">Home</button>
           <button class="nav-button active" onclick="window.location.href='/search'">Search</button>
-          <button class="nav-button profile-button" onclick="handleProfileClick()" id="profileButton">Sign In</button>
+          <button class="nav-button profile-button" onclick="handleProfileClick()" id="profileButton">Profile</button>
         </div>
       </div>
 
@@ -223,36 +223,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       </div>
 
       <script>
-          async function handleProfileClick() {
-            const session = localStorage.getItem('supabase_session');
-            if (session) {
-              try {
-                const sessionData = JSON.parse(session);
-                // Get username from API
-                const response = await fetch('/api/get-username', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ session: sessionData })
-                });
-                
-                if (response.ok) {
-                  const data = await response.json();
-                  if (data.username) {
-                    window.location.href = \`/\${data.username}?edit=true\`;
-                  } else {
-                    window.location.href = '/signin';
-                  }
-                } else {
-                  window.location.href = '/signin';
-                }
-              } catch (error) {
-                console.error('Error getting username:', error);
-                window.location.href = '/signin';
-              }
-            } else {
-              // Not signed in - redirect to sign-in page
-              window.location.href = '/signin';
-            }
+          function handleProfileClick() {
+            window.location.href = '/profile';
           }
 
         let searchTimeout;

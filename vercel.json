@@ -15,8 +15,8 @@
       "destination": "/api/search"
     },
     {
-      "source": "/signin",
-      "destination": "/api/signin"
+      "source": "/profile",
+      "destination": "/api/profile"
     },
     {
       "source": "/:username",
