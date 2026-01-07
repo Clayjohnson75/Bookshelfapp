@@ -138,6 +138,35 @@ export async function getUserSubscriptionTier(userId: string): Promise<'free' | 
 }
 
 /**
+ * Check current user's subscription status
+ * Gets the authenticated user and returns their subscription tier
+ */
+export async function checkSubscriptionStatus(): Promise<'free' | 'pro'> {
+  if (!supabase) {
+    return 'free';
+  }
+
+  try {
+    // Get current authenticated user
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    
+    if (userError || !user) {
+      console.warn('No authenticated user found for subscription check');
+      return 'free';
+    }
+
+    // Get subscription tier
+    const tier = await getUserSubscriptionTier(user.id);
+    
+    // Map 'owner' to 'pro' for compatibility
+    return tier === 'owner' ? 'pro' : (tier === 'pro' ? 'pro' : 'free');
+  } catch (error) {
+    console.error('Error checking subscription status:', error);
+    return 'free';
+  }
+}
+
+/**
  * Format reset date for display
  */
 export function formatResetDate(date: Date): string {
