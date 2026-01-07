@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { username } = req.query;
@@ -7,33 +8,110 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).send('Invalid username');
   }
 
-  // Fetch profile data from our API
-  const baseUrl = process.env.VERCEL_URL 
-    ? `https://${process.env.VERCEL_URL}` 
-    : 'https://bookshelfscan.app';
-  
   try {
-    const profileResponse = await fetch(`${baseUrl}/api/public-profile/${username}`);
-    
-    if (!profileResponse.ok) {
-      // Try to get error details for debugging
-      let errorMessage = 'Profile not found';
-      try {
-        const errorData = await profileResponse.json();
-        errorMessage = errorData.message || errorData.error || 'Profile not found';
-        console.error('[API] Profile fetch error:', {
-          status: profileResponse.status,
-          statusText: profileResponse.statusText,
-          error: errorData
-        });
-      } catch (e) {
-        console.error('[API] Profile fetch failed:', {
-          status: profileResponse.status,
-          statusText: profileResponse.statusText,
-          url: `${baseUrl}/api/public-profile/${username}`
-        });
+    // Get Supabase credentials
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error('[API] Missing Supabase credentials');
+      return res.status(500).send('Server configuration error');
+    }
+
+    // Use service role key to bypass RLS for public profiles
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+
+    // Get user profile by username
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
+      .eq('username', username.toLowerCase())
+      .single();
+
+    // Handle errors
+    if (profileError) {
+      if (profileError.code === 'PGRST116') {
+        // Profile doesn't exist
+        return res.status(404).send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Profile Not Found - Bookshelf Scanner</title>
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+              background: #f8f6f0;
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+              color: #2c3e50;
+            }
+            .container {
+              max-width: 500px;
+              width: 100%;
+              background: white;
+              border-radius: 20px;
+              padding: 60px 40px;
+              box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
+              text-align: center;
+              border: 1px solid #e0e0e0;
+            }
+            .logo {
+              width: 80px;
+              height: 80px;
+              margin: 0 auto 20px;
+              display: block;
+            }
+            h1 {
+              color: #2c3e50;
+              font-size: 28px;
+              margin-bottom: 15px;
+              font-weight: 800;
+            }
+            p {
+              color: #666;
+              font-size: 16px;
+              line-height: 1.6;
+            }
+            a {
+              color: #007AFF;
+              text-decoration: none;
+              margin-top: 20px;
+              display: inline-block;
+            }
+            a:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <img src="/logo.png" alt="Bookshelf Scanner Logo" class="logo">
+            <h1>Profile Not Found</h1>
+            <p>This profile does not exist or is not public.</p>
+            <a href="/">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
       }
       
+      // Other errors
+      return res.status(500).send('Error loading profile');
+    }
+
+    // Check if profile exists
+    if (!profile) {
       return res.status(404).send(`
         <!DOCTYPE html>
         <html lang="en">
@@ -103,8 +181,123 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `);
     }
 
-    const data = await profileResponse.json();
-    const { profile, books, stats } = data;
+    // Check if profile is public
+    if (!profile.public_profile_enabled) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Profile Not Found - Bookshelf Scanner</title>
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+              background: #f8f6f0;
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+              color: #2c3e50;
+            }
+            .container {
+              max-width: 500px;
+              width: 100%;
+              background: white;
+              border-radius: 20px;
+              padding: 60px 40px;
+              box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
+              text-align: center;
+              border: 1px solid #e0e0e0;
+            }
+            .logo {
+              width: 80px;
+              height: 80px;
+              margin: 0 auto 20px;
+              display: block;
+            }
+            h1 {
+              color: #2c3e50;
+              font-size: 28px;
+              margin-bottom: 15px;
+              font-weight: 800;
+            }
+            p {
+              color: #666;
+              font-size: 16px;
+              line-height: 1.6;
+            }
+            a {
+              color: #007AFF;
+              text-decoration: none;
+              margin-top: 20px;
+              display: inline-block;
+            }
+            a:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <img src="/logo.png" alt="Bookshelf Scanner Logo" class="logo">
+            <h1>Profile Not Found</h1>
+            <p>This profile exists but is not set to public.</p>
+            <a href="/">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    // Get user's public books (only approved books)
+    const { data: books, error: booksError } = await supabase
+      .from('books')
+      .select('id, title, author, cover_url, description, scanned_at, read_at, page_count, categories, publisher, published_date, average_rating, ratings_count')
+      .eq('user_id', profile.id)
+      .eq('status', 'approved')
+      .order('scanned_at', { ascending: false });
+
+    if (booksError) {
+      console.error('[API] Error fetching books:', booksError);
+      // Don't fail if books can't be fetched, just use empty array
+    }
+
+    // Calculate stats
+    const totalBooks = books?.length || 0;
+    const readBooks = books?.filter(book => book.read_at !== null).length || 0;
+    const unreadBooks = totalBooks - readBooks;
+
+    // Get most common authors
+    const authorCounts: { [key: string]: number } = {};
+    books?.forEach(book => {
+      if (book.author) {
+        authorCounts[book.author] = (authorCounts[book.author] || 0) + 1;
+      }
+    });
+    const topAuthors = Object.entries(authorCounts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([author, count]) => ({ author, count }));
+
+    // Format profile data
+    const profileData = {
+      id: profile.id,
+      username: profile.username,
+      displayName: profile.display_name || profile.username,
+      avatarUrl: profile.avatar_url,
+      bio: profile.profile_bio,
+      createdAt: profile.created_at,
+    };
+
+    const stats = {
+      totalBooks,
+      readBooks,
+      unreadBooks,
+      topAuthors,
+    };
 
     // Generate HTML for the profile page
     const html = `
@@ -113,11 +306,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${profile.displayName}'s Library - Bookshelf Scanner</title>
-        <meta name="description" content="View ${profile.displayName}'s book collection on Bookshelf Scanner">
-        <meta property="og:title" content="${profile.displayName}'s Library - Bookshelf Scanner">
-        <meta property="og:description" content="${stats.totalBooks} books in ${profile.displayName}'s collection">
-        <meta property="og:image" content="${profile.avatarUrl || '/logo.png'}">
+        <title>${profileData.displayName}'s Library - Bookshelf Scanner</title>
+        <meta name="description" content="View ${profileData.displayName}'s book collection on Bookshelf Scanner">
+        <meta property="og:title" content="${profileData.displayName}'s Library - Bookshelf Scanner">
+        <meta property="og:description" content="${stats.totalBooks} books in ${profileData.displayName}'s collection">
+        <meta property="og:image" content="${profileData.avatarUrl || '/logo.png'}">
         <meta property="og:type" content="profile">
         <meta name="twitter:card" content="summary">
         <style>
@@ -395,13 +588,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         <div class="container">
           <div class="profile-header">
-            ${profile.avatarUrl 
-              ? `<img src="${profile.avatarUrl}" alt="${profile.displayName}" class="avatar">`
-              : `<div class="avatar-placeholder">${profile.displayName.charAt(0).toUpperCase()}</div>`
+            ${profileData.avatarUrl 
+              ? `<img src="${profileData.avatarUrl}" alt="${profileData.displayName}" class="avatar">`
+              : `<div class="avatar-placeholder">${profileData.displayName.charAt(0).toUpperCase()}</div>`
             }
-            <h1 class="profile-name">${profile.displayName}</h1>
-            <div class="profile-username">@${profile.username}</div>
-            ${profile.bio ? `<div class="profile-bio">${profile.bio}</div>` : ''}
+            <h1 class="profile-name">${profileData.displayName}</h1>
+            <div class="profile-username">@${profileData.username}</div>
+            ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
             
             <div class="stats-grid">
               <div class="stat-card">
@@ -421,9 +614,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           <div class="books-section">
             <h2 class="section-title">Library</h2>
-            ${books.length > 0 
+            ${(books || []).length > 0 
               ? `<div class="books-grid">
-                  ${books.map((book: any) => `
+                  ${(books || []).map((book: any) => `
                     <div class="book-card">
                       ${book.cover_url 
                         ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
