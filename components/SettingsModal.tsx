@@ -52,6 +52,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
   const [biometricLoading, setBiometricLoading] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [subscriptionTier, setSubscriptionTier] = useState<'free' | 'pro'>('free');
+  const [publicProfileEnabled, setPublicProfileEnabled] = useState(false);
+  const [updatingPublicProfile, setUpdatingPublicProfile] = useState(false);
 
   // Update username when user changes or modal opens
   React.useEffect(() => {
@@ -66,8 +68,65 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
     if (visible) {
       loadBiometricStatus();
       checkSubscriptionTier();
+      loadPublicProfileStatus();
     }
   }, [visible, user]);
+
+  const loadPublicProfileStatus = async () => {
+    if (!user || !supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('public_profile_enabled')
+        .eq('id', user.uid)
+        .single();
+      
+      if (!error && data) {
+        setPublicProfileEnabled(data.public_profile_enabled || false);
+      }
+    } catch (error) {
+      console.error('Error loading public profile status:', error);
+    }
+  };
+
+  const togglePublicProfile = async (enabled: boolean) => {
+    if (!user || !supabase) {
+      Alert.alert('Error', 'Unable to update profile settings.');
+      return;
+    }
+
+    setUpdatingPublicProfile(true);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ public_profile_enabled: enabled })
+        .eq('id', user.uid);
+
+      if (error) {
+        console.error('Error updating public profile:', error);
+        Alert.alert('Error', 'Failed to update profile settings. Please try again.');
+        return;
+      }
+
+      setPublicProfileEnabled(enabled);
+      const profileUrl = `https://bookshelfscan.app/${user.username}`;
+      
+      if (enabled) {
+        Alert.alert(
+          'Public Profile Enabled',
+          `Your profile is now public! Share it at:\n\n${profileUrl}`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert('Public Profile Disabled', 'Your profile is now private.');
+      }
+    } catch (error) {
+      console.error('Error toggling public profile:', error);
+      Alert.alert('Error', 'Failed to update profile settings. Please try again.');
+    } finally {
+      setUpdatingPublicProfile(false);
+    }
+  };
 
   const loadBiometricStatus = async () => {
     try {
@@ -497,6 +556,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Preferences</Text>
             
+            {/* Public Profile Toggle */}
+            {user?.username && (
+              <View style={styles.settingItem}>
+                <View style={styles.settingContent}>
+                  <View style={styles.settingHeader}>
+                    <Ionicons 
+                      name="globe-outline" 
+                      size={20} 
+                      color="#0056CC" 
+                      style={{ marginRight: 8 }}
+                    />
+                    <Text style={styles.settingLabel}>Public Profile</Text>
+                  </View>
+                  <Text style={styles.settingDescription}>
+                    {publicProfileEnabled 
+                      ? `Your profile is public at bookshelfscan.app/${user.username}`
+                      : 'Make your profile and library visible to everyone'
+                    }
+                  </Text>
+                </View>
+                <Switch
+                  value={publicProfileEnabled}
+                  onValueChange={togglePublicProfile}
+                  disabled={updatingPublicProfile}
+                  trackColor={{ false: '#767577', true: '#0056CC' }}
+                  thumbColor={publicProfileEnabled ? '#fff' : '#f4f3f4'}
+                />
+              </View>
+            )}
+
             {/* Biometric Login Toggle */}
             {biometricCapabilities?.isAvailable && (
               <View style={styles.settingItem}>
