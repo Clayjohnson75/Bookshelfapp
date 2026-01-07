@@ -1179,16 +1179,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               \`;
             }
             
-            if (book.average_rating) {
-              const ratingText = book.average_rating.toFixed(1) + (book.ratings_count ? \` (\${book.ratings_count} ratings)\` : '');
-              html += \`
-                <div class="book-detail-info-item">
-                  <div class="book-detail-info-label">Rating</div>
-                  <div class="book-detail-info-value">\${ratingText}</div>
-                </div>
-              \`;
-            }
-            
             if (book.scanned_at) {
               html += \`
                 <div class="book-detail-info-item">
