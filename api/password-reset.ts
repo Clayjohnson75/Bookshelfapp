@@ -89,7 +89,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           body { 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #f8f6f0;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -100,28 +100,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             max-width: 450px; 
             width: 100%;
             background: white;
-            border-radius: 16px; 
+            border-radius: 20px; 
             padding: 40px; 
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
+            border: 1px solid #e0e0e0;
+          }
+          .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            display: block;
           }
           h1 { 
             color: #2c3e50; 
             margin-bottom: 10px;
             font-size: 28px;
             text-align: center;
+            font-weight: 800;
+            letter-spacing: 0.5px;
           }
           .subtitle {
-            color: #6c757d;
+            color: #2c3e50;
             font-size: 14px;
             text-align: center;
             margin-bottom: 30px;
+            font-weight: 500;
           }
           .form-group {
             margin-bottom: 20px;
           }
           label {
             display: block;
-            color: #495057;
+            color: #2c3e50;
             font-size: 14px;
             font-weight: 600;
             margin-bottom: 8px;
@@ -129,17 +139,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           input[type="password"] {
             width: 100%;
             padding: 12px 16px;
-            border: 2px solid #e9ecef;
-            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
             font-size: 16px;
             transition: border-color 0.3s;
+            background: #fff;
           }
           input[type="password"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #007AFF;
           }
           .error {
-            color: #dc3545;
+            color: #e74c3c;
             font-size: 14px;
             margin-top: 8px;
             display: none;
@@ -148,7 +159,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             display: block;
           }
           .success {
-            color: #28a745;
+            color: #27ae60;
             font-size: 14px;
             margin-top: 8px;
             display: none;
@@ -159,19 +170,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           button {
             width: 100%;
             padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
+            background: #34495e;
+            color: #ecf0f1;
+            border: 1px solid #2c3e50;
+            border-radius: 30px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
             margin-top: 10px;
+            letter-spacing: 0.8px;
+            box-shadow: 0 4px 15px rgba(52, 73, 94, 0.3);
           }
           button:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 6px 20px rgba(52, 73, 94, 0.4);
+            background: #2c3e50;
           }
           button:active {
             transform: translateY(0);
@@ -183,13 +197,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           .password-requirements {
             font-size: 12px;
-            color: #6c757d;
+            color: #2c3e50;
             margin-top: 5px;
           }
         </style>
       </head>
       <body>
         <div class="container">
+          <img src="/logo.png" alt="Bookshelf Scanner Logo" class="logo">
           <h1>Reset Your Password</h1>
           <p class="subtitle">Enter your new password below</p>
           
