@@ -1024,19 +1024,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
           </div>
 
-          ${stats.topAuthors.length > 0 ? `
-            <div class="top-authors">
-              <h2 class="section-title">Top Authors</h2>
-              <ul class="author-list">
-                ${stats.topAuthors.map((item: any) => `
-                  <li class="author-item">
-                    <span class="author-name">${item.author}</span>
-                    <span class="author-count">${item.count} book${item.count !== 1 ? 's' : ''}</span>
-                  </li>
-                `).join('')}
-              </ul>
-            </div>
-          ` : ''}
         </div>
 
         <!-- Book Detail Modal -->
