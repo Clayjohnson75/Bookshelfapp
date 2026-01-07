@@ -474,6 +474,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             border-radius: 12px;
             padding: 20px;
             text-align: center;
+            border: 2px solid #34495e;
+            box-shadow: 0 2px 8px rgba(52, 73, 94, 0.1);
           }
           .stat-value {
             font-size: 32px;
