@@ -51,7 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Get anon key for regular client (needed for recovery token exchange)
+    // Get anon key for regular client (needed for recovery token verification)
     const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
     
     if (!supabaseAnonKey) {
@@ -62,8 +62,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Create a regular Supabase client (not admin) for recovery token flow
-    // Recovery tokens need to be exchanged using the regular client
+    // Create admin client for password update (server-side)
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+
+    // Create a regular Supabase client (not admin) for recovery token verification
+    // Recovery tokens need to be verified using the regular client
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         autoRefreshToken: false,
@@ -154,25 +162,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // If we get here, the password is different (sign-in failed as expected)
-      // Now update the password using the session from the recovery token
-      // The session should already be set by verifyOtp
-      console.log('[API] Updating password for user:', userEmail);
-      console.log('[API] Current session user:', currentSession?.user?.id);
+      // Now update the password using the admin client since we're on the server
+      // We have verified the token is valid, so we can safely update the password
+      const userId = verifyData.user.id;
+      console.log('[API] Updating password for user:', userEmail, 'ID:', userId);
       
-      const { data: updateData, error: updateError } = await supabase.auth.updateUser({
-        password: password as string
-      });
+      // Use admin client to update password directly
+      const { data: updateData, error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+        userId,
+        { password: password as string }
+      );
 
       if (updateError) {
-        console.error('[API] Error updating password:', updateError);
+        console.error('[API] Error updating password with admin client:', updateError);
         console.error('[API] Update error details:', JSON.stringify(updateError, null, 2));
-        return res.status(400).json({ 
-          error: 'Password update failed',
-          message: updateError.message || 'Failed to update password. Please try again.'
+        
+        // Fallback: try using the regular client with the session
+        const { error: fallbackError } = await supabase.auth.updateUser({
+          password: password as string
         });
+        
+        if (fallbackError) {
+          console.error('[API] Fallback update also failed:', fallbackError);
+          return res.status(400).json({ 
+            error: 'Password update failed',
+            message: fallbackError.message || 'Failed to update password. Please try again.'
+          });
+        }
       }
 
-      console.log('[API] Password update successful:', updateData?.user?.id);
+      console.log('[API] Password update successful for user:', userId);
 
       // Verify the password was actually changed by attempting to sign in with the new password
       const verifySupabase = createClient(supabaseUrl, supabaseAnonKey, {
