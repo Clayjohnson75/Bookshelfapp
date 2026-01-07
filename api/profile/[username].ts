@@ -334,6 +334,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             top: 0;
             z-index: 100;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            will-change: transform;
+            transform: translateZ(0);
           }
           .header-content {
             max-width: 1200px;
@@ -378,6 +380,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             top: 72px;
             z-index: 99;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            will-change: transform;
+            transform: translateZ(0);
           }
           .nav-buttons-content {
             max-width: 1200px;
@@ -468,6 +472,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 20px;
             margin-top: 30px;
+            contain: layout style paint;
           }
           .stat-card {
             background: #f8f6f0;
@@ -668,6 +673,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             overflow-y: auto;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
             position: relative;
+            will-change: scroll-position;
+            -webkit-overflow-scrolling: touch;
           }
           .book-detail-header {
             position: sticky;
@@ -679,6 +686,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             justify-content: space-between;
             align-items: center;
             z-index: 10;
+            will-change: transform;
+            transform: translateZ(0);
           }
           .book-detail-close {
             background: none;
@@ -779,16 +788,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
             gap: 20px;
+            contain: layout style paint;
           }
           .book-card {
             background: #f8f6f0;
             border-radius: 12px;
             overflow: hidden;
-            transition: transform 0.2s, box-shadow 0.2s;
             cursor: pointer;
+            will-change: transform;
+            transform: translateZ(0);
           }
           .book-card:hover {
-            transform: translateY(-4px);
+            transform: translateY(-4px) translateZ(0);
             box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
           }
           .book-cover {
@@ -796,6 +807,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             aspect-ratio: 2/3;
             object-fit: cover;
             background: #34495e;
+            will-change: transform;
+            transform: translateZ(0);
           }
           .book-cover-placeholder {
             width: 100%;
@@ -1077,16 +1090,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const allBooks = ${JSON.stringify(books || [])};
           const username = '${profileData.username}';
 
+          let filterTimeout;
           function filterBooks() {
-            const searchTerm = document.getElementById('bookSearch').value.toLowerCase();
-            const bookCards = document.querySelectorAll('.book-card');
-            
-            bookCards.forEach(card => {
-              const title = card.querySelector('.book-title')?.textContent?.toLowerCase() || '';
-              const author = card.querySelector('.book-author')?.textContent?.toLowerCase() || '';
-              const matches = title.includes(searchTerm) || author.includes(searchTerm);
-              card.style.display = matches ? 'block' : 'none';
-            });
+            clearTimeout(filterTimeout);
+            filterTimeout = setTimeout(() => {
+              const searchTerm = document.getElementById('bookSearch').value.toLowerCase();
+              const bookCards = document.querySelectorAll('.book-card');
+              
+              // Use requestAnimationFrame for smooth updates
+              requestAnimationFrame(() => {
+                bookCards.forEach(card => {
+                  const title = card.querySelector('.book-title')?.textContent?.toLowerCase() || '';
+                  const author = card.querySelector('.book-author')?.textContent?.toLowerCase() || '';
+                  const matches = title.includes(searchTerm) || author.includes(searchTerm);
+                  card.style.display = matches ? 'block' : 'none';
+                });
+              });
+            }, 150);
           }
 
           function openBookDetail(index) {

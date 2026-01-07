@@ -30,6 +30,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           top: 0;
           z-index: 100;
           box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+          will-change: transform;
+          transform: translateZ(0);
         }
         .header-content {
           max-width: 1200px;
@@ -65,6 +67,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           top: 72px;
           z-index: 99;
           box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+          will-change: transform;
+          transform: translateZ(0);
         }
         .nav-buttons-content {
           max-width: 1200px;
@@ -251,35 +255,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
           }
 
+        let searchTimeout;
         async function handleSearch() {
-          const query = document.getElementById('searchInput').value.trim();
-          const resultsDiv = document.getElementById('searchResults');
+          clearTimeout(searchTimeout);
+          searchTimeout = setTimeout(async () => {
+            const query = document.getElementById('searchInput').value.trim();
+            const resultsDiv = document.getElementById('searchResults');
 
-          if (!query) {
-            resultsDiv.innerHTML = '<div class="empty-state-text">Enter a username to search</div>';
-            return;
-          }
+            if (!query) {
+              resultsDiv.innerHTML = '<div class="empty-state-text">Enter a username to search</div>';
+              return;
+            }
 
-          resultsDiv.innerHTML = '<div class="empty-state-text">Searching...</div>';
+            resultsDiv.innerHTML = '<div class="empty-state-text">Searching...</div>';
 
-          try {
-            const response = await fetch(\`/api/public-profile/\${query}\`);
+            try {
+              const response = await fetch(\`/api/public-profile/\${query}\`);
               if (response.ok) {
                 const data = await response.json();
-                resultsDiv.innerHTML = \`
-                  <div style="padding: 20px; background: white; border-radius: 12px; margin-bottom: 15px; border: 1px solid #e0e0e0;">
-                    <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
-                    <p style="color: #666; margin-bottom: 15px;">@\${data.profile.username}</p>
-                    <p style="color: #666; margin-bottom: 15px;">\${data.stats.totalBooks} books</p>
-                    <a href="/\${data.profile.username}" style="display: inline-block; background: #007AFF; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Profile</a>
-                  </div>
-                \`;
+                // Use requestAnimationFrame for smooth DOM updates
+                requestAnimationFrame(() => {
+                  resultsDiv.innerHTML = \`
+                    <div style="padding: 20px; background: white; border-radius: 12px; margin-bottom: 15px; border: 1px solid #e0e0e0;">
+                      <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
+                      <p style="color: #666; margin-bottom: 15px;">@\${data.profile.username}</p>
+                      <p style="color: #666; margin-bottom: 15px;">\${data.stats.totalBooks} books</p>
+                      <a href="/\${data.profile.username}" style="display: inline-block; background: #007AFF; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Profile</a>
+                    </div>
+                  \`;
+                });
               } else {
-                resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
+                requestAnimationFrame(() => {
+                  resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
+                });
               }
-          } catch (error) {
-            resultsDiv.innerHTML = '<div class="empty-state-text">Error searching. Please try again.</div>';
-          }
+            } catch (error) {
+              requestAnimationFrame(() => {
+                resultsDiv.innerHTML = '<div class="empty-state-text">Error searching. Please try again.</div>';
+              });
+            }
+          }, 300);
         }
 
         // Check if user is signed in on page load
