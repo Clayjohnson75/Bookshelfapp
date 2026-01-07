@@ -296,19 +296,35 @@
   </div>
 
   <script>
-    function handleProfileClick() {
+    async function handleProfileClick() {
       const session = localStorage.getItem('supabase_session');
       if (session) {
         try {
           const sessionData = JSON.parse(session);
-          // Try to get username from session or redirect to sign in
-          window.location.href = '/search'; // For now, redirect to search. Later we can get username from API
-        } catch {
-          window.location.href = '/search';
+          // Get username from API
+          const response = await fetch('/api/get-username', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session: sessionData })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.username) {
+              window.location.href = `/${data.username}?edit=true`;
+            } else {
+              alert('Profile not found. Please sign in again.');
+            }
+          } else {
+            alert('Please sign in to view your profile');
+          }
+        } catch (error) {
+          console.error('Error getting username:', error);
+          alert('Please sign in to view your profile');
         }
       } else {
-        // Open sign in modal or redirect to a sign in page
-        window.location.href = '/search';
+        // Not signed in - show message
+        alert('Please sign in to view your profile. You can sign in from any user profile page.');
       }
     }
 
