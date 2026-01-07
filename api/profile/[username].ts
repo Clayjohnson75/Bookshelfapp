@@ -1270,7 +1270,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
 
           function openSignInModal() {
-            document.getElementById('signInModal').classList.add('show');
+            window.location.href = '/signin';
           }
 
           function closeSignInModal(event) {
@@ -1321,7 +1321,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 window.location.href = \`/\${username}?edit=true\`;
               } else {
                 closeSignInModal();
-                alert('Signed in successfully! Redirecting...');
                 window.location.href = \`/\${username}?edit=true\`;
               }
             } catch (error) {

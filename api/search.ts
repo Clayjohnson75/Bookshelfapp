@@ -240,18 +240,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   if (data.username) {
                     window.location.href = \`/\${data.username}?edit=true\`;
                   } else {
-                    alert('Profile not found. Please sign in again.');
+                    window.location.href = '/signin';
                   }
                 } else {
-                  alert('Please sign in to view your profile');
+                  window.location.href = '/signin';
                 }
               } catch (error) {
                 console.error('Error getting username:', error);
-                alert('Please sign in to view your profile');
+                window.location.href = '/signin';
               }
             } else {
-              // Not signed in - show message or redirect to a profile page with sign in
-              alert('Please sign in to view your profile. You can sign in from any user profile page.');
+              // Not signed in - redirect to sign-in page
+              window.location.href = '/signin';
             }
           }
 
