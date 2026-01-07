@@ -594,6 +594,139 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .error-message.show {
             display: block;
           }
+          .book-detail-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow-y: auto;
+          }
+          .book-detail-modal.show {
+            display: flex;
+          }
+          .book-detail-content {
+            background: white;
+            border-radius: 20px;
+            max-width: 600px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            position: relative;
+          }
+          .book-detail-header {
+            position: sticky;
+            top: 0;
+            background: white;
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+          }
+          .book-detail-close {
+            background: none;
+            border: none;
+            font-size: 32px;
+            color: #666;
+            cursor: pointer;
+            padding: 0;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: background 0.2s;
+          }
+          .book-detail-close:hover {
+            background: #f0f0f0;
+          }
+          .book-detail-body {
+            padding: 30px;
+          }
+          .book-detail-cover {
+            width: 200px;
+            max-width: 100%;
+            aspect-ratio: 2/3;
+            object-fit: cover;
+            border-radius: 12px;
+            margin: 0 auto 30px;
+            display: block;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+          }
+          .book-detail-cover-placeholder {
+            width: 200px;
+            max-width: 100%;
+            aspect-ratio: 2/3;
+            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+            border-radius: 12px;
+            margin: 0 auto 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+            text-align: center;
+            padding: 20px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+          }
+          .book-detail-title {
+            font-size: 32px;
+            font-weight: 800;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            line-height: 1.3;
+          }
+          .book-detail-author {
+            font-size: 20px;
+            color: #666;
+            margin-bottom: 20px;
+          }
+          .book-detail-info {
+            margin-top: 30px;
+          }
+          .book-detail-info-item {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #f0f0f0;
+          }
+          .book-detail-info-item:last-child {
+            border-bottom: none;
+          }
+          .book-detail-info-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #999;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+            font-weight: 600;
+          }
+          .book-detail-info-value {
+            font-size: 16px;
+            color: #2c3e50;
+            line-height: 1.5;
+          }
+          .book-detail-description {
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #e0e0e0;
+          }
+          .book-detail-description-text {
+            font-size: 16px;
+            color: #555;
+            line-height: 1.8;
+            white-space: pre-wrap;
+          }
           .books-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -767,8 +900,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             </div>
             ${(books || []).length > 0 
               ? `<div class="books-grid">
-                  ${(books || []).map((book: any) => `
-                    <div class="book-card">
+                  ${(books || []).map((book: any, index: number) => `
+                    <div class="book-card" onclick="openBookDetail(${index})">
                       ${book.cover_url 
                         ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
                         : `<div class="book-cover-placeholder">${book.title}</div>`
@@ -800,6 +933,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               </ul>
             </div>
           ` : ''}
+        </div>
+
+        <!-- Book Detail Modal -->
+        <div class="book-detail-modal" id="bookDetailModal" onclick="closeBookDetail(event)">
+          <div class="book-detail-content" onclick="event.stopPropagation()">
+            <div class="book-detail-header">
+              <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #2c3e50;">Book Details</h2>
+              <button class="book-detail-close" onclick="closeBookDetail()">&times;</button>
+            </div>
+            <div class="book-detail-body" id="bookDetailBody">
+              <!-- Book details will be inserted here -->
+            </div>
+          </div>
         </div>
 
         <!-- Sign In Modal -->
@@ -850,6 +996,100 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const matches = title.includes(searchTerm) || author.includes(searchTerm);
               card.style.display = matches ? 'block' : 'none';
             });
+          }
+
+          function openBookDetail(index) {
+            const book = allBooks[index];
+            if (!book) return;
+
+            const modal = document.getElementById('bookDetailModal');
+            const body = document.getElementById('bookDetailBody');
+
+            const formatDate = (dateString) => {
+              if (!dateString) return 'N/A';
+              try {
+                return new Date(dateString).toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                });
+              } catch {
+                return dateString;
+              }
+            };
+
+            body.innerHTML = \`
+              ${book.cover_url 
+                ? `<img src="${book.cover_url}" alt="${book.title}" class="book-detail-cover">`
+                : `<div class="book-detail-cover-placeholder">${book.title}</div>`
+              }
+              <h1 class="book-detail-title">${book.title || 'Unknown Title'}</h1>
+              ${book.author ? `<div class="book-detail-author">by ${book.author}</div>` : ''}
+              
+              <div class="book-detail-info">
+                ${book.publisher ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Publisher</div>
+                    <div class="book-detail-info-value">${book.publisher}</div>
+                  </div>
+                ` : ''}
+                ${book.published_date ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Published</div>
+                    <div class="book-detail-info-value">${formatDate(book.published_date)}</div>
+                  </div>
+                ` : ''}
+                ${book.page_count ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Pages</div>
+                    <div class="book-detail-info-value">${book.page_count}</div>
+                  </div>
+                ` : ''}
+                ${book.average_rating ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Rating</div>
+                    <div class="book-detail-info-value">${book.average_rating.toFixed(1)}${book.ratings_count ? ` (${book.ratings_count} ratings)` : ''}</div>
+                  </div>
+                ` : ''}
+                ${book.scanned_at ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Added to Library</div>
+                    <div class="book-detail-info-value">${formatDate(book.scanned_at)}</div>
+                  </div>
+                ` : ''}
+                ${book.read_at ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Read</div>
+                    <div class="book-detail-info-value">${formatDate(book.read_at)}</div>
+                  </div>
+                ` : ''}
+                ${book.categories && book.categories.length > 0 ? `
+                  <div class="book-detail-info-item">
+                    <div class="book-detail-info-label">Categories</div>
+                    <div class="book-detail-info-value">${Array.isArray(book.categories) ? book.categories.join(', ') : book.categories}</div>
+                  </div>
+                ` : ''}
+              </div>
+
+              ${book.description ? `
+                <div class="book-detail-description">
+                  <div class="book-detail-info-label" style="margin-bottom: 15px;">Description</div>
+                  <div class="book-detail-description-text">${book.description}</div>
+                </div>
+              ` : ''}
+            \`;
+
+            modal.classList.add('show');
+            document.body.style.overflow = 'hidden';
+          }
+
+          function closeBookDetail(event) {
+            if (event && event.target !== event.currentTarget && event.target.closest('.book-detail-content')) {
+              return;
+            }
+            const modal = document.getElementById('bookDetailModal');
+            modal.classList.remove('show');
+            document.body.style.overflow = '';
           }
 
           function openSignInModal() {
