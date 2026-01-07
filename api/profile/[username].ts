@@ -16,6 +16,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const profileResponse = await fetch(`${baseUrl}/api/public-profile/${username}`);
     
     if (!profileResponse.ok) {
+      // Try to get error details for debugging
+      let errorMessage = 'Profile not found';
+      try {
+        const errorData = await profileResponse.json();
+        errorMessage = errorData.message || errorData.error || 'Profile not found';
+        console.error('[API] Profile fetch error:', {
+          status: profileResponse.status,
+          statusText: profileResponse.statusText,
+          error: errorData
+        });
+      } catch (e) {
+        console.error('[API] Profile fetch failed:', {
+          status: profileResponse.status,
+          statusText: profileResponse.statusText,
+          url: `${baseUrl}/api/public-profile/${username}`
+        });
+      }
+      
       return res.status(404).send(`
         <!DOCTYPE html>
         <html lang="en">
