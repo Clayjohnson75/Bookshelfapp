@@ -25,9 +25,15 @@ CREATE INDEX IF NOT EXISTS idx_profiles_username ON public.profiles(username);
 -- ============================================================
 
 -- Allow anyone to read profiles that have public_profile_enabled = true
+-- This policy allows anonymous (unauthenticated) users to view public profiles
 DROP POLICY IF EXISTS "Public profiles are viewable by everyone" ON public.profiles;
 CREATE POLICY "Public profiles are viewable by everyone" ON public.profiles
-  FOR SELECT USING (public_profile_enabled = true);
+  FOR SELECT 
+  TO public
+  USING (public_profile_enabled = true);
+  
+-- Grant SELECT permission to anon role explicitly
+GRANT SELECT ON public.profiles TO anon;
 
 -- Note: The existing "Users can update own profile" policy already allows users
 -- to update their own profiles, including public_profile_enabled and profile_bio.
@@ -41,7 +47,9 @@ CREATE POLICY "Public profiles are viewable by everyone" ON public.profiles
 -- Only show approved books (not pending/rejected/incomplete)
 DROP POLICY IF EXISTS "Public books are viewable by everyone" ON public.books;
 CREATE POLICY "Public books are viewable by everyone" ON public.books
-  FOR SELECT USING (
+  FOR SELECT 
+  TO public
+  USING (
     EXISTS (
       SELECT 1 FROM public.profiles
       WHERE profiles.id = books.user_id
@@ -49,6 +57,9 @@ CREATE POLICY "Public books are viewable by everyone" ON public.books
     )
     AND books.status = 'approved'
   );
+  
+-- Grant SELECT permission to anon role explicitly
+GRANT SELECT ON public.books TO anon;
 
 -- ============================================================
 -- Function to update profile_updated_at timestamp

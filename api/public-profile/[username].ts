@@ -47,12 +47,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Get user profile by username
     // First try with public_profile_enabled check
+    console.log('[API] Searching for username:', username.toLowerCase());
     let { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
       .eq('username', username.toLowerCase())
       .eq('public_profile_enabled', true)
       .single();
+    
+    console.log('[API] Profile query result:', { 
+      found: !!profile, 
+      error: profileError ? {
+        code: profileError.code,
+        message: profileError.message,
+        details: profileError.details,
+        hint: profileError.hint
+      } : null
+    });
 
     // If that fails, check if the column exists (migration might not be run)
     if (profileError) {
@@ -83,11 +94,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // If profile not found, try without the public_profile_enabled check to see if user exists
     if (profileError || !profile) {
       // Try to get profile without the public check to see if it exists
-      const { data: profileCheck, error: checkError } = await supabase
-        .from('profiles')
-        .select('id, username, public_profile_enabled')
-        .eq('username', username.toLowerCase())
-        .single();
+      // Use service role key to bypass RLS for debugging
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      let profileCheck = null;
+      let checkError = null;
+      
+      if (supabaseServiceKey) {
+        const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { autoRefreshToken: false, persistSession: false }
+        });
+        const result = await supabaseAdmin
+          .from('profiles')
+          .select('id, username, public_profile_enabled')
+          .eq('username', username.toLowerCase())
+          .single();
+        profileCheck = result.data;
+        checkError = result.error;
+        console.log('[API] Admin check result:', { profileCheck, checkError });
+      } else {
+        // Fallback to regular client
+        const result = await supabase
+          .from('profiles')
+          .select('id, username, public_profile_enabled')
+          .eq('username', username.toLowerCase())
+          .single();
+        profileCheck = result.data;
+        checkError = result.error;
+      }
       
       if (profileCheck) {
         console.error('[API] Profile exists but query failed. Details:', {
