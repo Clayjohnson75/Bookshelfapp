@@ -448,8 +448,151 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             font-size: 28px;
             font-weight: 800;
             color: #2c3e50;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             letter-spacing: 0.5px;
+          }
+          .search-container {
+            margin-bottom: 30px;
+          }
+          .search-input {
+            width: 100%;
+            padding: 14px 20px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            background: white;
+            color: #2c3e50;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            transition: border-color 0.2s, box-shadow 0.2s;
+          }
+          .search-input:focus {
+            outline: none;
+            border-color: #007AFF;
+            box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+          }
+          .search-input::placeholder {
+            color: #999;
+          }
+          .sign-in-button {
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          }
+          .sign-in-button:hover {
+            background: #0056CC;
+          }
+          .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+          }
+          .modal-overlay.show {
+            display: flex;
+          }
+          .modal-content {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+          }
+          .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+          }
+          .modal-title {
+            font-size: 24px;
+            font-weight: 800;
+            color: #2c3e50;
+          }
+          .modal-close {
+            background: none;
+            border: none;
+            font-size: 28px;
+            color: #666;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: background 0.2s;
+          }
+          .modal-close:hover {
+            background: #f0f0f0;
+          }
+          .form-group {
+            margin-bottom: 20px;
+          }
+          .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 8px;
+          }
+          .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            background: white;
+            color: #2c3e50;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            transition: border-color 0.2s;
+          }
+          .form-input:focus {
+            outline: none;
+            border-color: #007AFF;
+          }
+          .form-button {
+            width: 100%;
+            padding: 14px;
+            background: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          }
+          .form-button:hover {
+            background: #0056CC;
+          }
+          .form-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+          }
+          .error-message {
+            color: #e74c3c;
+            font-size: 14px;
+            margin-top: 8px;
+            display: none;
+          }
+          .error-message.show {
+            display: block;
           }
           .books-grid {
             display: grid;
@@ -582,16 +725,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               <img src="/logo.png" alt="Bookshelf Scanner">
               <span>Bookshelf Scanner</span>
             </a>
-            <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" style="color: #007AFF; text-decoration: none; font-weight: 600;">Get the App</a>
+            <div style="display: flex; gap: 15px; align-items: center;">
+              <button class="sign-in-button" onclick="openSignInModal()">Sign In</button>
+              <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" style="color: #007AFF; text-decoration: none; font-weight: 600;">Get the App</a>
+            </div>
           </div>
         </div>
         
         <div class="container">
           <div class="profile-header">
-            ${profileData.avatarUrl 
-              ? `<img src="${profileData.avatarUrl}" alt="${profileData.displayName}" class="avatar">`
-              : `<div class="avatar-placeholder">${profileData.displayName.charAt(0).toUpperCase()}</div>`
-            }
             <h1 class="profile-name">${profileData.displayName}</h1>
             <div class="profile-username">@${profileData.username}</div>
             ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
@@ -614,6 +756,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           <div class="books-section">
             <h2 class="section-title">Library</h2>
+            <div class="search-container">
+              <input 
+                type="text" 
+                class="search-input" 
+                id="bookSearch" 
+                placeholder="Search books by title or author..." 
+                oninput="filterBooks()"
+              />
+            </div>
             ${(books || []).length > 0 
               ? `<div class="books-grid">
                   ${(books || []).map((book: any) => `
@@ -650,6 +801,115 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             </div>
           ` : ''}
         </div>
+
+        <!-- Sign In Modal -->
+        <div class="modal-overlay" id="signInModal" onclick="closeSignInModal(event)">
+          <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+              <h2 class="modal-title">Sign In</h2>
+              <button class="modal-close" onclick="closeSignInModal()">&times;</button>
+            </div>
+            <form id="signInForm" onsubmit="handleSignIn(event)">
+              <div class="form-group">
+                <label class="form-label" for="signInEmail">Email or Username</label>
+                <input 
+                  type="text" 
+                  id="signInEmail" 
+                  class="form-input" 
+                  required 
+                  autocomplete="username"
+                />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="signInPassword">Password</label>
+                <input 
+                  type="password" 
+                  id="signInPassword" 
+                  class="form-input" 
+                  required 
+                  autocomplete="current-password"
+                />
+              </div>
+              <div class="error-message" id="signInError"></div>
+              <button type="submit" class="form-button" id="signInSubmit">Sign In</button>
+            </form>
+          </div>
+        </div>
+
+        <script>
+          const allBooks = ${JSON.stringify(books || [])};
+          const username = '${profileData.username}';
+
+          function filterBooks() {
+            const searchTerm = document.getElementById('bookSearch').value.toLowerCase();
+            const bookCards = document.querySelectorAll('.book-card');
+            
+            bookCards.forEach(card => {
+              const title = card.querySelector('.book-title')?.textContent?.toLowerCase() || '';
+              const author = card.querySelector('.book-author')?.textContent?.toLowerCase() || '';
+              const matches = title.includes(searchTerm) || author.includes(searchTerm);
+              card.style.display = matches ? 'block' : 'none';
+            });
+          }
+
+          function openSignInModal() {
+            document.getElementById('signInModal').classList.add('show');
+          }
+
+          function closeSignInModal(event) {
+            if (event && event.target !== event.currentTarget && event.target.closest('.modal-content')) {
+              return;
+            }
+            document.getElementById('signInModal').classList.remove('show');
+            document.getElementById('signInError').classList.remove('show');
+            document.getElementById('signInForm').reset();
+          }
+
+          async function handleSignIn(event) {
+            event.preventDefault();
+            const email = document.getElementById('signInEmail').value.trim();
+            const password = document.getElementById('signInPassword').value;
+            const submitButton = document.getElementById('signInSubmit');
+            const errorDiv = document.getElementById('signInError');
+
+            submitButton.disabled = true;
+            submitButton.textContent = 'Signing in...';
+            errorDiv.classList.remove('show');
+
+            try {
+              // Call our sign-in API endpoint
+              const response = await fetch('/api/web-signin', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  emailOrUsername: email,
+                  password: password,
+                  username: username,
+                }),
+              });
+
+              const data = await response.json();
+
+              if (!response.ok) {
+                throw new Error(data.message || data.error || 'Sign in failed');
+              }
+
+              // Success! Redirect to edit page or show edit options
+              // For now, just close modal and show success message
+              closeSignInModal();
+              alert('Signed in successfully! Edit functionality coming soon.');
+              // TODO: Redirect to edit page: window.location.href = \`/\${username}/edit\`;
+            } catch (error) {
+              errorDiv.textContent = error.message || 'Sign in failed. Please try again.';
+              errorDiv.classList.add('show');
+            } finally {
+              submitButton.disabled = false;
+              submitButton.textContent = 'Sign In';
+            }
+          }
+        </script>
       </body>
       </html>
     `;
