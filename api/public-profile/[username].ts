@@ -82,24 +82,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // If profile not found, try without the public_profile_enabled check to see if user exists
     if (profileError || !profile) {
-      const { data: profileCheck } = await supabase
+      // Try to get profile without the public check to see if it exists
+      const { data: profileCheck, error: checkError } = await supabase
         .from('profiles')
         .select('id, username, public_profile_enabled')
         .eq('username', username.toLowerCase())
         .single();
       
       if (profileCheck) {
-        console.error('[API] Profile exists but is not public. public_profile_enabled:', profileCheck.public_profile_enabled);
-        return res.status(404).json({ 
-          error: 'Profile not public',
-          message: 'This profile exists but is not set to public. The user needs to enable public profile in their app settings.'
+        console.error('[API] Profile exists but query failed. Details:', {
+          username: profileCheck.username,
+          public_profile_enabled: profileCheck.public_profile_enabled,
+          originalError: profileError
+        });
+        
+        // If profile exists but public_profile_enabled is false/null
+        if (!profileCheck.public_profile_enabled) {
+          return res.status(404).json({ 
+            error: 'Profile not public',
+            message: 'This profile exists but is not set to public. The user needs to enable public profile in their app settings.'
+          });
+        }
+        
+        // If it's true but still failing, it's likely an RLS issue
+        return res.status(500).json({ 
+          error: 'Permission error',
+          message: 'Profile exists but cannot be accessed. This may be a database permissions issue.',
+          debug: {
+            public_profile_enabled: profileCheck.public_profile_enabled,
+            errorCode: profileError?.code,
+            errorMessage: profileError?.message
+          }
         });
       }
       
-      console.error('[API] Error fetching profile:', profileError);
+      // Profile doesn't exist at all
+      console.error('[API] Profile not found. Username searched:', username.toLowerCase());
       return res.status(404).json({ 
         error: 'Profile not found',
-        message: 'This profile does not exist or is not public.'
+        message: `No profile found with username "${username}". Please check the username and try again.`
       });
     }
 
