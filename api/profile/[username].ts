@@ -415,12 +415,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             padding: 40px 20px;
           }
           .profile-header {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
+            padding: 40px 0;
             margin-bottom: 30px;
-            box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
-            border: 1px solid #e0e0e0;
             text-align: center;
           }
           .avatar {
@@ -492,11 +488,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             letter-spacing: 0.5px;
           }
           .books-section {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
-            border: 1px solid #e0e0e0;
+            padding: 40px 0;
           }
           .section-title {
             font-size: 28px;
@@ -840,12 +832,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             overflow: hidden;
           }
           .top-authors {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
+            padding: 40px 0;
             margin-top: 30px;
-            box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
-            border: 1px solid #e0e0e0;
           }
           .author-list {
             list-style: none;

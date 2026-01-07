@@ -111,12 +111,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           padding: 40px 20px;
         }
         .search-section {
-          background: white;
-          border-radius: 20px;
-          padding: 40px;
+          padding: 0;
           margin-bottom: 30px;
-          box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
-          border: 1px solid #e0e0e0;
         }
         .search-title {
           font-size: 32px;
@@ -144,11 +140,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           color: #999;
         }
         .results-section {
-          background: white;
-          border-radius: 20px;
-          padding: 40px;
-          box-shadow: 0 4px 20px rgba(44, 62, 80, 0.1);
-          border: 1px solid #e0e0e0;
+          padding: 0;
         }
         .results-title {
           font-size: 24px;
@@ -227,20 +219,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       </div>
 
       <script>
-        function handleProfileClick() {
-          const session = localStorage.getItem('supabase_session');
-          if (session) {
-            try {
-              const sessionData = JSON.parse(session);
-              // Get username from API or redirect to sign in
-              window.location.href = '/search';
-            } catch {
-              window.location.href = '/search';
+          async function handleProfileClick() {
+            const session = localStorage.getItem('supabase_session');
+            if (session) {
+              try {
+                const sessionData = JSON.parse(session);
+                // Get username from API
+                const response = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
+                });
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  if (data.username) {
+                    window.location.href = \`/\${data.username}?edit=true\`;
+                  } else {
+                    alert('Profile not found. Please sign in again.');
+                  }
+                } else {
+                  alert('Please sign in to view your profile');
+                }
+              } catch (error) {
+                console.error('Error getting username:', error);
+                alert('Please sign in to view your profile');
+              }
+            } else {
+              // Not signed in - show message or redirect to a profile page with sign in
+              alert('Please sign in to view your profile. You can sign in from any user profile page.');
             }
-          } else {
-            window.location.href = '/search';
           }
-        }
 
         async function handleSearch() {
           const query = document.getElementById('searchInput').value.trim();
@@ -255,19 +264,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           try {
             const response = await fetch(\`/api/public-profile/\${query}\`);
-            if (response.ok) {
-              const data = await response.json();
-              resultsDiv.innerHTML = \`
-                <div style="padding: 20px; background: #f8f6f0; border-radius: 12px; margin-bottom: 15px;">
-                  <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
-                  <p style="color: #666; margin-bottom: 15px;">@\${data.profile.username}</p>
-                  <p style="color: #666; margin-bottom: 15px;">\${data.stats.totalBooks} books</p>
-                  <a href="/\${data.profile.username}" style="display: inline-block; background: #007AFF; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Profile</a>
-                </div>
-              \`;
-            } else {
-              resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
-            }
+              if (response.ok) {
+                const data = await response.json();
+                resultsDiv.innerHTML = \`
+                  <div style="padding: 20px; background: white; border-radius: 12px; margin-bottom: 15px; border: 1px solid #e0e0e0;">
+                    <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
+                    <p style="color: #666; margin-bottom: 15px;">@\${data.profile.username}</p>
+                    <p style="color: #666; margin-bottom: 15px;">\${data.stats.totalBooks} books</p>
+                    <a href="/\${data.profile.username}" style="display: inline-block; background: #007AFF; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Profile</a>
+                  </div>
+                \`;
+              } else {
+                resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
+              }
           } catch (error) {
             resultsDiv.innerHTML = '<div class="empty-state-text">Error searching. Please try again.</div>';
           }
