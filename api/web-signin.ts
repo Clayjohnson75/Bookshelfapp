@@ -35,7 +35,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let email = emailOrUsername;
     if (!emailOrUsername.includes('@')) {
       // It's a username, need to look up the email
-      const { data: profile, error: profileError } = await supabase
+      // Use service role key to access auth.users
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!supabaseServiceKey) {
+        return res.status(500).json({ 
+          error: 'Server configuration error',
+          message: 'Server is not properly configured.'
+        });
+      }
+
+      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+      
+      // Get profile to find user ID
+      const { data: profile, error: profileError } = await supabaseAdmin
         .from('profiles')
         .select('id')
         .eq('username', emailOrUsername.toLowerCase())
@@ -48,9 +60,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      // Get the user's email from auth.users
-      const { data: authUser } = await supabase.auth.admin.getUserById(profile.id);
-      if (!authUser?.user?.email) {
+      // Get the user's email from auth.users using admin client
+      const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.getUserById(profile.id);
+      if (authError || !authUser?.user?.email) {
         return res.status(401).json({ 
           error: 'Invalid credentials',
           message: 'Could not find email for this username.'
