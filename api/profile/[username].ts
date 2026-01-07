@@ -356,6 +356,59 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             height: 32px;
             margin-right: 10px;
           }
+          .header-right {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+          }
+          .get-app-link {
+            color: #007AFF;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+          }
+          .get-app-link:hover {
+            text-decoration: underline;
+          }
+          .nav-buttons {
+            background: white;
+            border-bottom: 1px solid #e0e0e0;
+            padding: 0;
+            position: sticky;
+            top: 72px;
+            z-index: 99;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+          }
+          .nav-buttons-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            gap: 10px;
+          }
+          .nav-button {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            color: #2c3e50;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          }
+          .nav-button:hover {
+            color: #007AFF;
+            background: #f8f6f0;
+          }
+          .nav-button.active {
+            color: #007AFF;
+            border-bottom-color: #007AFF;
+          }
+          .nav-button.profile-button {
+            margin-left: auto;
+          }
           .container {
             max-width: 1200px;
             margin: 0 auto;
@@ -893,17 +946,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               <img src="/logo.png" alt="Bookshelf Scanner">
               <span>Bookshelf Scanner</span>
             </a>
-            <div style="display: flex; gap: 15px; align-items: center;">
-              ${isEditMode ? `
-                <div style="display: flex; gap: 10px; align-items: center;">
-                  <span style="color: #007AFF; font-weight: 600; font-size: 14px;">✓ Signed In</span>
-                  <button class="sign-in-button" onclick="signOut()" style="background: #e74c3c;">Sign Out</button>
-                </div>
-              ` : `
-                <button class="sign-in-button" onclick="openSignInModal()">Sign In</button>
-              `}
-              <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" style="color: #007AFF; text-decoration: none; font-weight: 600;">Get the App</a>
+            <div class="header-right">
+              <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="get-app-link" target="_blank">Get the App</a>
             </div>
+          </div>
+        </div>
+
+        <div class="nav-buttons">
+          <div class="nav-buttons-content">
+            <button class="nav-button" onclick="window.location.href='/'">Home</button>
+            <button class="nav-button" onclick="window.location.href='/search'">Search</button>
+            <button class="nav-button profile-button active" onclick="handleProfileNavClick()" id="profileNavButton">${isEditMode ? 'Profile' : 'Sign In'}</button>
           </div>
         </div>
         
@@ -1189,6 +1242,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           function signOut() {
             localStorage.removeItem('supabase_session');
             window.location.href = \`/\${username}\`;
+          }
+
+          function handleProfileNavClick() {
+            const session = localStorage.getItem('supabase_session');
+            if (session) {
+              // User is signed in, show their profile in edit mode
+              window.location.href = \`/\${username}?edit=true\`;
+            } else {
+              // User not signed in, open sign in modal
+              openSignInModal();
+            }
           }
 
           // Check if user is signed in on page load

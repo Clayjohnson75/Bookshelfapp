@@ -11,6 +11,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/search",
+      "destination": "/api/search"
+    },
+    {
       "source": "/:username",
       "destination": "/api/profile/:username"
     }
