@@ -71,8 +71,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
+    // Track if token was already used (for single-use enforcement)
+    let tokenUsed = false;
+    let userEmail: string | null = null;
+    let userSession: any = null;
+
     // Verify the token and update the password
-    // Supabase recovery tokens need to be exchanged for a session first
+    // Supabase recovery tokens are single-use by default when exchanged
     try {
       // Try to exchange the token for a session
       // The token from the email link is typically a code that needs to be exchanged
@@ -89,32 +94,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (verifyError || !verifyData?.user) {
           console.error('[API] verifyOtp also failed:', verifyError);
+          
+          // Check if error indicates token was already used
+          if (verifyError?.message?.includes('already been used') || 
+              verifyError?.message?.includes('expired') ||
+              sessionError?.message?.includes('already been used') ||
+              sessionError?.message?.includes('expired')) {
+            return res.status(400).json({ 
+              error: 'Token already used',
+              message: 'This password reset link has already been used. Please request a new one.'
+            });
+          }
+          
           return res.status(400).json({ 
             error: 'Invalid or expired token',
             message: 'The password reset link is invalid or has expired. Please request a new one.'
           });
         }
 
-        // If verifyOtp worked, use that session to update password
-        const { error: updateError } = await supabase.auth.updateUser({
-          password: password as string
-        });
+        // Token was successfully used - mark as used
+        tokenUsed = true;
+        userEmail = verifyData.user.email || null;
+        userSession = verifyData;
+      } else {
+        // Token was successfully used - mark as used
+        tokenUsed = true;
+        userEmail = sessionData.user.email || null;
+        userSession = sessionData;
+      }
 
-        if (updateError) {
-          console.error('[API] Error updating password:', updateError);
-          return res.status(400).json({ 
-            error: 'Password update failed',
-            message: updateError.message || 'Failed to update password. Please try again.'
-          });
-        }
-
-        return res.status(200).json({ 
-          success: true,
-          message: 'Your password has been successfully updated!'
+      // At this point, we have a valid session from the recovery token
+      // The token is now consumed and cannot be used again (single-use enforced by Supabase)
+      
+      if (!userEmail) {
+        return res.status(400).json({ 
+          error: 'User email not found',
+          message: 'Unable to retrieve user information. Please request a new password reset link.'
         });
       }
 
-      // If exchangeCodeForSession worked, we have a session, so update the password
+      // Check if the new password is the same as the current password
+      // We do this by attempting to sign in with the new password
+      // If sign-in succeeds, the password hasn't changed
+      const testSupabase = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+
+      const { data: signInData, error: signInError } = await testSupabase.auth.signInWithPassword({
+        email: userEmail,
+        password: password as string,
+      });
+
+      // If sign-in succeeds, it means the password is the same
+      if (signInData?.user && !signInError) {
+        return res.status(400).json({ 
+          error: 'Password unchanged',
+          message: 'The new password must be different from your current password. Please choose a different password.'
+        });
+      }
+
+      // If we get here, the password is different (sign-in failed as expected)
+      // Now update the password using the session from the recovery token
       const { error: updateError } = await supabase.auth.updateUser({
         password: password as string
       });
@@ -127,6 +170,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
+      // Verify the password was actually changed by attempting to sign in with the new password
+      const verifySupabase = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+
+      const { data: verifySignInData, error: verifySignInError } = await verifySupabase.auth.signInWithPassword({
+        email: userEmail,
+        password: password as string,
+      });
+
+      if (verifySignInError || !verifySignInData?.user) {
+        console.error('[API] Password verification failed after update:', verifySignInError);
+        return res.status(500).json({ 
+          error: 'Password update verification failed',
+          message: 'The password may not have been updated correctly. Please try again or contact support.'
+        });
+      }
+
+      // Password was successfully updated and verified
       return res.status(200).json({ 
         success: true,
         message: 'Your password has been successfully updated!'
@@ -134,6 +199,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     } catch (error: any) {
       console.error('[API] Error in password update:', error);
+      
+      // Check if error indicates token was already used
+      if (error?.message?.includes('already been used') || 
+          error?.message?.includes('expired')) {
+        return res.status(400).json({ 
+          error: 'Token already used',
+          message: 'This password reset link has already been used. Please request a new one.'
+        });
+      }
+      
       return res.status(500).json({ 
         error: 'Internal server error',
         message: 'An error occurred while updating your password. Please try again.'

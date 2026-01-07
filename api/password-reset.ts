@@ -248,8 +248,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             form.style.display = 'none';
           }
           
+          let formSubmitted = false;
+          
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
+            
+            // Prevent multiple submissions
+            if (formSubmitted) {
+              return;
+            }
             
             // Clear previous errors
             passwordError.classList.remove('show');
@@ -277,6 +284,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             // Disable button and show loading
             submitBtn.disabled = true;
             submitBtn.textContent = 'Updating Password...';
+            formSubmitted = true;
             
             try {
               const response = await fetch('/api/update-password', {
@@ -298,20 +306,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 form.style.display = 'none';
                 successMessage.classList.add('show');
                 
+                // Disable all inputs permanently (token is now used)
+                passwordInput.disabled = true;
+                confirmInput.disabled = true;
+                
                 // Optionally redirect to app after 3 seconds
                 setTimeout(() => {
                   window.location.href = 'bookshelfscanner://';
                 }, 3000);
               } else {
-                // Show error
-                formError.textContent = data.message || 'Failed to update password. Please try again.';
+                // Show error with specific messages
+                let errorMsg = data.message || 'Failed to update password. Please try again.';
+                
+                // Handle specific error cases
+                if (data.error === 'Token already used' || errorMsg.includes('already been used')) {
+                  errorMsg = 'This password reset link has already been used. Please request a new one.';
+                  // Disable form permanently if token was already used
+                  form.style.display = 'none';
+                  passwordInput.disabled = true;
+                  confirmInput.disabled = true;
+                } else if (data.error === 'Password unchanged' || errorMsg.includes('different from your current')) {
+                  errorMsg = 'The new password must be different from your current password. Please choose a different password.';
+                  // Allow retry for password unchanged error
+                  formSubmitted = false;
+                  submitBtn.disabled = false;
+                  submitBtn.textContent = 'Reset Password';
+                } else {
+                  // Allow retry for other errors
+                  formSubmitted = false;
+                  submitBtn.disabled = false;
+                  submitBtn.textContent = 'Reset Password';
+                }
+                
+                formError.textContent = errorMsg;
                 formError.classList.add('show');
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Reset Password';
               }
             } catch (error) {
               formError.textContent = 'An error occurred. Please try again.';
               formError.classList.add('show');
+              formSubmitted = false;
               submitBtn.disabled = false;
               submitBtn.textContent = 'Reset Password';
             }
