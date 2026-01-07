@@ -877,11 +877,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             padding: 60px 20px;
             color: #666;
           }
-          .empty-state-icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-            opacity: 0.5;
-          }
           .empty-state-text {
             font-size: 18px;
           }
@@ -964,7 +959,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           <div class="profile-header">
             ${isEditMode ? `
               <div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 8px; padding: 12px; margin-bottom: 20px; text-align: center;">
-                <span style="color: #2e7d32; font-weight: 600; font-size: 14px;">✓ You are viewing your own profile</span>
+                <span style="color: #2e7d32; font-weight: 600; font-size: 14px;">You are viewing your own profile</span>
               </div>
             ` : ''}
             <h1 class="profile-name">${profileData.displayName}</h1>
@@ -1021,7 +1016,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   `).join('')}
                 </div>`
               : `<div class="empty-state">
-                  <div class="empty-state-icon">📚</div>
                   <div class="empty-state-text">No books yet</div>
                 </div>`
             }
