@@ -51,17 +51,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // Get user profile by username
-    // First try with public_profile_enabled check
+    // Using service role key bypasses RLS, so we filter by public_profile_enabled ourselves
     console.log('[API] Searching for username:', username.toLowerCase());
-    let { data: profile, error: profileError } = await supabase
+    console.log('[API] Using Supabase URL:', supabaseUrl);
+    console.log('[API] Is Dev Supabase:', isDevSupabase);
+    
+    // Get the profile (service role bypasses RLS)
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
       .eq('username', username.toLowerCase())
-      .eq('public_profile_enabled', true)
       .single();
     
     console.log('[API] Profile query result:', { 
-      found: !!profile, 
+      found: !!profile,
+      username: profile?.username,
+      public_profile_enabled: profile?.public_profile_enabled,
       error: profileError ? {
         code: profileError.code,
         message: profileError.message,
@@ -69,8 +74,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hint: profileError.hint
       } : null
     });
-
-    // If that fails, check if the column exists (migration might not be run)
+    
+    // Handle errors first
     if (profileError) {
       console.error('[API] Profile fetch error:', {
         code: profileError.code,
@@ -87,84 +92,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
       
-      if (profileError.code === 'PGRST301' || profileError.message?.includes('row-level security')) {
-        // RLS policy issue
-        return res.status(500).json({ 
-          error: 'Permission denied',
-          message: 'The database migration needs to be run to set up public profile access policies.'
-        });
-      }
-    }
-
-    // If profile not found, try without the public_profile_enabled check to see if user exists
-    if (profileError || !profile) {
-      // Try to get profile without the public check to see if it exists
-      // Use service role key to bypass RLS for debugging
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      let profileCheck = null;
-      let checkError = null;
-      
-      if (supabaseServiceKey) {
-        const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-          auth: { autoRefreshToken: false, persistSession: false }
-        });
-        const result = await supabaseAdmin
-          .from('profiles')
-          .select('id, username, public_profile_enabled')
-          .eq('username', username.toLowerCase())
-          .single();
-        profileCheck = result.data;
-        checkError = result.error;
-        console.log('[API] Admin check result:', { profileCheck, checkError });
-      } else {
-        // Fallback to regular client
-        const result = await supabase
-          .from('profiles')
-          .select('id, username, public_profile_enabled')
-          .eq('username', username.toLowerCase())
-          .single();
-        profileCheck = result.data;
-        checkError = result.error;
-      }
-      
-      if (profileCheck) {
-        console.error('[API] Profile exists but query failed. Details:', {
-          username: profileCheck.username,
-          public_profile_enabled: profileCheck.public_profile_enabled,
-          originalError: profileError
-        });
-        
-        // If profile exists but public_profile_enabled is false/null
-        if (!profileCheck.public_profile_enabled) {
-          return res.status(404).json({ 
-            error: 'Profile not public',
-            message: 'This profile exists but is not set to public. The user needs to enable public profile in their app settings.'
-          });
-        }
-        
-        // If it's true but still failing, it's likely an RLS issue
-        return res.status(500).json({ 
-          error: 'Permission error',
-          message: 'Profile exists but cannot be accessed. This may be a database permissions issue.',
+      if (profileError.code === 'PGRST116') {
+        // No rows returned - profile doesn't exist
+        console.error('[API] Profile not found. Username searched:', username.toLowerCase());
+        return res.status(404).json({ 
+          error: 'Profile not found',
+          message: `No profile found with username "${username}" in ${isDevSupabase ? 'DEV' : 'PRODUCTION'} database. Please check the username and ensure you're testing with the correct database.`,
           debug: {
-            public_profile_enabled: profileCheck.public_profile_enabled,
-            errorCode: profileError?.code,
-            errorMessage: profileError?.message
+            supabaseUrl: supabaseUrl,
+            usernameSearched: username.toLowerCase(),
+            isDevDatabase: isDevSupabase
           }
         });
       }
       
-      // Profile doesn't exist at all
-      console.error('[API] Profile not found. Username searched:', username.toLowerCase());
-      console.error('[API] Supabase URL:', supabaseUrl);
+      // Other errors
+      return res.status(500).json({ 
+        error: 'Database error',
+        message: 'An error occurred while fetching the profile.',
+        debug: {
+          errorCode: profileError.code,
+          errorMessage: profileError.message
+        }
+      });
+    }
+    
+    // Check if profile exists
+    if (!profile) {
+      console.error('[API] Profile not found for username:', username.toLowerCase());
       return res.status(404).json({ 
         error: 'Profile not found',
-        message: `No profile found with username "${username}" in ${isDevSupabase ? 'DEV' : 'PRODUCTION'} database. Please check the username and ensure you're testing with the correct database.`,
-        debug: {
-          supabaseUrl: supabaseUrl,
-          usernameSearched: username.toLowerCase(),
-          isDevDatabase: isDevSupabase
-        }
+        message: `No profile found with username "${username}". Please check the username and try again.`
+      });
+    }
+    
+    // Filter by public_profile_enabled on the server side (since we're using service role)
+    if (!profile.public_profile_enabled) {
+      console.error('[API] Profile exists but is not public:', username.toLowerCase());
+      return res.status(404).json({ 
+        error: 'Profile not public',
+        message: 'This profile exists but is not set to public. The user needs to enable public profile in their app settings.'
       });
     }
 
