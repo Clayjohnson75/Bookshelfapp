@@ -1018,66 +1018,106 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
             };
 
-            body.innerHTML = \`
-              ${book.cover_url 
-                ? `<img src="${book.cover_url}" alt="${book.title}" class="book-detail-cover">`
-                : `<div class="book-detail-cover-placeholder">${book.title}</div>`
-              }
-              <h1 class="book-detail-title">${book.title || 'Unknown Title'}</h1>
-              ${book.author ? `<div class="book-detail-author">by ${book.author}</div>` : ''}
-              
-              <div class="book-detail-info">
-                ${book.publisher ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Publisher</div>
-                    <div class="book-detail-info-value">${book.publisher}</div>
-                  </div>
-                ` : ''}
-                ${book.published_date ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Published</div>
-                    <div class="book-detail-info-value">${formatDate(book.published_date)}</div>
-                  </div>
-                ` : ''}
-                ${book.page_count ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Pages</div>
-                    <div class="book-detail-info-value">${book.page_count}</div>
-                  </div>
-                ` : ''}
-                ${book.average_rating ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Rating</div>
-                    <div class="book-detail-info-value">${book.average_rating.toFixed(1)}${book.ratings_count ? ` (${book.ratings_count} ratings)` : ''}</div>
-                  </div>
-                ` : ''}
-                ${book.scanned_at ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Added to Library</div>
-                    <div class="book-detail-info-value">${formatDate(book.scanned_at)}</div>
-                  </div>
-                ` : ''}
-                ${book.read_at ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Read</div>
-                    <div class="book-detail-info-value">${formatDate(book.read_at)}</div>
-                  </div>
-                ` : ''}
-                ${book.categories && book.categories.length > 0 ? `
-                  <div class="book-detail-info-item">
-                    <div class="book-detail-info-label">Categories</div>
-                    <div class="book-detail-info-value">${Array.isArray(book.categories) ? book.categories.join(', ') : book.categories}</div>
-                  </div>
-                ` : ''}
-              </div>
+            const escapeHtml = (text) => {
+              if (!text) return '';
+              const div = document.createElement('div');
+              div.textContent = text;
+              return div.innerHTML;
+            };
 
-              ${book.description ? `
+            let html = '';
+            
+            if (book.cover_url) {
+              html += \`<img src="\${escapeHtml(book.cover_url)}" alt="\${escapeHtml(book.title || '')}" class="book-detail-cover">\`;
+            } else {
+              html += \`<div class="book-detail-cover-placeholder">\${escapeHtml(book.title || '')}</div>\`;
+            }
+            
+            html += \`<h1 class="book-detail-title">\${escapeHtml(book.title || 'Unknown Title')}</h1>\`;
+            
+            if (book.author) {
+              html += \`<div class="book-detail-author">by \${escapeHtml(book.author)}</div>\`;
+            }
+            
+            html += '<div class="book-detail-info">';
+            
+            if (book.publisher) {
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Publisher</div>
+                  <div class="book-detail-info-value">\${escapeHtml(book.publisher)}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.published_date) {
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Published</div>
+                  <div class="book-detail-info-value">\${formatDate(book.published_date)}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.page_count) {
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Pages</div>
+                  <div class="book-detail-info-value">\${book.page_count}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.average_rating) {
+              const ratingText = book.average_rating.toFixed(1) + (book.ratings_count ? \` (\${book.ratings_count} ratings)\` : '');
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Rating</div>
+                  <div class="book-detail-info-value">\${ratingText}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.scanned_at) {
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Added to Library</div>
+                  <div class="book-detail-info-value">\${formatDate(book.scanned_at)}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.read_at) {
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Read</div>
+                  <div class="book-detail-info-value">\${formatDate(book.read_at)}</div>
+                </div>
+              \`;
+            }
+            
+            if (book.categories && book.categories.length > 0) {
+              const categoriesText = Array.isArray(book.categories) ? book.categories.join(', ') : book.categories;
+              html += \`
+                <div class="book-detail-info-item">
+                  <div class="book-detail-info-label">Categories</div>
+                  <div class="book-detail-info-value">\${escapeHtml(categoriesText)}</div>
+                </div>
+              \`;
+            }
+            
+            html += '</div>';
+            
+            if (book.description) {
+              html += \`
                 <div class="book-detail-description">
                   <div class="book-detail-info-label" style="margin-bottom: 15px;">Description</div>
-                  <div class="book-detail-description-text">${book.description}</div>
+                  <div class="book-detail-description-text">\${escapeHtml(book.description)}</div>
                 </div>
-              ` : ''}
-            \`;
+              \`;
+            }
+            
+            body.innerHTML = html;
 
             modal.classList.add('show');
             document.body.style.overflow = 'hidden';
