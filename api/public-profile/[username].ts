@@ -46,14 +46,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // Get user profile by username
-    const { data: profile, error: profileError } = await supabase
+    // First try with public_profile_enabled check
+    let { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
       .eq('username', username.toLowerCase())
       .eq('public_profile_enabled', true)
       .single();
 
+    // If that fails, check if the column exists (migration might not be run)
+    if (profileError) {
+      console.error('[API] Profile fetch error:', {
+        code: profileError.code,
+        message: profileError.message,
+        details: profileError.details,
+        hint: profileError.hint
+      });
+      
+      if (profileError.code === '42703') {
+        // Column doesn't exist - migration not run yet
+        return res.status(500).json({ 
+          error: 'Database migration required',
+          message: 'The public profile feature requires a database migration to be run first.'
+        });
+      }
+      
+      if (profileError.code === 'PGRST301' || profileError.message?.includes('row-level security')) {
+        // RLS policy issue
+        return res.status(500).json({ 
+          error: 'Permission denied',
+          message: 'The database migration needs to be run to set up public profile access policies.'
+        });
+      }
+    }
+
+    // If profile not found, try without the public_profile_enabled check to see if user exists
     if (profileError || !profile) {
+      const { data: profileCheck } = await supabase
+        .from('profiles')
+        .select('id, username, public_profile_enabled')
+        .eq('username', username.toLowerCase())
+        .single();
+      
+      if (profileCheck) {
+        console.error('[API] Profile exists but is not public. public_profile_enabled:', profileCheck.public_profile_enabled);
+        return res.status(404).json({ 
+          error: 'Profile not public',
+          message: 'This profile exists but is not set to public. The user needs to enable public profile in their app settings.'
+        });
+      }
+      
       console.error('[API] Error fetching profile:', profileError);
       return res.status(404).json({ 
         error: 'Profile not found',
