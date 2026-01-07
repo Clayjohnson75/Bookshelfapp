@@ -2,7 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const { username } = req.query;
+  const { username, edit } = req.query;
+  const isEditMode = edit === 'true';
 
   if (!username || typeof username !== 'string') {
     return res.status(400).send('Invalid username');
@@ -893,7 +894,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               <span>Bookshelf Scanner</span>
             </a>
             <div style="display: flex; gap: 15px; align-items: center;">
-              <button class="sign-in-button" onclick="openSignInModal()">Sign In</button>
+              ${isEditMode ? `
+                <div style="display: flex; gap: 10px; align-items: center;">
+                  <span style="color: #007AFF; font-weight: 600; font-size: 14px;">✓ Signed In</span>
+                  <button class="sign-in-button" onclick="signOut()" style="background: #e74c3c;">Sign Out</button>
+                </div>
+              ` : `
+                <button class="sign-in-button" onclick="openSignInModal()">Sign In</button>
+              `}
               <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" style="color: #007AFF; text-decoration: none; font-weight: 600;">Get the App</a>
             </div>
           </div>
@@ -901,9 +909,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         <div class="container">
           <div class="profile-header">
+            ${isEditMode ? `
+              <div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 8px; padding: 12px; margin-bottom: 20px; text-align: center;">
+                <span style="color: #2e7d32; font-weight: 600; font-size: 14px;">✓ You are viewing your own profile</span>
+              </div>
+            ` : ''}
             <h1 class="profile-name">${profileData.displayName}</h1>
             <div class="profile-username">@${profileData.username}</div>
             ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
+            ${isEditMode ? `
+              <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
+                <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Edit your profile (coming soon)</p>
+                <button class="sign-in-button" style="background: #007AFF; margin-right: 10px;" onclick="alert('Edit functionality coming soon!')">Edit Profile</button>
+                <button class="sign-in-button" style="background: #666;" onclick="window.location.href='/${profileData.username}'">View Public Profile</button>
+              </div>
+            ` : ''}
             
             <div class="stats-grid">
               <div class="stat-card">
@@ -1166,6 +1186,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             document.body.style.overflow = '';
           }
 
+          function signOut() {
+            localStorage.removeItem('supabase_session');
+            window.location.href = \`/\${username}\`;
+          }
+
+          // Check if user is signed in on page load
+          window.addEventListener('DOMContentLoaded', () => {
+            const session = localStorage.getItem('supabase_session');
+            const urlParams = new URLSearchParams(window.location.search);
+            const isEditMode = urlParams.get('edit') === 'true';
+            
+            if (session && !isEditMode) {
+              // User has session but not in edit mode, redirect to edit mode
+              window.location.href = \`/\${username}?edit=true\`;
+            } else if (!session && isEditMode) {
+              // User in edit mode but no session, redirect to regular view
+              window.location.href = \`/\${username}\`;
+            }
+          });
+
           function openSignInModal() {
             document.getElementById('signInModal').classList.add('show');
           }
@@ -1210,11 +1250,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 throw new Error(data.message || data.error || 'Sign in failed');
               }
 
-              // Success! Redirect to edit page or show edit options
-              // For now, just close modal and show success message
-              closeSignInModal();
-              alert('Signed in successfully! Edit functionality coming soon.');
-              // TODO: Redirect to edit page: window.location.href = \`/\${username}/edit\`;
+              // Success! Store session and redirect to edit view
+              if (data.session) {
+                // Store session token in localStorage
+                localStorage.setItem('supabase_session', JSON.stringify(data.session));
+                // Redirect to edit view
+                window.location.href = \`/\${username}?edit=true\`;
+              } else {
+                closeSignInModal();
+                alert('Signed in successfully! Redirecting...');
+                window.location.href = \`/\${username}?edit=true\`;
+              }
             } catch (error) {
               errorDiv.textContent = error.message || 'Sign in failed. Please try again.';
               errorDiv.classList.add('show');
