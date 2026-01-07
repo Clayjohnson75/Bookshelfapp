@@ -77,51 +77,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let userSession: any = null;
 
     // Verify the token and update the password
-    // Supabase recovery tokens are single-use by default when exchanged
+    // Supabase recovery tokens are hash tokens that should be used with verifyOtp
+    // exchangeCodeForSession is for OAuth/PKCE flows, not recovery tokens
     try {
-      // Try to exchange the token for a session
-      // The token from the email link is typically a code that needs to be exchanged
-      const { data: sessionData, error: sessionError } = await supabase.auth.exchangeCodeForSession(token as string);
-      
-      if (sessionError || !sessionData?.user) {
-        console.error('[API] Error exchanging code for session:', sessionError);
-        
-        // If exchangeCodeForSession fails, try verifyOtp as fallback
-        const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
-          token_hash: token as string,
-          type: 'recovery',
-        });
+      // Recovery tokens should be verified using verifyOtp with type 'recovery'
+      const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
+        token_hash: token as string,
+        type: 'recovery',
+      });
 
-        if (verifyError || !verifyData?.user) {
-          console.error('[API] verifyOtp also failed:', verifyError);
-          
-          // Check if error indicates token was already used
-          if (verifyError?.message?.includes('already been used') || 
-              verifyError?.message?.includes('expired') ||
-              sessionError?.message?.includes('already been used') ||
-              sessionError?.message?.includes('expired')) {
-            return res.status(400).json({ 
-              error: 'Token already used',
-              message: 'This password reset link has already been used. Please request a new one.'
-            });
-          }
-          
+      if (verifyError || !verifyData?.user) {
+        console.error('[API] verifyOtp failed:', verifyError);
+        
+        // Check if error indicates token was already used or expired
+        if (verifyError?.message?.includes('already been used') || 
+            verifyError?.message?.includes('expired') ||
+            verifyError?.code === 'otp_expired') {
           return res.status(400).json({ 
-            error: 'Invalid or expired token',
-            message: 'The password reset link is invalid or has expired. Please request a new one.'
+            error: 'Token already used',
+            message: 'This password reset link has already been used or has expired. Please request a new one.'
           });
         }
-
-        // Token was successfully used - mark as used
-        tokenUsed = true;
-        userEmail = verifyData.user.email || null;
-        userSession = verifyData;
-      } else {
-        // Token was successfully used - mark as used
-        tokenUsed = true;
-        userEmail = sessionData.user.email || null;
-        userSession = sessionData;
+        
+        return res.status(400).json({ 
+          error: 'Invalid or expired token',
+          message: 'The password reset link is invalid or has expired. Please request a new one.'
+        });
       }
+
+      // Token was successfully verified - verifyOtp automatically sets the session
+      tokenUsed = true;
+      userEmail = verifyData.user.email || null;
+      userSession = verifyData;
 
       // At this point, we have a valid session from the recovery token
       // The token is now consumed and cannot be used again (single-use enforced by Supabase)
@@ -130,6 +117,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ 
           error: 'User email not found',
           message: 'Unable to retrieve user information. Please request a new password reset link.'
+        });
+      }
+
+      // Verify the session is set (verifyOtp should have done this automatically)
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession) {
+        console.error('[API] No session found after verifyOtp');
+        return res.status(400).json({ 
+          error: 'Session error',
+          message: 'Unable to establish session. Please request a new password reset link.'
         });
       }
 
@@ -158,17 +155,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // If we get here, the password is different (sign-in failed as expected)
       // Now update the password using the session from the recovery token
-      const { error: updateError } = await supabase.auth.updateUser({
+      // The session should already be set by verifyOtp
+      console.log('[API] Updating password for user:', userEmail);
+      console.log('[API] Current session user:', currentSession?.user?.id);
+      
+      const { data: updateData, error: updateError } = await supabase.auth.updateUser({
         password: password as string
       });
 
       if (updateError) {
         console.error('[API] Error updating password:', updateError);
+        console.error('[API] Update error details:', JSON.stringify(updateError, null, 2));
         return res.status(400).json({ 
           error: 'Password update failed',
           message: updateError.message || 'Failed to update password. Please try again.'
         });
       }
+
+      console.log('[API] Password update successful:', updateData?.user?.id);
 
       // Verify the password was actually changed by attempting to sign in with the new password
       const verifySupabase = createClient(supabaseUrl, supabaseAnonKey, {
