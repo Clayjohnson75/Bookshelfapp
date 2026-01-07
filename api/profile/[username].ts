@@ -1345,7 +1345,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 body: JSON.stringify({
                   emailOrUsername: email,
                   password: password,
-                  username: username,
                 }),
               });
 
