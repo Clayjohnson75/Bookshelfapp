@@ -4,6 +4,12 @@
       "path": "/api/scan-job",
       "schedule": "* * * * *"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html"
+    }
   ]
 }
 
