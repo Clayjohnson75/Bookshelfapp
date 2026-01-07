@@ -1354,15 +1354,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 throw new Error(data.message || data.error || 'Sign in failed');
               }
 
-              // Success! Store session and redirect to edit view
+              // Success! Store session and redirect to user's own profile edit page
               if (data.session) {
                 // Store session token in localStorage
                 localStorage.setItem('supabase_session', JSON.stringify(data.session));
-                // Redirect to edit view
-                window.location.href = \`/\${username}?edit=true\`;
+                
+                // Get username to redirect to their own profile
+                const usernameResponse = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: data.session })
+                });
+                
+                if (usernameResponse.ok) {
+                  const usernameData = await usernameResponse.json();
+                  if (usernameData.username) {
+                    // Redirect to their own profile edit page
+                    window.location.href = \`/\${usernameData.username}?edit=true\`;
+                  } else {
+                    // Fallback to profile page
+                    window.location.href = '/profile';
+                  }
+                } else {
+                  // Fallback to profile page
+                  window.location.href = '/profile';
+                }
               } else {
                 closeSignInModal();
-                window.location.href = \`/\${username}?edit=true\`;
+                window.location.href = \`/\${username}\`;
               }
             } catch (error) {
               errorDiv.textContent = error.message || 'Sign in failed. Please try again.';
