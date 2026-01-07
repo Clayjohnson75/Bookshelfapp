@@ -842,11 +842,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               font-size: 28px;
             }
             .books-grid {
-              grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-              gap: 15px;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 8px;
+            }
+            .book-card {
+              border-radius: 8px;
+            }
+            .book-cover,
+            .book-cover-placeholder {
+              border-radius: 6px;
+            }
+            .book-info {
+              padding: 6px;
+            }
+            .book-title {
+              font-size: 11px;
+              margin-bottom: 2px;
+            }
+            .book-author {
+              font-size: 9px;
             }
             .stats-grid {
               grid-template-columns: repeat(2, 1fr);
+            }
+            .book-detail-content {
+              max-width: 95%;
+              max-height: 95vh;
+            }
+            .book-detail-body {
+              padding: 20px;
+            }
+            .book-detail-cover,
+            .book-detail-cover-placeholder {
+              width: 150px;
+            }
+            .book-detail-title {
+              font-size: 24px;
+            }
+            .book-detail-author {
+              font-size: 16px;
             }
           }
         </style>
