@@ -546,6 +546,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .sign-in-button:hover {
             background: #0056CC;
           }
+          .ask-library-button {
+            background: linear-gradient(135deg, #007AFF 0%, #0056CC 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+            display: flex;
+            align-items: center;
+          }
+          .ask-library-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4);
+          }
+          .ask-library-button:active {
+            transform: translateY(0);
+          }
+          .chat-messages {
+            scrollbar-width: thin;
+            scrollbar-color: #ccc transparent;
+          }
+          .chat-messages::-webkit-scrollbar {
+            width: 6px;
+          }
+          .chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+          }
+          .chat-messages::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+          }
+          .chat-messages::-webkit-scrollbar-thumb:hover {
+            background: #999;
+          }
+          .error-message {
+            display: none;
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-top: 10px;
+          }
+          .error-message.show {
+            display: block;
+          }
           .modal-overlay {
             display: none;
             position: fixed;
@@ -993,7 +1044,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           </div>
 
           <div class="books-section">
-            <h2 class="section-title">Library</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
+              <h2 class="section-title" style="margin: 0;">Library</h2>
+              <button 
+                id="askLibraryButton" 
+                class="ask-library-button" 
+                onclick="openAskLibraryModal()"
+                style="display: none;"
+              >
+                <span style="margin-right: 6px;">💬</span>
+                Ask Your Library
+              </button>
+            </div>
             <div class="search-container">
               <input 
                 type="text" 
@@ -1036,6 +1098,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             <div class="book-detail-body" id="bookDetailBody">
               <!-- Book details will be inserted here -->
             </div>
+          </div>
+        </div>
+
+        <!-- Ask Your Library Chat Modal -->
+        <div class="modal-overlay" id="askLibraryModal" onclick="closeAskLibraryModal(event)">
+          <div class="modal-content ask-library-modal" onclick="event.stopPropagation()" style="max-width: 600px; height: 80vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+              <h2 class="modal-title">Ask Your Library</h2>
+              <button class="modal-close" onclick="closeAskLibraryModal()">&times;</button>
+            </div>
+            <div class="chat-messages" id="chatMessages" style="flex: 1; overflow-y: auto; padding: 20px; background: #f8f6f0; border-radius: 12px; margin-bottom: 20px; min-height: 300px;">
+              <div class="chat-message assistant" style="margin-bottom: 16px;">
+                <div style="background: white; padding: 12px 16px; border-radius: 12px; max-width: 85%; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                  <p style="margin: 0; color: #2c3e50; line-height: 1.5;">Hi! I can help you find books in your library. Try asking:</p>
+                  <ul style="margin: 8px 0 0 0; padding-left: 20px; color: #666;">
+                    <li>"Which books do I have about stoicism?"</li>
+                    <li>"Do I own Dune?"</li>
+                    <li>"What unread books do I have?"</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+            <div class="chat-input-container" style="display: flex; gap: 10px;">
+              <input 
+                type="text" 
+                id="chatInput" 
+                class="form-input" 
+                placeholder="Ask about your library..."
+                style="flex: 1;"
+                onkeypress="if(event.key === 'Enter') sendChatMessage()"
+              />
+              <button 
+                class="form-button" 
+                onclick="sendChatMessage()"
+                id="chatSendButton"
+                style="padding: 12px 24px; white-space: nowrap;"
+              >
+                Send
+              </button>
+            </div>
+            <div class="error-message" id="chatError" style="margin-top: 10px;"></div>
           </div>
         </div>
 
@@ -1263,8 +1366,187 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
           }
 
+          // Chat functionality
+          let chatConversation = [];
+          
+          function checkAndShowButton() {
+            const session = localStorage.getItem('supabase_session');
+            if (!session) {
+              console.log('No session found, hiding button');
+              return;
+            }
+            
+            try {
+              const sessionData = JSON.parse(session);
+              const button = document.getElementById('askLibraryButton');
+              
+              if (!button) {
+                console.error('Ask Your Library button not found in DOM');
+                return;
+              }
+              
+              // Show button if user has session (they're signed in)
+              // API will verify ownership and Pro status when they use it
+              button.style.display = 'flex';
+              setTimeout(() => {
+                button.style.opacity = '1';
+              }, 10);
+              console.log('Ask Your Library button shown (user is signed in)');
+              
+              // Verify ownership asynchronously (but don't hide button if check fails)
+              fetch('/api/get-username', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: sessionData })
+              })
+              .then(response => response.ok ? response.json() : null)
+              .then(data => {
+                if (data) {
+                  const signedInUsername = data.username?.toLowerCase();
+                  const profileUsername = '${profileData.username}'.toLowerCase();
+                  if (signedInUsername !== profileUsername) {
+                    // User doesn't own this profile - hide button
+                    const btn = document.getElementById('askLibraryButton');
+                    if (btn) btn.style.display = 'none';
+                    console.log('User does not own this profile, button hidden');
+                  }
+                }
+              })
+              .catch(error => {
+                console.error('Error checking profile ownership:', error);
+                // Keep button visible on error - let API handle it
+              });
+            } catch (error) {
+              console.error('Error parsing session:', error);
+            }
+          }
+          
+          function openAskLibraryModal() {
+            const modal = document.getElementById('askLibraryModal');
+            modal.classList.add('show');
+            document.body.style.overflow = 'hidden';
+            // Focus on input
+            setTimeout(() => {
+              document.getElementById('chatInput')?.focus();
+            }, 100);
+          }
+          
+          function closeAskLibraryModal(event) {
+            if (event && event.target !== event.currentTarget && event.target.closest('.ask-library-modal')) {
+              return;
+            }
+            const modal = document.getElementById('askLibraryModal');
+            modal.classList.remove('show');
+            document.body.style.overflow = '';
+          }
+          
+          async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            const sendButton = document.getElementById('chatSendButton');
+            const errorDiv = document.getElementById('chatError');
+            errorDiv.textContent = '';
+            errorDiv.classList.remove('show');
+            
+            // Disable input and button
+            input.disabled = true;
+            sendButton.disabled = true;
+            sendButton.textContent = 'Sending...';
+            
+            // Add user message to chat
+            addChatMessage('user', message);
+            input.value = '';
+            
+            // Add to conversation history
+            chatConversation.push({ role: 'user', content: message });
+            
+            // Get session token
+            const session = localStorage.getItem('supabase_session');
+            if (!session) {
+              showChatError('Please sign in to use this feature.');
+              input.disabled = false;
+              sendButton.disabled = false;
+              sendButton.textContent = 'Send';
+              return;
+            }
+            
+            try {
+              const sessionData = JSON.parse(session);
+              const response = await fetch('/api/library/ask', {
+                method: 'POST',
+                headers: {
+                  'Authorization': \`Bearer \${sessionData.access_token}\`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  message: message,
+                  conversation: chatConversation.slice(-6) // Last 6 messages
+                })
+              });
+              
+              const data = await response.json();
+              
+              if (response.status === 403) {
+                showChatError(data.reply || 'This feature is available to Pro users only.');
+              } else if (response.ok) {
+                // Add assistant response
+                addChatMessage('assistant', data.reply);
+                chatConversation.push({ role: 'assistant', content: data.reply });
+              } else {
+                showChatError(data.reply || 'An error occurred. Please try again.');
+              }
+            } catch (error) {
+              console.error('Error sending chat message:', error);
+              showChatError('An error occurred. Please try again.');
+            } finally {
+              input.disabled = false;
+              sendButton.disabled = false;
+              sendButton.textContent = 'Send';
+              input.focus();
+            }
+          }
+          
+          function addChatMessage(role, content) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = \`chat-message \${role}\`;
+            messageDiv.style.marginBottom = '16px';
+            messageDiv.style.display = 'flex';
+            messageDiv.style.flexDirection = role === 'user' ? 'row-reverse' : 'row';
+            
+            const messageContent = document.createElement('div');
+            messageContent.style.background = role === 'user' ? '#007AFF' : 'white';
+            messageContent.style.color = role === 'user' ? 'white' : '#2c3e50';
+            messageContent.style.padding = '12px 16px';
+            messageContent.style.borderRadius = '12px';
+            messageContent.style.maxWidth = '85%';
+            messageContent.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+            messageContent.style.lineHeight = '1.5';
+            
+            const messageText = document.createElement('p');
+            messageText.style.margin = '0';
+            messageText.style.whiteSpace = 'pre-wrap';
+            messageText.textContent = content;
+            messageContent.appendChild(messageText);
+            
+            messageDiv.appendChild(messageContent);
+            messagesDiv.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          }
+          
+          function showChatError(message) {
+            const errorDiv = document.getElementById('chatError');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+          }
+
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
+            console.log('DOMContentLoaded - checking for Ask Your Library button');
             const session = localStorage.getItem('supabase_session');
             const urlParams = new URLSearchParams(window.location.search);
             const isEditMode = urlParams.get('edit') === 'true';
@@ -1274,6 +1556,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               window.location.href = \`/\${username}\`;
               return;
             }
+            
+            // Always check and show button if user owns profile (regardless of edit mode)
+            checkAndShowButton();
             
             if (session) {
               try {
