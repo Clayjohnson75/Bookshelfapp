@@ -1543,72 +1543,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 return;
               }
               
-              // Check if token is expired (expires_at is in seconds, convert to milliseconds)
-              const expiresAt = sessionData?.expires_at;
-              
-              if (expiresAt) {
-                const expiresAtMs = expiresAt * 1000;
-                const now = Date.now();
-                const isExpired = now >= expiresAtMs;
-                
-                // Refresh if expired or within 5 minutes of expiring
-                if (isExpired || now >= expiresAtMs - 300000) {
-                  console.log('Token expired or expiring soon. Attempting refresh...');
-                  
-                  // Try to refresh the token
-                  const refreshToken = sessionData?.refresh_token;
-                  if (refreshToken) {
-                    try {
-                      // Use our refresh token endpoint
-                      const refreshResponse = await fetch('/api/refresh-token', {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                          refresh_token: refreshToken
-                        })
-                      });
-                      
-                      if (refreshResponse.ok) {
-                        const refreshData = await refreshResponse.json();
-                        if (refreshData.session) {
-                          // Update session with new tokens
-                          sessionData = refreshData.session;
-                          // Save updated session
-                          localStorage.setItem('supabase_session', JSON.stringify(sessionData));
-                          accessToken = sessionData.access_token;
-                          console.log('Token refreshed successfully');
-                        } else {
-                          // Refresh failed - session expired
-                          aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
-                          return;
-                        }
-                      } else {
-                        // Refresh failed - check if token was already expired
-                        if (isExpired) {
-                          aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
-                          return;
-                        }
-                        // If not expired yet, try to continue with current token
-                        const errorData = await refreshResponse.json().catch(() => ({}));
-                        console.error('Failed to refresh token:', errorData);
-                      }
-                    } catch (refreshError) {
-                      console.error('Error refreshing token:', refreshError);
-                      if (isExpired) {
-                        aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
-                        return;
-                      }
-                      // If not expired yet, try to continue
-                    }
-                  } else if (isExpired) {
-                    // No refresh token and token is expired
-                    aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
-                    return;
-                  }
-                }
-              }
+              // Don't check token expiration - let the API handle it
+              // If token is expired, API will return 401 and we'll show error
               
               // Determine if we're querying own library or someone else's
               const profileUsername = '${profileData.username}';
