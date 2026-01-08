@@ -446,7 +446,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Extract JWT from Authorization header
     const authHeader = req.headers.authorization || '';
     const jwt = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    
     if (!jwt) {
+      console.error('[API] No JWT token found in Authorization header');
+      console.error('[API] Auth header:', authHeader ? 'Present but invalid format' : 'Missing');
+      return res.status(401).json({ error: 'Unauthorized', reply: refusal });
+    }
+    
+    if (jwt.length < 50) {
+      console.error('[API] JWT token appears to be too short:', jwt.length, 'characters');
       return res.status(401).json({ error: 'Unauthorized', reply: refusal });
     }
 

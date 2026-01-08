@@ -1535,10 +1535,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             try {
               let sessionData = JSON.parse(session);
               
-              // Get access token - check both possible session structures
-              let accessToken = sessionData?.access_token || sessionData?.session?.access_token;
+              // Get access token - check all possible session structures
+              // Supabase session can be: { access_token, refresh_token, ... } or { session: { access_token, ... } }
+              let accessToken = sessionData?.access_token || 
+                               sessionData?.session?.access_token ||
+                               (sessionData?.user && sessionData?.user?.access_token);
               
-              if (!accessToken || typeof accessToken !== 'string') {
+              // Debug logging
+              if (!accessToken) {
+                console.error('No access token found. Session structure:', {
+                  hasAccessToken: !!sessionData?.access_token,
+                  hasSessionAccessToken: !!sessionData?.session?.access_token,
+                  sessionKeys: Object.keys(sessionData || {}),
+                  sessionType: typeof sessionData
+                });
+                aiAnswerText.textContent = 'Please sign in to use this feature.';
+                return;
+              }
+              
+              if (typeof accessToken !== 'string') {
+                console.error('Access token is not a string:', typeof accessToken, accessToken);
                 aiAnswerText.textContent = 'Please sign in to use this feature.';
                 return;
               }
@@ -1582,6 +1598,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 requestBody.target_username = targetUsername;
               }
               
+              // Log token info for debugging (first 20 chars only for security)
+              console.log('Sending request with token:', accessToken ? accessToken.substring(0, 20) + '...' : 'NO TOKEN');
+              
               const response = await fetch('/api/library/ask', {
                 method: 'POST',
                 headers: {
@@ -1613,7 +1632,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               
               if (response.status === 401) {
                 console.error('Authentication failed. Response:', data);
-                aiAnswerText.textContent = data.reply || 'Session expired. Please refresh the page and sign in again.';
+                console.error('Token used:', accessToken ? accessToken.substring(0, 20) + '...' : 'NO TOKEN');
+                // If token is invalid/expired, suggest signing in again
+                const shouldSignIn = confirm('Your session has expired. Would you like to sign in again?');
+                if (shouldSignIn) {
+                  window.location.href = '/profile';
+                } else {
+                  aiAnswerText.textContent = data.reply || 'Session expired. Please refresh the page and sign in again.';
+                }
               } else if (response.status === 403) {
                 aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
               } else if (response.ok) {
