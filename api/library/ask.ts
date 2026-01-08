@@ -467,38 +467,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'Server configuration error', reply: refusal });
     }
 
-    // Get user ID
+    // Get user ID by decoding JWT directly (auth.getUser() doesn't work with JWT in headers)
     let userId: string;
     try {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      // Decode JWT to get user ID from payload
+      // JWT format: header.payload.signature
+      const jwtParts = jwt.split('.');
+      if (jwtParts.length !== 3) {
+        console.error('[API] Invalid JWT format');
+        return res.status(401).json({ error: 'Invalid token format', reply: refusal });
+      }
       
-      if (userErr) {
-        console.error('[API] Auth error:', {
-          message: userErr.message,
-          status: userErr.status,
-          name: userErr.name
+      // Decode base64 URL-safe payload
+      const payloadBase64 = jwtParts[1].replace(/-/g, '+').replace(/_/g, '/');
+      // Add padding if needed
+      const padding = payloadBase64.length % 4;
+      const paddedPayload = padding ? payloadBase64 + '='.repeat(4 - padding) : payloadBase64;
+      
+      const payload = JSON.parse(Buffer.from(paddedPayload, 'base64').toString());
+      
+      // Check if token is expired
+      if (payload.exp && payload.exp * 1000 < Date.now()) {
+        console.error('[API] Token expired. Exp:', new Date(payload.exp * 1000), 'Now:', new Date());
+        return res.status(401).json({ 
+          error: 'Token expired', 
+          reply: 'Your session has expired. Please refresh the page and sign in again.' 
         });
-        // If token is expired, return a clearer error
-        if (userErr.message?.includes('expired') || userErr.message?.includes('invalid') || userErr.status === 401) {
-          return res.status(401).json({ 
-            error: 'Token expired or invalid', 
-            reply: 'Your session has expired. Please refresh the page and sign in again.' 
-          });
-        }
-        return res.status(401).json({ error: 'Unauthorized', reply: refusal });
       }
       
-      userId = userData?.user?.id;
+      // Get user ID from JWT payload (sub = subject = user ID)
+      userId = payload.sub;
       if (!userId) {
-        console.error('[API] No user ID in token');
-        return res.status(401).json({ error: 'Unauthorized', reply: refusal });
+        console.error('[API] No user ID (sub) in JWT payload');
+        return res.status(401).json({ error: 'Invalid token', reply: refusal });
       }
-    } catch (authError: any) {
-      console.error('[API] Error getting user:', {
-        message: authError?.message,
-        stack: authError?.stack
-      });
-      return res.status(401).json({ error: 'Unauthorized', reply: refusal });
+      
+      console.log('[API] Extracted user ID from JWT:', userId);
+    } catch (decodeError: any) {
+      console.error('[API] Error decoding JWT:', decodeError?.message);
+      return res.status(401).json({ error: 'Invalid token', reply: refusal });
     }
 
     // Check Pro entitlement
