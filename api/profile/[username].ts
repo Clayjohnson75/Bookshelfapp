@@ -1535,12 +1535,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             try {
               let sessionData = JSON.parse(session);
               
-              // Supabase session object has access_token at root
-              let accessToken = sessionData?.access_token;
+              // Get access token - check both possible session structures
+              let accessToken = sessionData?.access_token || sessionData?.session?.access_token;
               
               if (!accessToken || typeof accessToken !== 'string') {
-                console.error('No valid access token found. Session structure:', sessionData);
-                aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                aiAnswerText.textContent = 'Please sign in to use this feature.';
                 return;
               }
               
