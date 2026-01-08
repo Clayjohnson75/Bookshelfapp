@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Platform, View, ActivityIndicator, StyleSheet } from 'react-native';
+import { Platform, View, ActivityIndicator, StyleSheet, StatusBar } from 'react-native';
 import { enableScreens } from 'react-native-screens';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
@@ -81,6 +81,11 @@ const AppContent: React.FC = () => {
 export default function App() {
   return (
     <SafeAreaProvider>
+      <StatusBar 
+        barStyle="light-content" 
+        backgroundColor="#2d3748"
+        translucent={false}
+      />
       <AuthProvider>
         <ScanningProvider>
           <AppContent />
