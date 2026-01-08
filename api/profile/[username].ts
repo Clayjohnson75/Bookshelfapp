@@ -1088,7 +1088,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             <h2 class="section-title">Library</h2>
             
             <!-- Mode Toggle Buttons -->
-            <div class="mode-toggle-container" id="modeToggleContainer" style="display: none; margin-bottom: 20px;">
+            <div class="mode-toggle-container" id="modeToggleContainer" style="display: flex; margin-bottom: 20px;">
               <button 
                 id="libraryModeButton" 
                 class="mode-toggle-button active" 
@@ -1409,6 +1409,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const toggleContainer = document.getElementById('modeToggleContainer');
             if (toggleContainer) {
               toggleContainer.style.display = 'flex';
+              console.log('Toggle buttons shown');
+            } else {
+              console.log('Toggle container not found');
             }
           }
           
@@ -1464,7 +1467,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               if (expiresAt) {
                 const expiresAtMs = expiresAt * 1000;
                 const now = Date.now();
-                if (now >= expiresAtMs - 300000) {
+                const isExpired = now >= expiresAtMs;
+                
+                if (isExpired || now >= expiresAtMs - 300000) {
                   const refreshToken = sessionData?.refresh_token;
                   if (refreshToken) {
                     try {
@@ -1479,11 +1484,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         if (refreshData.session) {
                           localStorage.setItem('supabase_session', JSON.stringify(refreshData.session));
                           sessionData.access_token = refreshData.session.access_token;
+                          sessionData.expires_at = refreshData.session.expires_at;
+                        } else {
+                          // Refresh failed - redirect to sign in
+                          alert('Your session has expired. Please sign in again.');
+                          window.location.href = '/profile';
+                          return;
+                        }
+                      } else {
+                        // Refresh failed - redirect to sign in
+                        if (isExpired) {
+                          alert('Your session has expired. Please sign in again.');
+                          window.location.href = '/profile';
+                          return;
                         }
                       }
                     } catch (e) {
                       console.error('Error refreshing token:', e);
+                      if (isExpired) {
+                        alert('Your session has expired. Please sign in again.');
+                        window.location.href = '/profile';
+                        return;
+                      }
                     }
+                  } else if (isExpired) {
+                    // No refresh token and token is expired - redirect to sign in
+                    alert('Your session has expired. Please sign in again.');
+                    window.location.href = '/profile';
+                    return;
                   }
                 }
               }
@@ -1605,14 +1633,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               
               // Check if token is expired (expires_at is in seconds, convert to milliseconds)
               const expiresAt = sessionData?.expires_at;
-              let needsRefresh = false;
               
               if (expiresAt) {
                 const expiresAtMs = expiresAt * 1000;
                 const now = Date.now();
+                const isExpired = now >= expiresAtMs;
+                
                 // Refresh if expired or within 5 minutes of expiring
-                if (now >= expiresAtMs - 300000) {
-                  needsRefresh = true;
+                if (isExpired || now >= expiresAtMs - 300000) {
                   console.log('Token expired or expiring soon. Attempting refresh...');
                   
                   // Try to refresh the token
@@ -1640,19 +1668,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                           accessToken = sessionData.access_token;
                           console.log('Token refreshed successfully');
                         } else {
-                          throw new Error('No session in refresh response');
+                          // Refresh failed - session expired
+                          aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
+                          return;
                         }
                       } else {
-                        const errorData = await refreshResponse.json();
+                        // Refresh failed - check if token was already expired
+                        if (isExpired) {
+                          aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
+                          return;
+                        }
+                        // If not expired yet, try to continue with current token
+                        const errorData = await refreshResponse.json().catch(() => ({}));
                         console.error('Failed to refresh token:', errorData);
-                        aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
-                        return;
                       }
                     } catch (refreshError) {
                       console.error('Error refreshing token:', refreshError);
-                      aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
-                      return;
+                      if (isExpired) {
+                        aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
+                        return;
+                      }
+                      // If not expired yet, try to continue
                     }
+                  } else if (isExpired) {
+                    // No refresh token and token is expired
+                    aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
+                    return;
+                  }
                   } else {
                     console.error('No refresh token available');
                     aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
@@ -1784,8 +1826,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               return;
             }
             
-            // Always check and show toggle buttons if user owns profile (regardless of edit mode)
+            // Always show toggle buttons to everyone
             checkAndShowToggleButtons();
+            
+            // Also check periodically in case session was added (every 2 seconds for first 10 seconds)
+            let checkCount = 0;
+            const intervalId = setInterval(() => {
+              checkAndShowToggleButtons();
+              checkCount++;
+              if (checkCount >= 5) {
+                clearInterval(intervalId);
+              }
+            }, 2000);
+            
+            // Listen for storage changes (when user signs in from another tab)
+            window.addEventListener('storage', (e) => {
+              if (e.key === 'supabase_session') {
+                console.log('Session storage changed, checking toggle buttons');
+                checkAndShowToggleButtons();
+              }
+            });
+            
+            // Also check when page becomes visible (in case user signed in and switched back)
+            document.addEventListener('visibilitychange', () => {
+              if (!document.hidden) {
+                console.log('Page became visible, checking toggle buttons');
+                checkAndShowToggleButtons();
+              }
+            });
+            
+            // Also check when focus returns to the window
+            window.addEventListener('focus', () => {
+              console.log('Window focused, checking toggle buttons');
+              checkAndShowToggleButtons();
+            });
             
             if (session) {
               try {
