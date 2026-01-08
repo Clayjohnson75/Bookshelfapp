@@ -2225,7 +2225,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.create({
   safeContainer: {
     flex: 1,
     backgroundColor: '#f8f9fa',
@@ -2885,7 +2885,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   exportBookCard: {
-    width: (Dimensions.get('window').width - 40 - 32 - 16 - 12) / 4, // 4 columns: screen - 40 (modal margins) - 32 (body padding) - 16 (grid padding) - 12 (3 gaps of 4px)
+    width: (screenWidth - 40 - 32 - 16 - 12) / 4, // 4 columns: screen - 40 (modal margins) - 32 (body padding) - 16 (grid padding) - 12 (3 gaps of 4px)
     marginBottom: 12,
     marginHorizontal: 2,
     backgroundColor: '#f7fafc',
