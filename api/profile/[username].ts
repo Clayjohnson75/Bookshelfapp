@@ -1531,13 +1531,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             try {
               const sessionData = JSON.parse(session);
               
-              // Check if access_token exists
-              const accessToken = sessionData?.access_token || sessionData?.session?.access_token;
-              if (!accessToken) {
-                console.error('No access token found in session:', sessionData);
-                aiAnswerText.textContent = 'Session expired. Please sign in again.';
+              // Supabase session object has access_token at root
+              const accessToken = sessionData?.access_token;
+              
+              if (!accessToken || typeof accessToken !== 'string') {
+                console.error('No valid access token found. Session structure:', sessionData);
+                aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
                 return;
               }
+              
+              // Check if token is expired (expires_at is in seconds, convert to milliseconds)
+              const expiresAt = sessionData?.expires_at;
+              if (expiresAt) {
+                const expiresAtMs = expiresAt * 1000;
+                const now = Date.now();
+                if (now >= expiresAtMs) {
+                  console.error('Token expired. Expires at:', new Date(expiresAtMs), 'Now:', new Date(now));
+                  aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                  return;
+                }
+              }
+              
+              // Debug: Log what we're sending
+              console.log('Sending request to /api/library/ask');
+              console.log('Has access token:', !!accessToken);
+              console.log('Token starts with:', accessToken.substring(0, 20));
               
               const response = await fetch('/api/library/ask', {
                 method: 'POST',
@@ -1551,10 +1569,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 })
               });
               
+              console.log('Response status:', response.status);
               const data = await response.json();
+              console.log('Response data:', data);
               
               if (response.status === 401) {
                 console.error('Authentication failed. Response:', data);
+                console.error('This usually means the token is expired or invalid. Please sign in again.');
                 aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
               } else if (response.status === 403) {
                 aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
@@ -1759,4 +1780,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).send('Error loading profile');
   }
 }
+
 
