@@ -36,10 +36,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Get user ID
     const { data: userData, error: userErr } = await supabase.auth.getUser();
-    const userId = userData?.user?.id;
-    if (userErr || !userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    
+    if (userErr) {
+      console.error('[API] Error getting user from token:', userErr.message);
+      return res.status(401).json({ error: 'Unauthorized', message: userErr.message });
     }
+    
+    const userId = userData?.user?.id;
+    if (!userId) {
+      console.error('[API] No user ID found in token');
+      return res.status(401).json({ error: 'Unauthorized', message: 'No user ID in token' });
+    }
+    
+    console.log('[API] Checking subscription for user:', userId);
 
     // Get subscription status
     const { data, error } = await supabase
@@ -48,9 +57,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq('id', userId)
       .single();
 
-    if (error || !data) {
+    if (error) {
+      console.error('[API] Error fetching profile:', error.message);
       return res.status(200).json({ isPro: false });
     }
+    
+    if (!data) {
+      console.error('[API] No profile data found for user:', userId);
+      return res.status(200).json({ isPro: false });
+    }
+    
+    console.log('[API] Profile subscription data:', {
+      tier: data.subscription_tier,
+      status: data.subscription_status,
+      endsAt: data.subscription_ends_at
+    });
 
     // Check if subscription is active and not expired
     let isPro = false;

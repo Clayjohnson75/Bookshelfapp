@@ -1447,40 +1447,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 return;
               }
               
-              // Get token - check both possible session structures
-              let sessionData = JSON.parse(session);
-              let accessToken = sessionData?.access_token || sessionData?.session?.access_token;
-              
-              if (!accessToken) {
-                alert('Please sign in to use this feature.');
-                return;
-              }
-              
-              // Try to check Pro status, but don't block if it fails - let the actual API handle it
-              try {
-                const proResponse = await fetch('/api/check-subscription', {
-                  method: 'GET',
-                  headers: {
-                    'Authorization': \`Bearer \${accessToken}\`,
-                    'Content-Type': 'application/json'
-                  }
-                });
-                
-                if (proResponse.ok) {
-                  const proData = await proResponse.json();
-                  if (!proData.isPro) {
-                    alert('Ask Your Library is a Pro feature. Please upgrade to Pro in the app to use this feature.');
-                    return;
-                  }
-                }
-                // If 401 or other error, just continue - the actual API will handle authentication
-              } catch (e) {
-                // Ignore errors, just continue
-              }
-              
+              // Just switch to ask mode - let the API handle Pro validation when they ask a question
               // Check if user owns this profile or is viewing someone else's
               let isOwnProfile = false;
               try {
+                const sessionData = JSON.parse(session);
                 const usernameResponse = await fetch('/api/get-username', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -1497,7 +1468,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 // Ignore error, just assume not own profile
               }
               
-              // User is Pro - switch to ask mode
+              // Switch to ask mode
               currentMode = 'ask';
               const libraryBtn = document.getElementById('libraryModeButton');
               const askBtn = document.getElementById('askLibraryModeButton');
