@@ -1591,12 +1591,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 body: JSON.stringify(requestBody)
               });
               
-              const data = await response.json();
+              // Check if response is JSON before parsing
+              const contentType = response.headers.get('content-type');
+              let data;
+              
+              if (contentType && contentType.includes('application/json')) {
+                try {
+                  data = await response.json();
+                } catch (jsonError) {
+                  console.error('Error parsing JSON response:', jsonError);
+                  aiAnswerText.textContent = 'An error occurred. Please try again.';
+                  return;
+                }
+              } else {
+                // Not JSON - read as text
+                const text = await response.text();
+                console.error('Non-JSON response:', text);
+                aiAnswerText.textContent = 'An error occurred. Please try again.';
+                return;
+              }
               
               if (response.status === 401) {
                 console.error('Authentication failed. Response:', data);
-                console.error('This usually means the token is expired or invalid. Please sign in again.');
-                aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                aiAnswerText.textContent = data.reply || 'Session expired. Please refresh the page and sign in again.';
               } else if (response.status === 403) {
                 aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
               } else if (response.ok) {
@@ -1613,7 +1630,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }
               } else {
                 console.error('API error:', response.status, data);
-                aiAnswerText.textContent = data.reply || 'An error occurred. Please try again.';
+                aiAnswerText.textContent = data.reply || data.error || 'An error occurred. Please try again.';
               }
             } catch (error) {
               console.error('Error asking library question:', error);

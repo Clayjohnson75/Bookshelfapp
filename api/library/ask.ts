@@ -399,6 +399,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/json');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -406,12 +407,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
+      return res.status(405).json({ error: 'Method not allowed', reply: refusal });
     }
 
     // Validate request body
-    const body = validateRequestBody(req.body);
-    if (!body) {
+    let body: RequestBody | null;
+    try {
+      body = validateRequestBody(req.body);
+      if (!body) {
+        console.error('[API] Invalid request body:', req.body);
+        return res.status(400).json({ error: 'Invalid request body', reply: refusal });
+      }
+    } catch (bodyError: any) {
+      console.error('[API] Error validating request body:', bodyError);
       return res.status(400).json({ error: 'Invalid request body', reply: refusal });
     }
 
@@ -432,9 +440,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Get user ID
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
-    const userId = userData?.user?.id;
-    if (userErr || !userId) {
+    let userId: string;
+    try {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      userId = userData?.user?.id;
+      if (userErr || !userId) {
+        console.error('[API] Auth error:', userErr);
+        return res.status(401).json({ error: 'Unauthorized', reply: refusal });
+      }
+    } catch (authError: any) {
+      console.error('[API] Error getting user:', authError);
       return res.status(401).json({ error: 'Unauthorized', reply: refusal });
     }
 
@@ -448,8 +463,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Library-only classification
-    const isLibrary = await classifyLibraryOnly(body.message);
-    if (!isLibrary) {
+    let isLibrary: boolean;
+    try {
+      isLibrary = await classifyLibraryOnly(body.message);
+      if (!isLibrary) {
+        return res.status(200).json({ reply: refusal, matched_books: [] });
+      }
+    } catch (classifyError: any) {
+      console.error('[API] Classification error:', classifyError);
+      // Fail closed - refuse if classification fails
       return res.status(200).json({ reply: refusal, matched_books: [] });
     }
 
@@ -494,14 +516,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // If no target_username, we're querying own library - RLS will handle filtering
 
     // Retrieve relevant books from target user's library
-    const books = await retrieveBooks(supabase, body.message, targetUserId, useServiceRole, supabaseAdmin);
-    if (!books.length) {
-      const libraryText = body.target_username ? 'their library' : 'your library';
-      return res.status(200).json({
-        reply:
-          \`I couldn't find books in \${libraryText} about that. Try asking about a different topic, or check if they have scanned books related to your question.\`,
-        matched_books: [],
-      });
+    let books: Book[];
+    try {
+      books = await retrieveBooks(supabase, body.message, targetUserId, useServiceRole, supabaseAdmin);
+      if (!books.length) {
+        const libraryText = body.target_username ? 'their library' : 'your library';
+        return res.status(200).json({
+          reply:
+            \`I couldn't find books in \${libraryText} about that. Try asking about a different topic, or check if they have scanned books related to your question.\`,
+          matched_books: [],
+        });
+      }
+    } catch (retrieveError: any) {
+      console.error('[API] Error retrieving books:', retrieveError);
+      return res.status(200).json({ reply: refusal, matched_books: [] });
     }
 
     // Answer grounded in books - pass whether it's own library or someone else's
@@ -541,7 +569,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (e: any) {
     console.error('[API] Error in library/ask:', e?.message || String(e));
-    return res.status(200).json({ reply: refusal, matched_books: [] });
+    console.error('[API] Full error:', e);
+    // Always return JSON, never plain text
+    try {
+      return res.status(200).json({ reply: refusal, matched_books: [] });
+    } catch (jsonError) {
+      // If JSON serialization fails, return minimal JSON
+      return res.status(500).json({ error: 'Internal server error', reply: refusal });
+    }
   }
 }
 
