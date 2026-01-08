@@ -54,6 +54,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   }, []);
   
   const screenWidth = dimensions.width;
+  const screenHeight = dimensions.height;
+  
+  const styles = useMemo(() => getStyles(screenWidth, screenHeight), [screenWidth, screenHeight]);
+  
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
