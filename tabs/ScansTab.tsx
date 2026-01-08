@@ -4369,7 +4369,7 @@ export const ScansTab: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (screenWidth: number) => StyleSheet.create({
   safeContainer: {
     flex: 1,
     backgroundColor: '#f8f9fa', // Subtle gray background
