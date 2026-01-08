@@ -568,6 +568,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .ask-library-button:active {
             transform: translateY(0);
           }
+          .mode-toggle-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+          }
+          .mode-toggle-button {
+            padding: 12px 24px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            color: #666;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          }
+          .mode-toggle-button:hover {
+            border-color: #007AFF;
+            color: #007AFF;
+          }
+          .mode-toggle-button.active {
+            background: linear-gradient(135deg, #007AFF 0%, #0056CC 100%);
+            color: white;
+            border-color: #007AFF;
+            box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+          }
+          .ai-answer-box {
+            background: linear-gradient(135deg, #f8f6f0 0%, #ffffff 100%);
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+          }
+          .suggested-books-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 15px;
+          }
           .chat-messages {
             scrollbar-width: thin;
             scrollbar-color: #ccc transparent;
@@ -1044,46 +1085,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           </div>
 
           <div class="books-section">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
-              <h2 class="section-title" style="margin: 0;">Library</h2>
+            <h2 class="section-title">Library</h2>
+            
+            <!-- Mode Toggle Buttons -->
+            <div class="mode-toggle-container" id="modeToggleContainer" style="display: none; margin-bottom: 20px;">
               <button 
-                id="askLibraryButton" 
-                class="ask-library-button" 
-                onclick="openAskLibraryModal()"
-                style="display: none;"
+                id="libraryModeButton" 
+                class="mode-toggle-button active" 
+                onclick="switchToLibraryMode()"
               >
-                <span style="margin-right: 6px;">💬</span>
+                Library
+              </button>
+              <button 
+                id="askLibraryModeButton" 
+                class="mode-toggle-button" 
+                onclick="switchToAskLibraryMode()"
+              >
                 Ask Your Library
               </button>
             </div>
+            
+            <!-- Search/Ask Input -->
             <div class="search-container">
               <input 
                 type="text" 
                 class="search-input" 
                 id="bookSearch" 
                 placeholder="Search books by title or author..." 
-                oninput="filterBooks()"
+                oninput="handleSearchInput()"
+                onkeypress="if(event.key === 'Enter') handleSearchSubmit()"
               />
             </div>
-            ${(books || []).length > 0 
-              ? `<div class="books-grid">
-                  ${(books || []).map((book: any, index: number) => `
-                    <div class="book-card" onclick="openBookDetail(${index})">
-                      ${book.cover_url 
-                        ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
-                        : `<div class="book-cover-placeholder">${book.title}</div>`
-                      }
-                      <div class="book-info">
-                        <div class="book-title">${book.title}</div>
-                        ${book.author ? `<div class="book-author">${book.author}</div>` : ''}
+            
+            <!-- AI Answer Display -->
+            <div id="aiAnswerContainer" style="display: none; margin: 20px 0;">
+              <div class="ai-answer-box">
+                <p id="aiAnswerText" style="margin: 0; color: #2c3e50; line-height: 1.6;"></p>
+              </div>
+            </div>
+            
+            <!-- Suggested Books Section (for Ask Your Library mode) -->
+            <div id="suggestedBooksContainer" style="display: none; margin-top: 20px;">
+              <h3 class="suggested-books-title">Suggested Books</h3>
+              <div class="books-grid" id="suggestedBooksGrid">
+                <!-- Books will be inserted here -->
+              </div>
+            </div>
+            
+            <!-- Regular Library Books -->
+            <div id="regularBooksContainer">
+              ${(books || []).length > 0 
+                ? `<div class="books-grid" id="regularBooksGrid">
+                    ${(books || []).map((book: any, index: number) => `
+                      <div class="book-card" onclick="openBookDetail(${index})">
+                        ${book.cover_url 
+                          ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
+                          : `<div class="book-cover-placeholder">${book.title}</div>`
+                        }
+                        <div class="book-info">
+                          <div class="book-title">${book.title}</div>
+                          ${book.author ? `<div class="book-author">${book.author}</div>` : ''}
+                        </div>
                       </div>
-                    </div>
-                  `).join('')}
-                </div>`
-              : `<div class="empty-state">
-                  <div class="empty-state-text">No books yet</div>
-                </div>`
-            }
+                    `).join('')}
+                  </div>`
+                : `<div class="empty-state">
+                    <div class="empty-state-text">No books yet</div>
+                  </div>`
+              }
+            </div>
           </div>
 
         </div>
@@ -1098,47 +1168,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             <div class="book-detail-body" id="bookDetailBody">
               <!-- Book details will be inserted here -->
             </div>
-          </div>
-        </div>
-
-        <!-- Ask Your Library Chat Modal -->
-        <div class="modal-overlay" id="askLibraryModal" onclick="closeAskLibraryModal(event)">
-          <div class="modal-content ask-library-modal" onclick="event.stopPropagation()" style="max-width: 600px; height: 80vh; display: flex; flex-direction: column;">
-            <div class="modal-header">
-              <h2 class="modal-title">Ask Your Library</h2>
-              <button class="modal-close" onclick="closeAskLibraryModal()">&times;</button>
-            </div>
-            <div class="chat-messages" id="chatMessages" style="flex: 1; overflow-y: auto; padding: 20px; background: #f8f6f0; border-radius: 12px; margin-bottom: 20px; min-height: 300px;">
-              <div class="chat-message assistant" style="margin-bottom: 16px;">
-                <div style="background: white; padding: 12px 16px; border-radius: 12px; max-width: 85%; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                  <p style="margin: 0; color: #2c3e50; line-height: 1.5;">Hi! I can help you find books in your library. Try asking:</p>
-                  <ul style="margin: 8px 0 0 0; padding-left: 20px; color: #666;">
-                    <li>"Which books do I have about stoicism?"</li>
-                    <li>"Do I own Dune?"</li>
-                    <li>"What unread books do I have?"</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-            <div class="chat-input-container" style="display: flex; gap: 10px;">
-              <input 
-                type="text" 
-                id="chatInput" 
-                class="form-input" 
-                placeholder="Ask about your library..."
-                style="flex: 1;"
-                onkeypress="if(event.key === 'Enter') sendChatMessage()"
-              />
-              <button 
-                class="form-button" 
-                onclick="sendChatMessage()"
-                id="chatSendButton"
-                style="padding: 12px 24px; white-space: nowrap;"
-              >
-                Send
-              </button>
-            </div>
-            <div class="error-message" id="chatError" style="margin-top: 10px;"></div>
           </div>
         </div>
 
@@ -1182,17 +1211,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           let filterTimeout;
           function filterBooks() {
+            if (currentMode !== 'library') return;
+            
             clearTimeout(filterTimeout);
             filterTimeout = setTimeout(() => {
               const searchTerm = document.getElementById('bookSearch').value.toLowerCase();
-              const bookCards = document.querySelectorAll('.book-card');
+              const regularBooksGrid = document.getElementById('regularBooksGrid');
+              if (!regularBooksGrid) return;
+              
+              const bookCards = regularBooksGrid.querySelectorAll('.book-card');
               
               // Use requestAnimationFrame for smooth updates
               requestAnimationFrame(() => {
                 bookCards.forEach(card => {
                   const title = card.querySelector('.book-title')?.textContent?.toLowerCase() || '';
                   const author = card.querySelector('.book-author')?.textContent?.toLowerCase() || '';
-                  const matches = title.includes(searchTerm) || author.includes(searchTerm);
+                  const matches = !searchTerm || title.includes(searchTerm) || author.includes(searchTerm);
                   card.style.display = matches ? 'block' : 'none';
                 });
               });
@@ -1366,34 +1400,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
           }
 
-          // Chat functionality
+          // Mode and search functionality
+          let currentMode = 'library'; // 'library' or 'ask'
           let chatConversation = [];
           
-          function checkAndShowButton() {
+          function checkAndShowToggleButtons() {
             const session = localStorage.getItem('supabase_session');
             if (!session) {
-              console.log('No session found, hiding button');
               return;
             }
             
             try {
               const sessionData = JSON.parse(session);
-              const button = document.getElementById('askLibraryButton');
+              const toggleContainer = document.getElementById('modeToggleContainer');
               
-              if (!button) {
-                console.error('Ask Your Library button not found in DOM');
+              if (!toggleContainer) {
                 return;
               }
               
-              // Show button if user has session (they're signed in)
-              // API will verify ownership and Pro status when they use it
-              button.style.display = 'flex';
-              setTimeout(() => {
-                button.style.opacity = '1';
-              }, 10);
-              console.log('Ask Your Library button shown (user is signed in)');
+              // Show toggle buttons if user has session
+              toggleContainer.style.display = 'flex';
               
-              // Verify ownership asynchronously (but don't hide button if check fails)
+              // Verify ownership asynchronously
               fetch('/api/get-username', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1405,70 +1433,98 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   const signedInUsername = data.username?.toLowerCase();
                   const profileUsername = '${profileData.username}'.toLowerCase();
                   if (signedInUsername !== profileUsername) {
-                    // User doesn't own this profile - hide button
-                    const btn = document.getElementById('askLibraryButton');
-                    if (btn) btn.style.display = 'none';
-                    console.log('User does not own this profile, button hidden');
+                    // User doesn't own this profile - hide toggle
+                    const container = document.getElementById('modeToggleContainer');
+                    if (container) container.style.display = 'none';
                   }
                 }
               })
               .catch(error => {
                 console.error('Error checking profile ownership:', error);
-                // Keep button visible on error - let API handle it
               });
             } catch (error) {
               console.error('Error parsing session:', error);
             }
           }
           
-          function openAskLibraryModal() {
-            const modal = document.getElementById('askLibraryModal');
-            modal.classList.add('show');
-            document.body.style.overflow = 'hidden';
-            // Focus on input
-            setTimeout(() => {
-              document.getElementById('chatInput')?.focus();
-            }, 100);
-          }
-          
-          function closeAskLibraryModal(event) {
-            if (event && event.target !== event.currentTarget && event.target.closest('.ask-library-modal')) {
-              return;
+          function switchToLibraryMode() {
+            currentMode = 'library';
+            const libraryBtn = document.getElementById('libraryModeButton');
+            const askBtn = document.getElementById('askLibraryModeButton');
+            const searchInput = document.getElementById('bookSearch');
+            const aiAnswerContainer = document.getElementById('aiAnswerContainer');
+            const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
+            const regularBooksContainer = document.getElementById('regularBooksContainer');
+            
+            if (libraryBtn) libraryBtn.classList.add('active');
+            if (askBtn) askBtn.classList.remove('active');
+            if (searchInput) {
+              searchInput.placeholder = 'Search books by title or author...';
+              searchInput.value = '';
             }
-            const modal = document.getElementById('askLibraryModal');
-            modal.classList.remove('show');
-            document.body.style.overflow = '';
+            if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
+            if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+            if (regularBooksContainer) regularBooksContainer.style.display = 'block';
+            
+            // Restore original book filtering
+            filterBooks();
           }
           
-          async function sendChatMessage() {
-            const input = document.getElementById('chatInput');
-            const message = input.value.trim();
+          function switchToAskLibraryMode() {
+            currentMode = 'ask';
+            const libraryBtn = document.getElementById('libraryModeButton');
+            const askBtn = document.getElementById('askLibraryModeButton');
+            const searchInput = document.getElementById('bookSearch');
+            const regularBooksContainer = document.getElementById('regularBooksContainer');
+            
+            if (libraryBtn) libraryBtn.classList.remove('active');
+            if (askBtn) askBtn.classList.add('active');
+            if (searchInput) {
+              searchInput.placeholder = 'Ask a question about your library!';
+              searchInput.value = '';
+            }
+            if (regularBooksContainer) regularBooksContainer.style.display = 'none';
+            
+            // Clear previous answers
+            const aiAnswerContainer = document.getElementById('aiAnswerContainer');
+            const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
+            if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
+            if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+          }
+          
+          function handleSearchInput() {
+            if (currentMode === 'library') {
+              filterBooks();
+            }
+          }
+          
+          async function handleSearchSubmit() {
+            if (currentMode === 'ask') {
+              await askLibraryQuestion();
+            }
+          }
+          
+          async function askLibraryQuestion() {
+            const searchInput = document.getElementById('bookSearch');
+            const message = searchInput?.value.trim();
             if (!message) return;
             
-            const sendButton = document.getElementById('chatSendButton');
-            const errorDiv = document.getElementById('chatError');
-            errorDiv.textContent = '';
-            errorDiv.classList.remove('show');
+            const aiAnswerContainer = document.getElementById('aiAnswerContainer');
+            const aiAnswerText = document.getElementById('aiAnswerText');
+            const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
+            const suggestedBooksGrid = document.getElementById('suggestedBooksGrid');
             
-            // Disable input and button
-            input.disabled = true;
-            sendButton.disabled = true;
-            sendButton.textContent = 'Sending...';
+            if (!aiAnswerContainer || !aiAnswerText) return;
             
-            // Add user message to chat
-            addChatMessage('user', message);
-            input.value = '';
-            
-            // Add to conversation history
-            chatConversation.push({ role: 'user', content: message });
+            // Show loading state
+            aiAnswerContainer.style.display = 'block';
+            aiAnswerText.textContent = 'Thinking...';
+            if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
             
             // Get session token
             const session = localStorage.getItem('supabase_session');
             if (!session) {
-              showChatError('Please sign in to use this feature.');
-              input.disabled = false;
-              sendButton.disabled = false;
-              sendButton.textContent = 'Send';
+              aiAnswerText.textContent = 'Please sign in to use this feature.';
               return;
             }
             
@@ -1482,66 +1538,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 },
                 body: JSON.stringify({
                   message: message,
-                  conversation: chatConversation.slice(-6) // Last 6 messages
+                  conversation: chatConversation.slice(-6)
                 })
               });
               
               const data = await response.json();
               
               if (response.status === 403) {
-                showChatError(data.reply || 'This feature is available to Pro users only.');
+                aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
               } else if (response.ok) {
-                // Add assistant response
-                addChatMessage('assistant', data.reply);
+                // Display answer
+                aiAnswerText.textContent = data.reply;
+                chatConversation.push({ role: 'user', content: message });
                 chatConversation.push({ role: 'assistant', content: data.reply });
+                
+                // Display suggested books if any
+                if (data.matched_books && data.matched_books.length > 0) {
+                  displaySuggestedBooks(data.matched_books);
+                } else {
+                  if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+                }
               } else {
-                showChatError(data.reply || 'An error occurred. Please try again.');
+                aiAnswerText.textContent = data.reply || 'An error occurred. Please try again.';
               }
             } catch (error) {
-              console.error('Error sending chat message:', error);
-              showChatError('An error occurred. Please try again.');
-            } finally {
-              input.disabled = false;
-              sendButton.disabled = false;
-              sendButton.textContent = 'Send';
-              input.focus();
+              console.error('Error asking library question:', error);
+              aiAnswerText.textContent = 'An error occurred. Please try again.';
             }
           }
           
-          function addChatMessage(role, content) {
-            const messagesDiv = document.getElementById('chatMessages');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = \`chat-message \${role}\`;
-            messageDiv.style.marginBottom = '16px';
-            messageDiv.style.display = 'flex';
-            messageDiv.style.flexDirection = role === 'user' ? 'row-reverse' : 'row';
+          function displaySuggestedBooks(books) {
+            const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
+            const suggestedBooksGrid = document.getElementById('suggestedBooksGrid');
             
-            const messageContent = document.createElement('div');
-            messageContent.style.background = role === 'user' ? '#007AFF' : 'white';
-            messageContent.style.color = role === 'user' ? 'white' : '#2c3e50';
-            messageContent.style.padding = '12px 16px';
-            messageContent.style.borderRadius = '12px';
-            messageContent.style.maxWidth = '85%';
-            messageContent.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
-            messageContent.style.lineHeight = '1.5';
+            if (!suggestedBooksContainer || !suggestedBooksGrid) return;
             
-            const messageText = document.createElement('p');
-            messageText.style.margin = '0';
-            messageText.style.whiteSpace = 'pre-wrap';
-            messageText.textContent = content;
-            messageContent.appendChild(messageText);
+            suggestedBooksContainer.style.display = 'block';
+            suggestedBooksGrid.innerHTML = '';
             
-            messageDiv.appendChild(messageContent);
-            messagesDiv.appendChild(messageDiv);
-            
-            // Scroll to bottom
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-          }
-          
-          function showChatError(message) {
-            const errorDiv = document.getElementById('chatError');
-            errorDiv.textContent = message;
-            errorDiv.classList.add('show');
+            // Find full book data from allBooks
+            books.forEach(bookData => {
+              const fullBook = allBooks.find(b => b.id === bookData.id);
+              if (fullBook) {
+                const bookIndex = allBooks.indexOf(fullBook);
+                const bookCard = document.createElement('div');
+                bookCard.className = 'book-card';
+                bookCard.onclick = () => openBookDetail(bookIndex);
+                
+                const cover = fullBook.cover_url 
+                  ? \`<img src="\${fullBook.cover_url}" alt="\${fullBook.title}" class="book-cover">\`
+                  : \`<div class="book-cover-placeholder">\${fullBook.title}</div>\`;
+                
+                bookCard.innerHTML = \`
+                  \${cover}
+                  <div class="book-info">
+                    <div class="book-title">\${fullBook.title || ''}</div>
+                    \${fullBook.author ? \`<div class="book-author">\${fullBook.author}</div>\` : ''}
+                  </div>
+                \`;
+                
+                suggestedBooksGrid.appendChild(bookCard);
+              }
+            });
           }
 
           // Check if user is signed in and owns this profile on page load
@@ -1557,8 +1615,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               return;
             }
             
-            // Always check and show button if user owns profile (regardless of edit mode)
-            checkAndShowButton();
+            // Always check and show toggle buttons if user owns profile (regardless of edit mode)
+            checkAndShowToggleButtons();
             
             if (session) {
               try {
