@@ -1530,10 +1530,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             
             try {
               const sessionData = JSON.parse(session);
+              
+              // Check if access_token exists
+              const accessToken = sessionData?.access_token || sessionData?.session?.access_token;
+              if (!accessToken) {
+                console.error('No access token found in session:', sessionData);
+                aiAnswerText.textContent = 'Session expired. Please sign in again.';
+                return;
+              }
+              
               const response = await fetch('/api/library/ask', {
                 method: 'POST',
                 headers: {
-                  'Authorization': \`Bearer \${sessionData.access_token}\`,
+                  'Authorization': \`Bearer \${accessToken}\`,
                   'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
@@ -1544,7 +1553,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               
               const data = await response.json();
               
-              if (response.status === 403) {
+              if (response.status === 401) {
+                console.error('Authentication failed. Response:', data);
+                aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+              } else if (response.status === 403) {
                 aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
               } else if (response.ok) {
                 // Display answer
@@ -1559,6 +1571,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
                 }
               } else {
+                console.error('API error:', response.status, data);
                 aiAnswerText.textContent = data.reply || 'An error occurred. Please try again.';
               }
             } catch (error) {
