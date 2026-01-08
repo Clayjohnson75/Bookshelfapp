@@ -1458,19 +1458,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               let accessToken = sessionData?.access_token;
               
               if (!accessToken) {
-                // Token missing, redirect to sign in
-                window.location.href = '/profile';
+                // Token missing
+                console.error('No access token found in session');
+                alert('Please sign in to use this feature.');
                 return;
               }
               
-              // Check if token is expired and try to refresh
+              // Check if token is expired and try to refresh (only if actually expired, not if expiring soon)
               const expiresAt = sessionData?.expires_at;
               if (expiresAt) {
                 const expiresAtMs = expiresAt * 1000;
                 const now = Date.now();
                 const isExpired = now >= expiresAtMs;
                 
-                if (isExpired || now >= expiresAtMs - 300000) {
+                // Only refresh if actually expired (not if expiring soon)
+                if (isExpired) {
+                  console.log('Token is expired, attempting refresh...');
                   const refreshToken = sessionData?.refresh_token;
                   if (refreshToken) {
                     try {
@@ -1489,33 +1492,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                           accessToken = refreshData.session.access_token;
                           console.log('Token refreshed successfully');
                         } else {
-                          // Refresh failed - redirect to sign in
-                          alert('Your session has expired. Please sign in again.');
-                          window.location.href = '/profile';
+                          // Refresh failed - don't redirect, just show error
+                          console.error('Token refresh failed: no session in response');
+                          alert('Your session has expired. Please refresh the page and sign in again.');
                           return;
                         }
                       } else {
-                        // Refresh failed - redirect to sign in
-                        if (isExpired) {
-                          alert('Your session has expired. Please sign in again.');
-                          window.location.href = '/profile';
-                          return;
-                        }
+                        // Refresh failed - don't redirect, just show error
+                        const errorData = await refreshResponse.json().catch(() => ({}));
+                        console.error('Token refresh failed:', errorData);
+                        alert('Your session has expired. Please refresh the page and sign in again.');
+                        return;
                       }
                     } catch (e) {
                       console.error('Error refreshing token:', e);
-                      if (isExpired) {
-                        alert('Your session has expired. Please sign in again.');
-                        window.location.href = '/profile';
-                        return;
-                      }
+                      alert('Your session has expired. Please refresh the page and sign in again.');
+                      return;
                     }
-                  } else if (isExpired) {
-                    // No refresh token and token is expired - redirect to sign in
-                    alert('Your session has expired. Please sign in again.');
-                    window.location.href = '/profile';
+                  } else {
+                    // No refresh token and token is expired
+                    console.error('Token expired and no refresh token available');
+                    alert('Your session has expired. Please refresh the page and sign in again.');
                     return;
                   }
+                } else {
+                  console.log('Token is still valid, expires in', Math.round((expiresAtMs - now) / 1000 / 60), 'minutes');
                 }
               }
               
@@ -1537,9 +1538,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   return;
                 }
               } else {
-                // Error checking Pro status - might need to sign in again
-                alert('Please sign in again to use this feature.');
-                window.location.href = '/profile';
+                // Error checking Pro status
+                const errorText = await proResponse.text().catch(() => 'Unknown error');
+                console.error('Error checking Pro status:', proResponse.status, errorText);
+                if (proResponse.status === 401) {
+                  alert('Your session has expired. Please refresh the page and sign in again.');
+                } else {
+                  alert('Unable to verify subscription. Please try again.');
+                }
                 return;
               }
               
