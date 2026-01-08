@@ -257,6 +257,124 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
   }
 }
 
+// Extract search keywords from user question using ChatGPT
+async function extractSearchKeywords(query: string): Promise<string[]> {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    // Fallback to simple extraction if OpenAI not available
+    const queryLower = query.toLowerCase();
+    const allWords = queryLower.split(/\s+/).filter((t) => t.length > 0);
+    const stopWords = new Set([
+      'what', 'which', 'where', 'when', 'who', 'why', 'how',
+      'are', 'is', 'was', 'were', 'be', 'been', 'being',
+      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+      'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+      'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'could', 'should',
+      'books', 'book', 'library', 'libraries', 'in', 'about', 'related', 'to'
+    ]);
+    return allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openaiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a search keyword extractor. Given a user question about books in their library, extract the key search terms and related concepts.\n\n' +
+              'Your task:\n' +
+              '1. Identify the main topic/subject the user is asking about\n' +
+              '2. Extract relevant keywords, synonyms, and related terms\n' +
+              '3. Include variations and related concepts (e.g., "war" → include "battle", "military", "conflict", "combat")\n' +
+              '4. Remove filler words, question words, and library-specific words\n' +
+              '5. Return a JSON object with a "keywords" array of search terms\n\n' +
+              'Examples:\n' +
+              '- "what books are about war/battle" → ["war", "battle", "military", "conflict", "combat", "warfare"]\n' +
+              '- "books about native americans" → ["native", "americans", "indigenous", "tribal", "native american"]\n' +
+              '- "do I have any science fiction books?" → ["science", "fiction", "sci-fi", "speculative", "futuristic"]\n' +
+              '- "books that mention cooking" → ["cooking", "culinary", "recipes", "food", "cuisine", "kitchen"]\n\n' +
+              'Return ONLY valid JSON with a "keywords" array.',
+          },
+          { role: 'user', content: query },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_tokens: 200,
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[API] OpenAI keyword extraction error:', response.status, errorText);
+      // Fallback to simple extraction
+      const queryLower = query.toLowerCase();
+      const allWords = queryLower.split(/\s+/).filter((t) => t.length > 0);
+      const stopWords = new Set([
+        'what', 'which', 'where', 'when', 'who', 'why', 'how',
+        'are', 'is', 'was', 'were', 'be', 'been', 'being',
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+        'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+        'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'could', 'should',
+        'books', 'book', 'library', 'libraries', 'in', 'about', 'related', 'to'
+      ]);
+      return allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error('Empty response');
+    }
+
+    const parsed = JSON.parse(content);
+    const keywords = parsed.keywords || [];
+    
+    // Ensure we have at least some keywords
+    if (keywords.length === 0) {
+      // Fallback: extract basic terms from query
+      const queryLower = query.toLowerCase();
+      const allWords = queryLower.split(/\s+/).filter((t) => t.length >= 2);
+      const stopWords = new Set(['what', 'which', 'where', 'when', 'who', 'why', 'how', 'are', 'is', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'this', 'that', 'my', 'your', 'do', 'does', 'have', 'has', 'books', 'book', 'library', 'about', 'related']);
+      return allWords.filter((word) => !stopWords.has(word));
+    }
+    
+    console.log('[API] Extracted search keywords:', keywords);
+    return keywords.map((k: string) => k.toLowerCase());
+  } catch (error: any) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      console.error('[API] Keyword extraction timeout, using fallback');
+    } else {
+      console.error('[API] Keyword extraction error:', error?.message || String(error));
+    }
+    // Fallback to simple extraction
+    const queryLower = query.toLowerCase();
+    const allWords = queryLower.split(/\s+/).filter((t) => t.length > 0);
+    const stopWords = new Set([
+      'what', 'which', 'where', 'when', 'who', 'why', 'how',
+      'are', 'is', 'was', 'were', 'be', 'been', 'being',
+      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+      'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+      'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'could', 'should',
+      'books', 'book', 'library', 'libraries', 'in', 'about', 'related', 'to'
+    ]);
+    return allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
+  }
+}
+
 // Step 2: Retrieval - fetch ALL books and search through descriptions thoroughly
 async function retrieveBooks(
   supabase: any,
@@ -295,18 +413,9 @@ async function retrieveBooks(
       return [];
     }
     
-    // Step 1: Quick keyword filter to narrow down candidates (fast)
-    const queryLower = query.toLowerCase();
-    const allWords = queryLower.split(/\s+/).filter((t) => t.length > 0);
-    const stopWords = new Set([
-      'what', 'which', 'where', 'when', 'who', 'why', 'how',
-      'are', 'is', 'was', 'were', 'be', 'been', 'being',
-      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-      'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
-      'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'could', 'should',
-      'books', 'book', 'library', 'libraries', 'in', 'about', 'related', 'to'
-    ]);
-    const searchTerms = allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
+    // Step 1: Use ChatGPT to interpret the question and extract search keywords
+    console.log('[API] Extracting search keywords from query:', query);
+    const searchTerms = await extractSearchKeywords(query);
     
     let candidateBooks: Book[] = [];
     
