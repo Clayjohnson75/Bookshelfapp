@@ -180,22 +180,28 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
     return [];
   }
 
-  // Limit to first 500 books to avoid token limits (if library is huge)
-  const booksToAnalyze = allBooks.slice(0, 500);
+  // Limit to first 1000 books to avoid token limits (if library is huge)
+  const booksToAnalyze = allBooks.slice(0, 1000);
   
-  // Create a compact representation of books for AI
+  console.log('[API] Analyzing', booksToAnalyze.length, 'candidate books with ChatGPT');
+  
+  // Create a compact representation of books for AI (shorter descriptions to reduce token usage)
   const bookSummaries = booksToAnalyze.map((book, index) => ({
     id: book.id,
     index: index,
     title: book.title || '',
     author: book.author || '',
-    description: (book.description || '').slice(0, 300), // Truncate long descriptions
-    categories: (book.categories || []).slice(0, 3).join(', '),
+    description: (book.description || '').slice(0, 200), // Reduced from 300 to 200 to save tokens
+    categories: (book.categories || []).slice(0, 2).join(', '), // Reduced from 3 to 2
   }));
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    // Increase timeout based on number of books: 20 seconds base + 0.1s per book
+    // For 127 books: 20 + 12.7 = ~33 seconds
+    const timeoutMs = 20000 + (booksToAnalyze.length * 100);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    console.log('[API] ChatGPT timeout set to', timeoutMs, 'ms for', booksToAnalyze.length, 'books');
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -209,7 +215,7 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
         messages: [
           {
             role: 'system',
-            content: 'You are a book library search assistant. Given a user question and a list of books, identify which books are relevant to the question. Return a JSON object with a "book_ids" array containing the IDs of relevant books. Be thorough - include books that match the topic even if the connection is subtle (e.g., a book about WWII even if it doesn\'t have "war" in the title). Return up to 20 most relevant books.',
+            content: 'You are a book library search assistant. Given a user question and a list of books, identify which books are relevant to the question. Return a JSON object with a "book_ids" array containing the IDs of relevant books. Be thorough - include books that match the topic even if the connection is subtle (e.g., a book about WWII even if it doesn\'t have "war" in the title). Return ALL relevant books, not just a limited number. Include books that are even tangentially related to the topic.',
           },
           {
             role: 'user',
@@ -218,7 +224,7 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
         ],
         response_format: { type: 'json_object' },
         temperature: 0.1,
-        max_tokens: 500,
+        max_tokens: 4000, // Increased further to allow many book IDs (up to ~200 books)
       }),
     });
 
@@ -240,6 +246,7 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
     const bookIds = parsed.book_ids || parsed.ids || [];
     
     if (!Array.isArray(bookIds)) {
+      console.error('[API] ChatGPT returned invalid book_ids format:', typeof bookIds);
       return [];
     }
     
@@ -248,7 +255,8 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
       .map((id: string) => booksToAnalyze.find((b) => b.id === id))
       .filter((b: Book | undefined): b is Book => b !== undefined);
     
-    console.log('[API] ChatGPT found', relevantBooks.length, 'relevant books out of', booksToAnalyze.length);
+    console.log('[API] ChatGPT found', relevantBooks.length, 'relevant books out of', booksToAnalyze.length, 'candidates');
+    console.log('[API] ChatGPT selected book titles:', relevantBooks.map(b => `${b.title} by ${b.author}`).join(', '));
     return relevantBooks;
   } catch (error: any) {
     console.error('[API] Error finding books with AI, using fallback:', error?.message);
@@ -399,17 +407,41 @@ async function retrieveBooks(
       baseQuery = baseQuery.eq('user_id', targetUserId);
     }
     
-    // Fetch ALL books (or at least a large batch - Supabase has a limit, so we'll do pagination if needed)
-    // First, try to get up to 1000 books
-    const { data: allBooksData, error: fetchError } = await baseQuery
-      .limit(1000);
+    // Fetch ALL books - try to get as many as possible
+    // Supabase default limit is 1000, but we can paginate if needed
+    let allBooksData: any[] = [];
+    let offset = 0;
+    const pageSize = 1000;
+    let hasMore = true;
     
-    if (fetchError) {
-      console.error('[API] Error fetching books:', fetchError);
-      return [];
+    while (hasMore) {
+      const { data: pageData, error: fetchError } = await baseQuery
+        .range(offset, offset + pageSize - 1)
+        .limit(pageSize);
+      
+      if (fetchError) {
+        console.error('[API] Error fetching books page:', fetchError);
+        break;
+      }
+      
+      if (!pageData || pageData.length === 0) {
+        hasMore = false;
+      } else {
+        allBooksData = allBooksData.concat(pageData);
+        hasMore = pageData.length === pageSize; // If we got a full page, there might be more
+        offset += pageSize;
+        
+        // Safety limit: don't fetch more than 5000 books (very large libraries)
+        if (allBooksData.length >= 5000) {
+          console.log('[API] Reached safety limit of 5000 books, stopping fetch');
+          hasMore = false;
+        }
+      }
     }
     
-    if (!allBooksData || allBooksData.length === 0) {
+    console.log('[API] Fetched', allBooksData.length, 'total books from library');
+    
+    if (allBooksData.length === 0) {
       return [];
     }
     
@@ -439,21 +471,29 @@ async function retrieveBooks(
       }) as Book[];
       
       console.log('[API] Keyword filter found', candidateBooks.length, 'candidate books');
+      console.log('[API] Candidate book titles:', candidateBooks.slice(0, 10).map((b: Book) => `${b.title} by ${b.author}`).join(', '), candidateBooks.length > 10 ? '...' : '');
     } else {
-      // If no keywords, use all books (but limit to recent ones if library is huge)
-      candidateBooks = allBooksData.slice(0, 100) as Book[];
-      console.log('[API] No keywords, using first 100 books as candidates');
+      // If no keywords, use all books (but limit if library is huge)
+      candidateBooks = allBooksData.slice(0, 500) as Book[];
+      console.log('[API] No keywords, using first 500 books as candidates');
     }
     
-    // Step 2: If we have candidates, let ChatGPT refine the selection (only send candidates, not all books)
-    if (candidateBooks.length > 0 && candidateBooks.length <= 200) {
-      // Only use ChatGPT if we have a reasonable number of candidates (not too many)
+    // Step 2: If we have candidates, let ChatGPT refine the selection
+    // Increased limit to 1000 candidates (ChatGPT can handle this)
+    if (candidateBooks.length > 0 && candidateBooks.length <= 1000) {
+      console.log('[API] Using ChatGPT to analyze', candidateBooks.length, 'candidate books');
       const aiRefinedBooks = await findRelevantBooksWithAI(query, candidateBooks);
       
       if (aiRefinedBooks.length > 0) {
         console.log('[API] ChatGPT refined', aiRefinedBooks.length, 'books from', candidateBooks.length, 'candidates');
-        return aiRefinedBooks.slice(0, 20);
+        console.log('[API] Final selected books:', aiRefinedBooks.map(b => `${b.title} by ${b.author}`).join(', '));
+        // Return all books ChatGPT found, don't limit to 20
+        return aiRefinedBooks;
+      } else {
+        console.log('[API] ChatGPT found no books, falling back to keyword scoring');
       }
+    } else if (candidateBooks.length > 1000) {
+      console.log('[API] Too many candidates (', candidateBooks.length, '), using keyword scoring instead of ChatGPT');
     }
     
     // Step 3: Fallback - use scored keyword search if ChatGPT didn't help or we have too many candidates
@@ -541,9 +581,15 @@ async function retrieveBooks(
       return b.score - a.score;
     });
     
-    // Return top matches (up to 20 to give AI more context)
-    const results = matched.slice(0, 20).map((s) => s.book);
-    console.log('[API] Returning top', results.length, 'books');
+    // Return ALL matching books, not just top N
+    // The frontend can handle displaying many books
+    const results = matched.map((s) => s.book);
+    console.log('[API] Keyword scoring found', matched.length, 'matching books, returning all', results.length);
+    if (results.length <= 20) {
+      console.log('[API] All scored books:', results.map(b => `${b.title} by ${b.author} (score: ${matched.find(m => m.book.id === b.id)?.score})`).join(', '));
+    } else {
+      console.log('[API] Top 10 scored books:', results.slice(0, 10).map(b => `${b.title} by ${b.author} (score: ${matched.find(m => m.book.id === b.id)?.score})`).join(', '), '... and', results.length - 10, 'more');
+    }
     return results;
   } catch (error: any) {
     console.error('[API] Error in retrieveBooks:', error?.message || String(error));
