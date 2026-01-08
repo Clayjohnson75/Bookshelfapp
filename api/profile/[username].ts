@@ -1208,7 +1208,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         <script>
           const allBooks = ${JSON.stringify(books || [])};
           const username = '${profileData.username}';
-
+          
           let filterTimeout;
           function filterBooks() {
             if (currentMode !== 'library') return;
@@ -1814,18 +1814,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             });
           }
           
-          // Expose functions globally for onclick handlers (must be after all functions are defined)
-          try {
-            window.switchToLibraryMode = switchToLibraryMode;
-            window.switchToAskLibraryMode = switchToAskLibraryMode;
-            window.handleSearchSubmit = handleSearchSubmit;
-            window.handleSearchInput = handleSearchInput;
-            window.askLibraryQuestion = askLibraryQuestion;
-            console.log('Functions exposed to window successfully');
-          } catch (e) {
-            console.error('Error exposing functions to window:', e);
-          }
-          
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
             console.log('DOMContentLoaded - checking for Ask Your Library button');
@@ -1990,6 +1978,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               submitButton.textContent = 'Sign In';
             }
           }
+          
+          // Expose functions globally for onclick handlers (at end of script, after all functions defined)
+          window.switchToLibraryMode = switchToLibraryMode;
+          window.switchToAskLibraryMode = switchToAskLibraryMode;
+          window.handleSearchSubmit = handleSearchSubmit;
+          window.handleSearchInput = handleSearchInput;
+          window.askLibraryQuestion = askLibraryQuestion;
+          window.handleProfileNavClick = handleProfileNavClick;
+          window.openBookDetail = openBookDetail;
+          window.closeBookDetail = closeBookDetail;
+          window.filterBooks = filterBooks;
         </script>
       </body>
       </html>
