@@ -471,13 +471,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let userId: string;
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
+      
+      if (userErr) {
+        console.error('[API] Auth error:', {
+          message: userErr.message,
+          status: userErr.status,
+          name: userErr.name
+        });
+        // If token is expired, return a clearer error
+        if (userErr.message?.includes('expired') || userErr.message?.includes('invalid') || userErr.status === 401) {
+          return res.status(401).json({ 
+            error: 'Token expired or invalid', 
+            reply: 'Your session has expired. Please refresh the page and sign in again.' 
+          });
+        }
+        return res.status(401).json({ error: 'Unauthorized', reply: refusal });
+      }
+      
       userId = userData?.user?.id;
-      if (userErr || !userId) {
-        console.error('[API] Auth error:', userErr);
+      if (!userId) {
+        console.error('[API] No user ID in token');
         return res.status(401).json({ error: 'Unauthorized', reply: refusal });
       }
     } catch (authError: any) {
-      console.error('[API] Error getting user:', authError);
+      console.error('[API] Error getting user:', {
+        message: authError?.message,
+        stack: authError?.stack
+      });
       return res.status(401).json({ error: 'Unauthorized', reply: refusal });
     }
 

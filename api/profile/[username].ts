@@ -1541,26 +1541,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                                sessionData?.session?.access_token ||
                                (sessionData?.user && sessionData?.user?.access_token);
               
-              // Debug logging
-              if (!accessToken) {
-                console.error('No access token found. Session structure:', {
-                  hasAccessToken: !!sessionData?.access_token,
-                  hasSessionAccessToken: !!sessionData?.session?.access_token,
-                  sessionKeys: Object.keys(sessionData || {}),
-                  sessionType: typeof sessionData
-                });
+              if (!accessToken || typeof accessToken !== 'string') {
                 aiAnswerText.textContent = 'Please sign in to use this feature.';
                 return;
               }
               
-              if (typeof accessToken !== 'string') {
-                console.error('Access token is not a string:', typeof accessToken, accessToken);
-                aiAnswerText.textContent = 'Please sign in to use this feature.';
-                return;
+              // Check if token is expired (expires_at is in seconds)
+              const expiresAt = sessionData?.expires_at;
+              if (expiresAt) {
+                const expiresAtMs = expiresAt * 1000;
+                const now = Date.now();
+                const isExpired = now >= expiresAtMs;
+                
+                if (isExpired) {
+                  aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
+                  // Clear expired session
+                  localStorage.removeItem('supabase_session');
+                  return;
+                }
               }
-              
-              // Don't check token expiration - let the API handle it
-              // If token is expired, API will return 401 and we'll show error
               
               // Determine if we're querying own library or someone else's
               const profileUsername = '${profileData.username}';
@@ -1598,9 +1597,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 requestBody.target_username = targetUsername;
               }
               
-              // Log token info for debugging (first 20 chars only for security)
-              console.log('Sending request with token:', accessToken ? accessToken.substring(0, 20) + '...' : 'NO TOKEN');
-              
               const response = await fetch('/api/library/ask', {
                 method: 'POST',
                 headers: {
@@ -1631,15 +1627,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
               
               if (response.status === 401) {
-                console.error('Authentication failed. Response:', data);
-                console.error('Token used:', accessToken ? accessToken.substring(0, 20) + '...' : 'NO TOKEN');
-                // If token is invalid/expired, suggest signing in again
-                const shouldSignIn = confirm('Your session has expired. Would you like to sign in again?');
-                if (shouldSignIn) {
-                  window.location.href = '/profile';
-                } else {
-                  aiAnswerText.textContent = data.reply || 'Session expired. Please refresh the page and sign in again.';
-                }
+                // Token is invalid or expired - clear session and show message
+                localStorage.removeItem('supabase_session');
+                aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
               } else if (response.status === 403) {
                 aiAnswerText.textContent = data.reply || 'This feature is available to Pro users only.';
               } else if (response.ok) {
