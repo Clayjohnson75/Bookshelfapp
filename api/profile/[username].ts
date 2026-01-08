@@ -1447,36 +1447,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 return;
               }
               
-              // Get token - don't check expiration, let the API handle it
+              // Get token - check both possible session structures
               let sessionData = JSON.parse(session);
-              let accessToken = sessionData?.access_token;
+              let accessToken = sessionData?.access_token || sessionData?.session?.access_token;
               
               if (!accessToken) {
                 alert('Please sign in to use this feature.');
                 return;
               }
               
-              // Check Pro status - API will handle token validation
-              const proResponse = await fetch('/api/check-subscription', {
-                method: 'GET',
-                headers: {
-                  'Authorization': \`Bearer \${accessToken}\`,
-                  'Content-Type': 'application/json'
+              // Try to check Pro status, but don't block if it fails - let the actual API handle it
+              try {
+                const proResponse = await fetch('/api/check-subscription', {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': \`Bearer \${accessToken}\`,
+                    'Content-Type': 'application/json'
+                  }
+                });
+                
+                if (proResponse.ok) {
+                  const proData = await proResponse.json();
+                  if (!proData.isPro) {
+                    alert('Ask Your Library is a Pro feature. Please upgrade to Pro in the app to use this feature.');
+                    return;
+                  }
                 }
-              });
-              
-              if (proResponse.ok) {
-                const proData = await proResponse.json();
-                if (!proData.isPro) {
-                  alert('Ask Your Library is a Pro feature. Please upgrade to Pro in the app to use this feature.');
-                  return;
-                }
-              } else if (proResponse.status === 401) {
-                alert('Your session has expired. Please refresh the page and sign in again.');
-                return;
-              } else {
-                alert('Unable to verify subscription. Please try again.');
-                return;
+                // If 401 or other error, just continue - the actual API will handle authentication
+              } catch (e) {
+                // Ignore errors, just continue
               }
               
               // Check if user owns this profile or is viewing someone else's
