@@ -1701,11 +1701,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     aiAnswerText.textContent = 'Your session has expired. Please refresh the page and sign in again.';
                     return;
                   }
-                  } else {
-                    console.error('No refresh token available');
-                    aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
-                    return;
-                  }
                 }
               }
               
@@ -1819,17 +1814,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             });
           }
           
-          // Expose functions globally for onclick handlers (after they're all defined)
-          window.switchToLibraryMode = switchToLibraryMode;
-          window.switchToAskLibraryMode = switchToAskLibraryMode;
-          window.handleSearchSubmit = handleSearchSubmit;
-          window.handleSearchInput = handleSearchInput;
-          window.askLibraryQuestion = askLibraryQuestion;
-          console.log('Functions exposed to window:', {
-            switchToLibraryMode: typeof window.switchToLibraryMode,
-            switchToAskLibraryMode: typeof window.switchToAskLibraryMode,
-            handleSearchSubmit: typeof window.handleSearchSubmit
-          });
+          // Expose functions globally for onclick handlers (must be after all functions are defined)
+          try {
+            window.switchToLibraryMode = switchToLibraryMode;
+            window.switchToAskLibraryMode = switchToAskLibraryMode;
+            window.handleSearchSubmit = handleSearchSubmit;
+            window.handleSearchInput = handleSearchInput;
+            window.askLibraryQuestion = askLibraryQuestion;
+            console.log('Functions exposed to window successfully');
+          } catch (e) {
+            console.error('Error exposing functions to window:', e);
+          }
           
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
