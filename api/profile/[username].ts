@@ -1409,9 +1409,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const toggleContainer = document.getElementById('modeToggleContainer');
             if (toggleContainer) {
               toggleContainer.style.display = 'flex';
-              console.log('Toggle buttons shown');
-            } else {
-              console.log('Toggle container not found');
             }
           }
           
@@ -1439,93 +1436,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           
           async function switchToAskLibraryMode() {
-            console.log('switchToAskLibraryMode called');
             try {
               // Check if user is signed in first
               const session = localStorage.getItem('supabase_session');
               if (!session) {
-                // User not signed in - prompt them to sign in
                 const signIn = confirm('You need to sign in to use Ask Your Library. Would you like to sign in now?');
                 if (signIn) {
                   window.location.href = '/profile';
-                  return;
                 }
                 return;
               }
               
-              // User is signed in, check Pro status
+              // Get token - don't check expiration, let the API handle it
               let sessionData = JSON.parse(session);
               let accessToken = sessionData?.access_token;
               
               if (!accessToken) {
-                // Token missing
-                console.error('No access token found in session');
                 alert('Please sign in to use this feature.');
                 return;
               }
               
-              // Check if token is expired and try to refresh (only if actually expired, not if expiring soon)
-              const expiresAt = sessionData?.expires_at;
-              if (expiresAt) {
-                const expiresAtMs = expiresAt * 1000;
-                const now = Date.now();
-                const isExpired = now >= expiresAtMs;
-                
-                // Only refresh if actually expired (not if expiring soon)
-                if (isExpired) {
-                  console.log('Token is expired, attempting refresh...');
-                  const refreshToken = sessionData?.refresh_token;
-                  if (refreshToken) {
-                    try {
-                      const refreshResponse = await fetch('/api/refresh-token', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ refresh_token: refreshToken })
-                      });
-                      
-                      if (refreshResponse.ok) {
-                        const refreshData = await refreshResponse.json();
-                        if (refreshData.session) {
-                          localStorage.setItem('supabase_session', JSON.stringify(refreshData.session));
-                          // Update sessionData with new token
-                          sessionData = refreshData.session;
-                          accessToken = refreshData.session.access_token;
-                          console.log('Token refreshed successfully');
-                        } else {
-                          // Refresh failed - don't redirect, just show error
-                          console.error('Token refresh failed: no session in response');
-                          alert('Your session has expired. Please refresh the page and sign in again.');
-                          return;
-                        }
-                      } else {
-                        // Refresh failed - don't redirect, just show error
-                        const errorData = await refreshResponse.json().catch(() => ({}));
-                        console.error('Token refresh failed:', errorData);
-                        alert('Your session has expired. Please refresh the page and sign in again.');
-                        return;
-                      }
-                    } catch (e) {
-                      console.error('Error refreshing token:', e);
-                      alert('Your session has expired. Please refresh the page and sign in again.');
-                      return;
-                    }
-                  } else {
-                    // No refresh token and token is expired
-                    console.error('Token expired and no refresh token available');
-                    alert('Your session has expired. Please refresh the page and sign in again.');
-                    return;
-                  }
-                } else {
-                  console.log('Token is still valid, expires in', Math.round((expiresAtMs - now) / 1000 / 60), 'minutes');
-                }
-              }
-              
-              // Check Pro status (use updated accessToken if refreshed)
-              const tokenToUse = accessToken || sessionData.access_token;
+              // Check Pro status - API will handle token validation
               const proResponse = await fetch('/api/check-subscription', {
                 method: 'GET',
                 headers: {
-                  'Authorization': \`Bearer \${tokenToUse}\`,
+                  'Authorization': \`Bearer \${accessToken}\`,
                   'Content-Type': 'application/json'
                 }
               });
@@ -1533,35 +1468,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               if (proResponse.ok) {
                 const proData = await proResponse.json();
                 if (!proData.isPro) {
-                  // Not Pro - show message
                   alert('Ask Your Library is a Pro feature. Please upgrade to Pro in the app to use this feature.');
                   return;
                 }
+              } else if (proResponse.status === 401) {
+                alert('Your session has expired. Please refresh the page and sign in again.');
+                return;
               } else {
-                // Error checking Pro status
-                const errorText = await proResponse.text().catch(() => 'Unknown error');
-                console.error('Error checking Pro status:', proResponse.status, errorText);
-                if (proResponse.status === 401) {
-                  alert('Your session has expired. Please refresh the page and sign in again.');
-                } else {
-                  alert('Unable to verify subscription. Please try again.');
-                }
+                alert('Unable to verify subscription. Please try again.');
                 return;
               }
               
               // Check if user owns this profile or is viewing someone else's
-              const usernameResponse = await fetch('/api/get-username', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session: sessionData })
-              });
-              
               let isOwnProfile = false;
-              if (usernameResponse.ok) {
-                const usernameData = await usernameResponse.json();
-                const signedInUsername = usernameData.username?.toLowerCase();
-                const profileUsername = '${profileData.username}'.toLowerCase();
-                isOwnProfile = signedInUsername === profileUsername;
+              try {
+                const usernameResponse = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
+                });
+                
+                if (usernameResponse.ok) {
+                  const usernameData = await usernameResponse.json();
+                  const signedInUsername = usernameData.username?.toLowerCase();
+                  const profileUsername = '${profileData.username}'.toLowerCase();
+                  isOwnProfile = signedInUsername === profileUsername;
+                }
+              } catch (e) {
+                // Ignore error, just assume not own profile
               }
               
               // User is Pro - switch to ask mode
@@ -1586,12 +1520,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
               if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
               if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
-              
-              console.log('Successfully switched to Ask Your Library mode');
             } catch (error) {
               console.error('Error in switchToAskLibraryMode:', error);
-              alert('An error occurred. Please try again or sign in again.');
-              // Don't redirect on error - let user try again
+              alert('An error occurred. Please try again.');
             }
           }
           
@@ -1822,7 +1753,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
-            console.log('DOMContentLoaded - checking for Ask Your Library button');
             const session = localStorage.getItem('supabase_session');
             const urlParams = new URLSearchParams(window.location.search);
             const isEditMode = urlParams.get('edit') === 'true';
@@ -1835,38 +1765,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             
             // Always show toggle buttons to everyone
             checkAndShowToggleButtons();
-            
-            // Also check periodically in case session was added (every 2 seconds for first 10 seconds)
-            let checkCount = 0;
-            const intervalId = setInterval(() => {
-              checkAndShowToggleButtons();
-              checkCount++;
-              if (checkCount >= 5) {
-                clearInterval(intervalId);
-              }
-            }, 2000);
-            
-            // Listen for storage changes (when user signs in from another tab)
-            window.addEventListener('storage', (e) => {
-              if (e.key === 'supabase_session') {
-                console.log('Session storage changed, checking toggle buttons');
-                checkAndShowToggleButtons();
-              }
-            });
-            
-            // Also check when page becomes visible (in case user signed in and switched back)
-            document.addEventListener('visibilitychange', () => {
-              if (!document.hidden) {
-                console.log('Page became visible, checking toggle buttons');
-                checkAndShowToggleButtons();
-              }
-            });
-            
-            // Also check when focus returns to the window
-            window.addEventListener('focus', () => {
-              console.log('Window focused, checking toggle buttons');
-              checkAndShowToggleButtons();
-            });
             
             if (session) {
               try {
