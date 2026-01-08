@@ -1405,45 +1405,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           let chatConversation = [];
           
           function checkAndShowToggleButtons() {
-            const session = localStorage.getItem('supabase_session');
-            if (!session) {
-              return;
-            }
-            
-            try {
-              const sessionData = JSON.parse(session);
-              const toggleContainer = document.getElementById('modeToggleContainer');
-              
-              if (!toggleContainer) {
-                return;
-              }
-              
-              // Show toggle buttons if user has session
+            // Show toggle buttons to everyone (not just profile owners)
+            const toggleContainer = document.getElementById('modeToggleContainer');
+            if (toggleContainer) {
               toggleContainer.style.display = 'flex';
-              
-              // Verify ownership asynchronously
-              fetch('/api/get-username', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session: sessionData })
-              })
-              .then(response => response.ok ? response.json() : null)
-              .then(data => {
-                if (data) {
-                  const signedInUsername = data.username?.toLowerCase();
-                  const profileUsername = '${profileData.username}'.toLowerCase();
-                  if (signedInUsername !== profileUsername) {
-                    // User doesn't own this profile - hide toggle
-                    const container = document.getElementById('modeToggleContainer');
-                    if (container) container.style.display = 'none';
-                  }
-                }
-              })
-              .catch(error => {
-                console.error('Error checking profile ownership:', error);
-              });
-            } catch (error) {
-              console.error('Error parsing session:', error);
             }
           }
           
@@ -1470,26 +1435,124 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             filterBooks();
           }
           
-          function switchToAskLibraryMode() {
-            currentMode = 'ask';
-            const libraryBtn = document.getElementById('libraryModeButton');
-            const askBtn = document.getElementById('askLibraryModeButton');
-            const searchInput = document.getElementById('bookSearch');
-            const regularBooksContainer = document.getElementById('regularBooksContainer');
-            
-            if (libraryBtn) libraryBtn.classList.remove('active');
-            if (askBtn) askBtn.classList.add('active');
-            if (searchInput) {
-              searchInput.placeholder = 'Ask a question about your library!';
-              searchInput.value = '';
+          async function switchToAskLibraryMode() {
+            // Check if user is signed in first
+            const session = localStorage.getItem('supabase_session');
+            if (!session) {
+              // User not signed in - prompt them to sign in
+              const signIn = confirm('You need to sign in to use Ask Your Library. Would you like to sign in now?');
+              if (signIn) {
+                window.location.href = '/profile';
+                return;
+              }
+              return;
             }
-            if (regularBooksContainer) regularBooksContainer.style.display = 'none';
             
-            // Clear previous answers
-            const aiAnswerContainer = document.getElementById('aiAnswerContainer');
-            const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
-            if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
-            if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+            // User is signed in, check Pro status
+            try {
+              const sessionData = JSON.parse(session);
+              const accessToken = sessionData?.access_token;
+              
+              if (!accessToken) {
+                // Token missing, redirect to sign in
+                window.location.href = '/profile';
+                return;
+              }
+              
+              // Check if token is expired and try to refresh
+              const expiresAt = sessionData?.expires_at;
+              if (expiresAt) {
+                const expiresAtMs = expiresAt * 1000;
+                const now = Date.now();
+                if (now >= expiresAtMs - 300000) {
+                  const refreshToken = sessionData?.refresh_token;
+                  if (refreshToken) {
+                    try {
+                      const refreshResponse = await fetch('/api/refresh-token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ refresh_token: refreshToken })
+                      });
+                      
+                      if (refreshResponse.ok) {
+                        const refreshData = await refreshResponse.json();
+                        if (refreshData.session) {
+                          localStorage.setItem('supabase_session', JSON.stringify(refreshData.session));
+                          sessionData.access_token = refreshData.session.access_token;
+                        }
+                      }
+                    } catch (e) {
+                      console.error('Error refreshing token:', e);
+                    }
+                  }
+                }
+              }
+              
+              // Check Pro status
+              const proResponse = await fetch('/api/check-subscription', {
+                method: 'GET',
+                headers: {
+                  'Authorization': \`Bearer \${sessionData.access_token}\`,
+                  'Content-Type': 'application/json'
+                }
+              });
+              
+              if (proResponse.ok) {
+                const proData = await proResponse.json();
+                if (!proData.isPro) {
+                  // Not Pro - show message
+                  alert('Ask Your Library is a Pro feature. Please upgrade to Pro in the app to use this feature.');
+                  return;
+                }
+              } else {
+                // Error checking Pro status - might need to sign in again
+                alert('Please sign in again to use this feature.');
+                window.location.href = '/profile';
+                return;
+              }
+              
+              // Check if user owns this profile or is viewing someone else's
+              const usernameResponse = await fetch('/api/get-username', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: sessionData })
+              });
+              
+              let isOwnProfile = false;
+              if (usernameResponse.ok) {
+                const usernameData = await usernameResponse.json();
+                const signedInUsername = usernameData.username?.toLowerCase();
+                const profileUsername = '${profileData.username}'.toLowerCase();
+                isOwnProfile = signedInUsername === profileUsername;
+              }
+              
+              // User is Pro - switch to ask mode
+              currentMode = 'ask';
+              const libraryBtn = document.getElementById('libraryModeButton');
+              const askBtn = document.getElementById('askLibraryModeButton');
+              const searchInput = document.getElementById('bookSearch');
+              const regularBooksContainer = document.getElementById('regularBooksContainer');
+              
+              if (libraryBtn) libraryBtn.classList.remove('active');
+              if (askBtn) askBtn.classList.add('active');
+              if (searchInput) {
+                searchInput.placeholder = isOwnProfile 
+                  ? 'Ask a question about your library!' 
+                  : 'Ask a question about their library!';
+                searchInput.value = '';
+              }
+              if (regularBooksContainer) regularBooksContainer.style.display = 'none';
+              
+              // Clear previous answers
+              const aiAnswerContainer = document.getElementById('aiAnswerContainer');
+              const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
+              if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
+              if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+            } catch (error) {
+              console.error('Error checking Pro status:', error);
+              alert('Please sign in again to use this feature.');
+              window.location.href = '/profile';
+            }
           }
           
           function handleSearchInput() {
@@ -1529,10 +1592,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
             
             try {
-              const sessionData = JSON.parse(session);
+              let sessionData = JSON.parse(session);
               
               // Supabase session object has access_token at root
-              const accessToken = sessionData?.access_token;
+              let accessToken = sessionData?.access_token;
               
               if (!accessToken || typeof accessToken !== 'string') {
                 console.error('No valid access token found. Session structure:', sessionData);
@@ -1542,20 +1605,97 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               
               // Check if token is expired (expires_at is in seconds, convert to milliseconds)
               const expiresAt = sessionData?.expires_at;
+              let needsRefresh = false;
+              
               if (expiresAt) {
                 const expiresAtMs = expiresAt * 1000;
                 const now = Date.now();
-                if (now >= expiresAtMs) {
-                  console.error('Token expired. Expires at:', new Date(expiresAtMs), 'Now:', new Date(now));
-                  aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
-                  return;
+                // Refresh if expired or within 5 minutes of expiring
+                if (now >= expiresAtMs - 300000) {
+                  needsRefresh = true;
+                  console.log('Token expired or expiring soon. Attempting refresh...');
+                  
+                  // Try to refresh the token
+                  const refreshToken = sessionData?.refresh_token;
+                  if (refreshToken) {
+                    try {
+                      // Use our refresh token endpoint
+                      const refreshResponse = await fetch('/api/refresh-token', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                          refresh_token: refreshToken
+                        })
+                      });
+                      
+                      if (refreshResponse.ok) {
+                        const refreshData = await refreshResponse.json();
+                        if (refreshData.session) {
+                          // Update session with new tokens
+                          sessionData = refreshData.session;
+                          // Save updated session
+                          localStorage.setItem('supabase_session', JSON.stringify(sessionData));
+                          accessToken = sessionData.access_token;
+                          console.log('Token refreshed successfully');
+                        } else {
+                          throw new Error('No session in refresh response');
+                        }
+                      } else {
+                        const errorData = await refreshResponse.json();
+                        console.error('Failed to refresh token:', errorData);
+                        aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                        return;
+                      }
+                    } catch (refreshError) {
+                      console.error('Error refreshing token:', refreshError);
+                      aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                      return;
+                    }
+                  } else {
+                    console.error('No refresh token available');
+                    aiAnswerText.textContent = 'Session expired. Please refresh the page and sign in again.';
+                    return;
+                  }
                 }
               }
               
-              // Debug: Log what we're sending
-              console.log('Sending request to /api/library/ask');
-              console.log('Has access token:', !!accessToken);
-              console.log('Token starts with:', accessToken.substring(0, 20));
+              // Determine if we're querying own library or someone else's
+              const profileUsername = '${profileData.username}';
+              let targetUsername = null;
+              
+              // Check if user owns this profile
+              try {
+                const usernameResponse = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
+                });
+                
+                if (usernameResponse.ok) {
+                  const usernameData = await usernameResponse.json();
+                  const signedInUsername = usernameData.username?.toLowerCase();
+                  const currentProfileUsername = profileUsername.toLowerCase();
+                  
+                  // If viewing someone else's profile, pass their username
+                  if (signedInUsername !== currentProfileUsername) {
+                    targetUsername = profileUsername;
+                  }
+                }
+              } catch (e) {
+                console.error('Error checking profile ownership:', e);
+              }
+              
+              const requestBody: any = {
+                message: message,
+                conversation: chatConversation.slice(-6)
+              };
+              
+              // Add target username if querying someone else's library
+              if (targetUsername) {
+                requestBody.target_username = targetUsername;
+              }
               
               const response = await fetch('/api/library/ask', {
                 method: 'POST',
@@ -1563,15 +1703,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   'Authorization': \`Bearer \${accessToken}\`,
                   'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                  message: message,
-                  conversation: chatConversation.slice(-6)
-                })
+                body: JSON.stringify(requestBody)
               });
               
-              console.log('Response status:', response.status);
               const data = await response.json();
-              console.log('Response data:', data);
               
               if (response.status === 401) {
                 console.error('Authentication failed. Response:', data);
