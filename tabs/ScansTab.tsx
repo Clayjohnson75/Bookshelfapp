@@ -89,6 +89,9 @@ export const ScansTab: React.FC = () => {
   
   const screenWidth = dimensions.width;
   const screenHeight = dimensions.height;
+  
+  const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
+  
   const { scanProgress, setScanProgress, updateProgress } = useScanning();
   
   // Camera states
