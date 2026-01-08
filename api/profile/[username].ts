@@ -1730,7 +1730,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 console.error('Error checking profile ownership:', e);
               }
               
-              const requestBody: any = {
+              const requestBody = {
                 message: message,
                 conversation: chatConversation.slice(-6)
               };
