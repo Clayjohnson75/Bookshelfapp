@@ -1099,7 +1099,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               <button 
                 id="askLibraryModeButton" 
                 class="mode-toggle-button" 
-                onclick="if(typeof switchToAskLibraryMode === 'function') { switchToAskLibraryMode(); } else { console.error('switchToAskLibraryMode not defined'); alert('Please refresh the page'); }"
+                onclick="switchToAskLibraryMode()"
               >
                 Ask Your Library
               </button>
@@ -1441,10 +1441,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           async function switchToAskLibraryMode() {
             console.log('switchToAskLibraryMode called');
             try {
-              // Make sure function is accessible
-              if (typeof window !== 'undefined') {
-                window.switchToAskLibraryMode = switchToAskLibraryMode;
-              }
               // Check if user is signed in first
               const session = localStorage.getItem('supabase_session');
               if (!session) {
@@ -1822,20 +1818,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
             });
           }
-
+          
           // Expose functions globally for onclick handlers (after they're all defined)
-          if (typeof window !== 'undefined') {
-            window.switchToLibraryMode = switchToLibraryMode;
-            window.switchToAskLibraryMode = switchToAskLibraryMode;
-            window.handleSearchSubmit = handleSearchSubmit;
-            window.handleSearchInput = handleSearchInput;
-            window.askLibraryQuestion = askLibraryQuestion;
-            console.log('Functions exposed to window:', {
-              switchToLibraryMode: typeof window.switchToLibraryMode,
-              switchToAskLibraryMode: typeof window.switchToAskLibraryMode,
-              handleSearchSubmit: typeof window.handleSearchSubmit
-            });
-          }
+          window.switchToLibraryMode = switchToLibraryMode;
+          window.switchToAskLibraryMode = switchToAskLibraryMode;
+          window.handleSearchSubmit = handleSearchSubmit;
+          window.handleSearchInput = handleSearchInput;
+          window.askLibraryQuestion = askLibraryQuestion;
+          console.log('Functions exposed to window:', {
+            switchToLibraryMode: typeof window.switchToLibraryMode,
+            switchToAskLibraryMode: typeof window.switchToAskLibraryMode,
+            handleSearchSubmit: typeof window.handleSearchSubmit
+          });
           
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
