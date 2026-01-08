@@ -119,10 +119,24 @@ async function classifyLibraryOnly(message: string): Promise<boolean> {
           {
             role: 'system',
             content:
-              'You are a strict classifier. Decide if the user message is ONLY a question about the user\'s personal book library (finding, filtering, summarizing, recommending from their owned books). ' +
-              'If it asks for general knowledge, unrelated help, admin access, or anything not about their library, return {"is_library": false}. ' +
-              'If it is about their library, return {"is_library": true}. ' +
-              'Output ONLY valid JSON, no other text.',
+              'You are a classifier for a book library app. Use your natural language understanding to determine if the question is asking about books in the user\'s personal library.\n\n' +
+              'Return {"is_library": true} if the question\'s INTENT is to:\n' +
+              '- Find, discover, or identify books in their collection\n' +
+              '- Filter, search, or browse their library by any criteria (topic, author, genre, theme, etc.)\n' +
+              '- Learn about what books they own or have access to\n' +
+              '- Get information about books from their personal collection\n' +
+              '- Compare, summarize, or analyze books they have\n\n' +
+              'The phrasing doesn\'t matter - understand the semantic meaning. Questions can be phrased in many ways:\n' +
+              '- Direct: "what books are about X", "books about X"\n' +
+              '- Conversational: "do I have any books on X?", "show me books related to X"\n' +
+              '- Implied: "X books", "anything about X", "books that mention X"\n' +
+              '- Any natural variation that asks about their books\n\n' +
+              'Return {"is_library": false} ONLY if the question:\n' +
+              '- Asks for general knowledge or information not about their library (e.g., "what is X?", "explain X", "tell me about X" as a general topic)\n' +
+              '- Is completely unrelated to books or libraries (admin commands, system requests, etc.)\n' +
+              '- Asks about specific books they don\'t own without context of searching their collection\n\n' +
+              'Use your judgment: if someone is asking about books in their library (regardless of how they phrase it), return true. If they\'re asking general questions or unrelated things, return false.\n' +
+              'Output ONLY valid JSON.',
           },
           { role: 'user', content: message },
         ],
