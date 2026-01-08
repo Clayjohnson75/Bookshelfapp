@@ -158,6 +158,91 @@ async function classifyLibraryOnly(message: string): Promise<boolean> {
   }
 }
 
+// Let ChatGPT find relevant books from ALL books in the library
+async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise<Book[]> {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    // Fallback to keyword search if OpenAI not available
+    return [];
+  }
+
+  // Limit to first 500 books to avoid token limits (if library is huge)
+  const booksToAnalyze = allBooks.slice(0, 500);
+  
+  // Create a compact representation of books for AI
+  const bookSummaries = booksToAnalyze.map((book, index) => ({
+    id: book.id,
+    index: index,
+    title: book.title || '',
+    author: book.author || '',
+    description: (book.description || '').slice(0, 300), // Truncate long descriptions
+    categories: (book.categories || []).slice(0, 3).join(', '),
+  }));
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openaiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a book library search assistant. Given a user question and a list of books, identify which books are relevant to the question. Return a JSON object with a "book_ids" array containing the IDs of relevant books. Be thorough - include books that match the topic even if the connection is subtle (e.g., a book about WWII even if it doesn\'t have "war" in the title). Return up to 20 most relevant books.',
+          },
+          {
+            role: 'user',
+            content: `User question: "${query}"\n\nBooks in library:\n${JSON.stringify(bookSummaries, null, 2)}\n\nReturn JSON with "book_ids" array of relevant book IDs.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_tokens: 500,
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[API] OpenAI book finding error:', response.status, errorText);
+      throw new Error('OpenAI API error');
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error('Empty response');
+    }
+
+    const parsed = JSON.parse(content);
+    const bookIds = parsed.book_ids || parsed.ids || [];
+    
+    if (!Array.isArray(bookIds)) {
+      return [];
+    }
+    
+    // Map IDs back to full book objects
+    const relevantBooks = bookIds
+      .map((id: string) => booksToAnalyze.find((b) => b.id === id))
+      .filter((b: Book | undefined): b is Book => b !== undefined);
+    
+    console.log('[API] ChatGPT found', relevantBooks.length, 'relevant books out of', booksToAnalyze.length);
+    return relevantBooks;
+  } catch (error: any) {
+    console.error('[API] Error finding books with AI, using fallback:', error?.message);
+    // Fallback to keyword search
+    return [];
+  }
+}
+
 // Step 2: Retrieval - fetch ALL books and search through descriptions thoroughly
 async function retrieveBooks(
   supabase: any,
@@ -196,94 +281,147 @@ async function retrieveBooks(
       return [];
     }
     
-    // Normalize query - split into search terms (including short words like "war")
+    // Step 1: Quick keyword filter to narrow down candidates (fast)
     const queryLower = query.toLowerCase();
-    const searchTerms = queryLower.split(/\s+/).filter((t) => t.length > 0);
+    const allWords = queryLower.split(/\s+/).filter((t) => t.length > 0);
+    const stopWords = new Set([
+      'what', 'which', 'where', 'when', 'who', 'why', 'how',
+      'are', 'is', 'was', 'were', 'be', 'been', 'being',
+      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+      'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+      'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'could', 'should',
+      'books', 'book', 'library', 'libraries', 'in', 'about', 'related', 'to'
+    ]);
+    const searchTerms = allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
     
-    // If no search terms, return recent books
-    if (searchTerms.length === 0) {
-      return (allBooksData || []).slice(0, 12) as Book[];
+    let candidateBooks: Book[] = [];
+    
+    if (searchTerms.length > 0) {
+      // Quick keyword-based filter to get candidates
+      console.log('[API] Quick keyword filter with terms:', searchTerms);
+      
+      candidateBooks = allBooksData.filter((book: Book) => {
+        const title = (book.title || '').toLowerCase();
+        const author = (book.author || '').toLowerCase();
+        const description = (book.description || '').toLowerCase();
+        const categories = ((book.categories || []).join(' ')).toLowerCase();
+        
+        // Check if ANY search term matches ANY field
+        return searchTerms.some((term) => 
+          title.includes(term) || 
+          author.includes(term) || 
+          description.includes(term) || 
+          categories.includes(term)
+        );
+      }) as Book[];
+      
+      console.log('[API] Keyword filter found', candidateBooks.length, 'candidate books');
+    } else {
+      // If no keywords, use all books (but limit to recent ones if library is huge)
+      candidateBooks = allBooksData.slice(0, 100) as Book[];
+      console.log('[API] No keywords, using first 100 books as candidates');
     }
     
-    // Score each book by how well it matches the query
+    // Step 2: If we have candidates, let ChatGPT refine the selection (only send candidates, not all books)
+    if (candidateBooks.length > 0 && candidateBooks.length <= 200) {
+      // Only use ChatGPT if we have a reasonable number of candidates (not too many)
+      const aiRefinedBooks = await findRelevantBooksWithAI(query, candidateBooks);
+      
+      if (aiRefinedBooks.length > 0) {
+        console.log('[API] ChatGPT refined', aiRefinedBooks.length, 'books from', candidateBooks.length, 'candidates');
+        return aiRefinedBooks.slice(0, 20);
+      }
+    }
+    
+    // Step 3: Fallback - use scored keyword search if ChatGPT didn't help or we have too many candidates
+    console.log('[API] Using scored keyword search on', candidateBooks.length, 'candidates');
+    
+    if (searchTerms.length === 0) {
+      return candidateBooks.slice(0, 12);
+    }
+    
+    // Score each candidate book by how well it matches the query
     // Search through title, author, description, categories, and subtitle
-    const scored = allBooksData.map((book: Book) => {
+    const scored = candidateBooks.map((book: Book) => {
       const title = (book.title || '').toLowerCase();
       const author = (book.author || '').toLowerCase();
       const description = (book.description || '').toLowerCase();
       const categories = ((book.categories || []).join(' ')).toLowerCase();
       const subtitle = ((book as any).subtitle || '').toLowerCase();
       
-      // Combine all searchable text
-      const searchableText = `${title} ${author} ${description} ${categories} ${subtitle}`;
-      
       let score = 0;
-      let matchesAllTerms = true;
+      let matchedTerms = 0;
       
       // Check each search term
       for (const term of searchTerms) {
-        const termLower = term.toLowerCase();
         let termMatched = false;
         
         // Title match (highest weight)
-        if (title.includes(termLower)) {
-          score += 10;
+        if (title.includes(term)) {
+          score += 15;
           termMatched = true;
         }
         
         // Author match (high weight)
-        if (author.includes(termLower)) {
-          score += 8;
+        if (author.includes(term)) {
+          score += 10;
           termMatched = true;
         }
         
         // Description match (medium weight, but check thoroughly)
-        if (description.includes(termLower)) {
+        if (description && description.includes(term)) {
           // Count how many times it appears in description (more mentions = more relevant)
-          const matches = (description.match(new RegExp(termLower, 'g')) || []).length;
-          score += 5 + (matches * 2); // Base 5, plus 2 per additional mention
+          const matches = (description.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+          score += 8 + (matches * 3); // Base 8, plus 3 per additional mention
           termMatched = true;
         }
         
         // Categories match (medium weight)
-        if (categories.includes(termLower)) {
-          score += 6;
+        if (categories && categories.includes(term)) {
+          score += 12;
           termMatched = true;
         }
         
         // Subtitle match (medium weight)
-        if (subtitle.includes(termLower)) {
-          score += 7;
+        if (subtitle && subtitle.includes(term)) {
+          score += 10;
           termMatched = true;
         }
         
-        // If term didn't match anywhere, this book doesn't match all terms
-        if (!termMatched) {
-          matchesAllTerms = false;
+        if (termMatched) {
+          matchedTerms++;
         }
       }
       
-      // Bonus if all terms matched
-      if (matchesAllTerms) {
-        score += 20;
+      // Bonus for matching multiple terms (but don't require ALL terms)
+      if (matchedTerms === searchTerms.length) {
+        score += 30; // All meaningful terms matched
+      } else if (matchedTerms > 0) {
+        score += matchedTerms * 5; // Partial match bonus
       }
       
-      return { book, score, matchesAllTerms };
+      return { book, score, matchedTerms, totalTerms: searchTerms.length };
     });
     
     // Filter out books with score 0 (no matches at all)
     const matched = scored.filter((s) => s.score > 0);
     
-    // Sort by score (highest first), then by whether all terms matched
+    console.log('[API] Found', matched.length, 'matching books out of', candidateBooks.length);
+    
+    // Sort by score (highest first), prioritizing books that matched more terms
     matched.sort((a, b) => {
-      if (a.matchesAllTerms !== b.matchesAllTerms) {
-        return a.matchesAllTerms ? -1 : 1; // All terms matched first
+      // First sort by how many terms matched
+      if (a.matchedTerms !== b.matchedTerms) {
+        return b.matchedTerms - a.matchedTerms;
       }
-      return b.score - a.score; // Higher score first
+      // Then by score
+      return b.score - a.score;
     });
     
     // Return top matches (up to 20 to give AI more context)
-    return matched.slice(0, 20).map((s) => s.book);
+    const results = matched.slice(0, 20).map((s) => s.book);
+    console.log('[API] Returning top', results.length, 'books');
+    return results;
   } catch (error: any) {
     console.error('[API] Error in retrieveBooks:', error?.message || String(error));
     return [];
@@ -613,8 +751,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let books: Book[];
     try {
       books = await retrieveBooks(supabase, body.message, targetUserId, useServiceRole, supabaseAdmin);
+      
+      console.log('[API] Retrieved', books.length, 'books for query:', body.message);
+      
       if (!books.length) {
         const libraryText = body.target_username ? 'their library' : 'your library';
+        console.log('[API] No books found for query:', body.message);
         return res.status(200).json({
           reply: `I couldn't find books in ${libraryText} about that. Try asking about a different topic, or check if they have scanned books related to your question.`,
           matched_books: [],
@@ -622,6 +764,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch (retrieveError: any) {
       console.error('[API] Error retrieving books:', retrieveError);
+      console.error('[API] Error stack:', retrieveError?.stack);
       return res.status(200).json({ reply: refusal, matched_books: [] });
     }
 
