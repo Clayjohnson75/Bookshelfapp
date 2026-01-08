@@ -1439,20 +1439,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           
           async function switchToAskLibraryMode() {
-            // Check if user is signed in first
-            const session = localStorage.getItem('supabase_session');
-            if (!session) {
-              // User not signed in - prompt them to sign in
-              const signIn = confirm('You need to sign in to use Ask Your Library. Would you like to sign in now?');
-              if (signIn) {
-                window.location.href = '/profile';
+            console.log('switchToAskLibraryMode called');
+            try {
+              // Check if user is signed in first
+              const session = localStorage.getItem('supabase_session');
+              if (!session) {
+                // User not signed in - prompt them to sign in
+                const signIn = confirm('You need to sign in to use Ask Your Library. Would you like to sign in now?');
+                if (signIn) {
+                  window.location.href = '/profile';
+                  return;
+                }
                 return;
               }
-              return;
-            }
-            
-            // User is signed in, check Pro status
-            try {
+              
+              // User is signed in, check Pro status
               const sessionData = JSON.parse(session);
               const accessToken = sessionData?.access_token;
               
@@ -1483,8 +1484,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         const refreshData = await refreshResponse.json();
                         if (refreshData.session) {
                           localStorage.setItem('supabase_session', JSON.stringify(refreshData.session));
-                          sessionData.access_token = refreshData.session.access_token;
-                          sessionData.expires_at = refreshData.session.expires_at;
+                          // Update sessionData with new token
+                          sessionData = refreshData.session;
+                          accessToken = refreshData.session.access_token;
+                          console.log('Token refreshed successfully');
                         } else {
                           // Refresh failed - redirect to sign in
                           alert('Your session has expired. Please sign in again.');
@@ -1516,11 +1519,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }
               }
               
-              // Check Pro status
+              // Check Pro status (use updated accessToken if refreshed)
+              const tokenToUse = accessToken || sessionData.access_token;
               const proResponse = await fetch('/api/check-subscription', {
                 method: 'GET',
                 headers: {
-                  'Authorization': \`Bearer \${sessionData.access_token}\`,
+                  'Authorization': \`Bearer \${tokenToUse}\`,
                   'Content-Type': 'application/json'
                 }
               });
@@ -1576,10 +1580,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
               if (aiAnswerContainer) aiAnswerContainer.style.display = 'none';
               if (suggestedBooksContainer) suggestedBooksContainer.style.display = 'none';
+              
+              console.log('Successfully switched to Ask Your Library mode');
             } catch (error) {
-              console.error('Error checking Pro status:', error);
-              alert('Please sign in again to use this feature.');
-              window.location.href = '/profile';
+              console.error('Error in switchToAskLibraryMode:', error);
+              alert('An error occurred. Please try again or sign in again.');
+              // Don't redirect on error - let user try again
             }
           }
           
