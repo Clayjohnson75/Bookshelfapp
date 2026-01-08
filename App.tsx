@@ -45,9 +45,18 @@ const getEnvVar = (key: string): string => {
          '';
 };
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-
 const BookshelfScannerAppInner: React.FC = () => {
+  const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  
+  useEffect(() => {
+    const subscription = Dimensions.addEventListener('change', ({ window }) => {
+      setDimensions(window);
+    });
+    return () => subscription?.remove();
+  }, []);
+  
+  const screenWidth = dimensions.width;
+  const screenHeight = dimensions.height;
   const { user, signOut, loading: authLoading } = useAuth();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 

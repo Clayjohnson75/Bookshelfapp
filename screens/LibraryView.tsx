@@ -44,6 +44,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  
+  useEffect(() => {
+    const subscription = Dimensions.addEventListener('change', ({ window }) => {
+      setDimensions(window);
+    });
+    return () => subscription?.remove();
+  }, []);
+  
+  const screenWidth = dimensions.width;
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -2899,7 +2909,7 @@ const styles = StyleSheet.create({
   },
   exportBookCover: {
     width: '100%',
-    height: ((Dimensions.get('window').width - 80) / 4 - 8) * 1.5, // Aspect ratio 1:1.5
+    height: ((screenWidth - 80) / 4 - 8) * 1.5, // Aspect ratio 1:1.5
     borderRadius: 4,
     marginBottom: 4,
     backgroundColor: '#e2e8f0',

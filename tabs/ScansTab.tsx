@@ -42,8 +42,6 @@ import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage } from '..
 import { ScanLimitBanner, ScanLimitBannerRef } from '../components/ScanLimitBanner';
 import { UpgradeModal } from '../components/UpgradeModal';
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-
 // Helper to read env vars in both development and production builds
 const getEnvVar = (key: string): string => {
   return Constants.expoConfig?.extra?.[key] || 
@@ -80,6 +78,17 @@ interface ScanQueueItem {
 export const ScansTab: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  
+  useEffect(() => {
+    const subscription = Dimensions.addEventListener('change', ({ window }) => {
+      setDimensions(window);
+    });
+    return () => subscription?.remove();
+  }, []);
+  
+  const screenWidth = dimensions.width;
+  const screenHeight = dimensions.height;
   const { scanProgress, setScanProgress, updateProgress } = useScanning();
   
   // Camera states
