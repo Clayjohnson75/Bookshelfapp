@@ -939,9 +939,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Answer grounded in books - pass whether it's own library or someone else's
     const isOwnLibrary = !body.target_username;
+    console.log('[API] Generating answer from', books.length, 'books');
+    console.log('[API] Books being sent to answerFromBooks:', books.map(b => `${b.title} by ${b.author}`).join(', '));
     let reply: string;
     try {
       reply = await answerFromBooks(body.message, books, isOwnLibrary);
+      console.log('[API] Generated reply:', reply);
     } catch (error: any) {
       console.error('[API] Error generating answer:', error);
       return res.status(200).json({ reply: refusal, matched_books: [] });
@@ -964,6 +967,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // Check if ChatGPT mentioned any books that aren't in our list (hallucination detection)
+    const replyLower = reply.toLowerCase();
+    const allTitles = books.map(b => (b.title || '').toLowerCase()).filter(t => t.length > 0);
+    const allAuthors = books.map(b => (b.author || '').toLowerCase()).filter(a => a.length > 0);
+    
+    // Extract potential book mentions from the answer (look for "Title by Author" pattern)
+    const bookMentionPattern = /([A-Z][^.!?]*?)\s+by\s+([A-Z][^.!?]*?)(?:[.,]|$)/gi;
+    const mentionedInAnswer: string[] = [];
+    let match;
+    while ((match = bookMentionPattern.exec(reply)) !== null) {
+      const mentionedTitle = match[1].trim().toLowerCase();
+      const mentionedAuthor = match[2].trim().toLowerCase();
+      mentionedInAnswer.push(`${mentionedTitle} by ${mentionedAuthor}`);
+      
+      // Check if this book is in our list
+      const found = books.find(b => {
+        const titleMatch = (b.title || '').toLowerCase().includes(mentionedTitle) || mentionedTitle.includes((b.title || '').toLowerCase());
+        const authorMatch = (b.author || '').toLowerCase().includes(mentionedAuthor) || mentionedAuthor.includes((b.author || '').toLowerCase());
+        return titleMatch && authorMatch;
+      });
+      
+      if (!found) {
+        console.warn('[API] ChatGPT mentioned a book not in provided context:', match[0]);
+        console.warn('[API] Available books were:', books.map(b => `${b.title} by ${b.author}`).join(', '));
+      }
+    }
+    
+    // Return ALL books that were used to generate the answer
+    // ChatGPT might mention some and not others, but all were considered relevant
+    console.log('[API] Returning', books.length, 'books in matched_books');
+    console.log('[API] Book IDs being returned:', books.map(b => b.id).join(', '));
+    console.log('[API] Book titles being returned:', books.map(b => `${b.title || 'No title'} by ${b.author || 'Unknown'}`).join(', '));
+    if (mentionedInAnswer.length > 0) {
+      console.log('[API] Books mentioned in answer:', mentionedInAnswer.join(', '));
+    }
+    
     return res.status(200).json({
       reply,
       matched_books: books.map((b) => ({
