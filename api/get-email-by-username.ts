@@ -61,20 +61,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[API] Trying ${config.name} Supabase: ${config.url?.substring(0, 30)}...`);
       
       const supabase = createClient(config.url!, config.key!, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      });
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
 
       // Get profile to find user ID (with timeout protection)
       console.log('[API] Looking up profile for username:', username.toLowerCase());
       const profilePromise = supabase
-        .from('profiles')
-        .select('id')
-        .eq('username', username.toLowerCase())
-        .single();
-      
+      .from('profiles')
+      .select('id')
+      .eq('username', username.toLowerCase())
+      .single();
+
       const profileTimeout = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Profile lookup timeout')), 10000)
       );

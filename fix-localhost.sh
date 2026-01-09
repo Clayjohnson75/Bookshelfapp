@@ -200,6 +200,7 @@ echo ""
 vercel dev --listen 3000
 
 
+
 echo "🔧 Fixing localhost setup..."
 
 # Check Node.js version

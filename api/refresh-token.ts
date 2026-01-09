@@ -231,6 +231,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

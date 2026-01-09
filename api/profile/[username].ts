@@ -1159,25 +1159,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             
             <!-- Regular Library Books -->
             <div id="regularBooksContainer">
-              ${(books || []).length > 0 
+            ${(books || []).length > 0 
                 ? `<div class="books-grid" id="regularBooksGrid">
-                    ${(books || []).map((book: any, index: number) => `
-                      <div class="book-card" onclick="openBookDetail(${index})">
-                        ${book.cover_url 
-                          ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
-                          : `<div class="book-cover-placeholder">${book.title}</div>`
-                        }
-                        <div class="book-info">
-                          <div class="book-title">${book.title}</div>
-                          ${book.author ? `<div class="book-author">${book.author}</div>` : ''}
-                        </div>
+                  ${(books || []).map((book: any, index: number) => `
+                    <div class="book-card" onclick="openBookDetail(${index})">
+                      ${book.cover_url 
+                        ? `<img src="${book.cover_url}" alt="${book.title}" class="book-cover">`
+                        : `<div class="book-cover-placeholder">${book.title}</div>`
+                      }
+                      <div class="book-info">
+                        <div class="book-title">${book.title}</div>
+                        ${book.author ? `<div class="book-author">${book.author}</div>` : ''}
                       </div>
-                    `).join('')}
-                  </div>`
-                : `<div class="empty-state">
-                    <div class="empty-state-text">No books yet</div>
-                  </div>`
-              }
+                    </div>
+                  `).join('')}
+                </div>`
+              : `<div class="empty-state">
+                  <div class="empty-state-text">No books yet</div>
+                </div>`
+            }
             </div>
           </div>
 
@@ -1233,7 +1233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         <script>
           const allBooks = ${JSON.stringify(books || [])};
           const username = '${profileData.username}';
-          
+
           let filterTimeout;
           function filterBooks() {
             if (currentMode !== 'library') return;
@@ -1733,7 +1733,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               suggestedBooksContainer.style.display = 'none';
             }
           }
-          
+
           // Check if user is signed in and owns this profile on page load
           window.addEventListener('DOMContentLoaded', async () => {
             const session = localStorage.getItem('supabase_session');

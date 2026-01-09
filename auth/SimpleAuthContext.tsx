@@ -484,33 +484,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             email = cachedEmail;
           } else {
             // No cache, try to fetch from server
-            // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
-            // This ensures we always get fresh data from the server
-            await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
+          // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
+          // This ensures we always get fresh data from the server
+          await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
+          
+          // Try RPC first (works in dev), but fallback to API endpoint (works in production)
+          let emailData = null;
+          let rpcError = null;
+          
+          try {
+            // Add timeout to RPC call
+            const rpcPromise = supabase.rpc('get_email_by_username', {
+              username_input: requestedUsername,
+            });
+            const rpcTimeout = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
+            );
             
-            // Try RPC first (works in dev), but fallback to API endpoint (works in production)
-            let emailData = null;
-            let rpcError = null;
-            
-            try {
-              // Add timeout to RPC call
-              const rpcPromise = supabase.rpc('get_email_by_username', {
-                username_input: requestedUsername,
-              });
-              const rpcTimeout = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
-              );
-              
-              const rpcResult = await Promise.race([rpcPromise, rpcTimeout]) as any;
-              emailData = rpcResult?.data;
-              rpcError = rpcResult?.error;
-            } catch (rpcErr: any) {
-              console.log('RPC call failed, trying API endpoint:', rpcErr?.message);
-              rpcError = rpcErr;
-            }
-            
-            // Fallback: Use API endpoint if RPC fails (more reliable in production)
-            if (rpcError || !emailData) {
+            const rpcResult = await Promise.race([rpcPromise, rpcTimeout]) as any;
+            emailData = rpcResult?.data;
+            rpcError = rpcResult?.error;
+          } catch (rpcErr: any) {
+            console.log('RPC call failed, trying API endpoint:', rpcErr?.message);
+            rpcError = rpcErr;
+          }
+          
+          // Fallback: Use API endpoint if RPC fails (more reliable in production)
+          if (rpcError || !emailData) {
               console.log('RPC failed or returned no data, trying API endpoint for username lookup:', requestedUsername);
               console.log('RPC error:', rpcError?.message || 'No error object');
               console.log('RPC data:', emailData);
@@ -546,11 +546,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 let response: Response;
                 try {
                   response = await fetch(`${apiUrl}/api/get-email-by-username`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: requestedUsername }),
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: requestedUsername }),
                     signal: controller.signal,
-                  });
+              });
                   clearTimeout(timeoutId);
                 } catch (fetchError: any) {
                   clearTimeout(timeoutId);
@@ -561,18 +561,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 }
                 
                 console.log('API response status:', response.status, response.statusText);
-                
-                if (response.ok) {
-                  const data = await response.json();
+              
+              if (response.ok) {
+                const data = await response.json();
                   console.log('API response data:', data);
-                  if (data.email) {
-                    email = data.email;
-                    // Cache the mapping for future use
-                    await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
-                    console.log(`✅ Username "${requestedUsername}" resolved to email via API: ${email}`);
-                  } else {
-                    throw new Error('No email returned from API');
-                  }
+                if (data.email) {
+                  email = data.email;
+                  // Cache the mapping for future use
+                  await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
+                  console.log(`✅ Username "${requestedUsername}" resolved to email via API: ${email}`);
+                } else {
+                  throw new Error('No email returned from API');
+                }
                 } else if (response.status === 404) {
                   // Username doesn't exist - this is a valid response, not a connection error
                   const errorText = await response.text();
@@ -586,7 +586,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                   setLoading(false);
                   Alert.alert('Sign In Error', errorData.message || 'This username does not exist. Please check your username and try again.');
                   return false;
-                } else {
+              } else {
                   // Other errors (500, etc.) - treat as connection/server error
                   const errorText = await response.text();
                   console.error('API error response:', errorText);
@@ -597,9 +597,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                     errorData = { message: errorText || 'API call failed' };
                   }
                   throw new Error(errorData.message || errorData.error || `API returned ${response.status}`);
-                }
-              } catch (apiError: any) {
-                console.error('API endpoint failed:', apiError);
+              }
+            } catch (apiError: any) {
+              console.error('API endpoint failed:', apiError);
                 console.error('API error details:', {
                   message: apiError?.message,
                   stack: apiError?.stack,
@@ -607,7 +607,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 });
                 
                 // Always clear loading state first to prevent infinite loading
-                setLoading(false);
+              setLoading(false);
                 
                 // Try cached email first - this is the most reliable fallback
                 const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
@@ -622,14 +622,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                     ? 'The server is not responding. Please check your internet connection and try again. If this persists, the API endpoint may need to be deployed.'
                     : 'Could not verify username. Please check your connection and try again.';
                   Alert.alert('Sign In Error', errorMessage);
-                  return false;
+              return false;
                 }
-              }
-            } else {
-              email = emailData;
-              // Cache the mapping for future use
-              await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
-              console.log(`✅ Username "${requestedUsername}" resolved to email via RPC: ${email}`);
+            }
+          } else {
+            email = emailData;
+            // Cache the mapping for future use
+            await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
+            console.log(`✅ Username "${requestedUsername}" resolved to email via RPC: ${email}`);
             }
           }
         } catch (error: any) {
