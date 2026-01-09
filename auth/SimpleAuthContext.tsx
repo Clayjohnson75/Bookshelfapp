@@ -477,145 +477,160 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       if (requestedUsername) {
         try {
-        // FIRST: Check cached email - use it immediately if available (fastest path)
-        const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
-        if (cachedEmail) {
-          console.log(`✅ Using cached email for username "${requestedUsername}"`);
-          email = cachedEmail;
-        } else {
-          // No cache, try to fetch from server
-          // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
-          // This ensures we always get fresh data from the server
-          await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
-          
-          // Try RPC first (works in dev), but fallback to API endpoint (works in production)
-          let emailData = null;
-          let rpcError = null;
-          
-          try {
-            // Add timeout to RPC call
-            const rpcPromise = supabase.rpc('get_email_by_username', {
-              username_input: requestedUsername,
-            });
-            const rpcTimeout = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
-            );
+          // FIRST: Check cached email - use it immediately if available (fastest path)
+          const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
+          if (cachedEmail) {
+            console.log(`✅ Using cached email for username "${requestedUsername}"`);
+            email = cachedEmail;
+          } else {
+            // No cache, try to fetch from server
+            // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
+            // This ensures we always get fresh data from the server
+            await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
             
-            const rpcResult = await Promise.race([rpcPromise, rpcTimeout]) as any;
-            emailData = rpcResult?.data;
-            rpcError = rpcResult?.error;
-          } catch (rpcErr: any) {
-            console.log('RPC call failed, trying API endpoint:', rpcErr?.message);
-            rpcError = rpcErr;
-          }
-          
-          // Fallback: Use API endpoint if RPC fails (more reliable in production)
-          if (rpcError || !emailData) {
-            console.log('RPC failed or returned no data, trying API endpoint for username lookup:', requestedUsername);
-            console.log('RPC error:', rpcError?.message || 'No error object');
-            console.log('RPC data:', emailData);
+            // Try RPC first (works in dev), but fallback to API endpoint (works in production)
+            let emailData = null;
+            let rpcError = null;
             
             try {
-              // Use environment variable with correct fallback
-              // Use www subdomain to avoid redirect issues
-              let apiUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
-              
-              // Safety check: override old URL if somehow it got through
-              if (apiUrl.includes('bookshelfapp-five')) {
-                console.warn('⚠️ Detected old API URL in env var, overriding:', apiUrl);
-                apiUrl = 'https://www.bookshelfscan.app';
-              }
-              
-              // Ensure we use www to avoid redirect CORS issues
-              if (apiUrl === 'https://bookshelfscan.app') {
-                apiUrl = 'https://www.bookshelfscan.app';
-              }
-              
-              console.log('Calling API endpoint:', `${apiUrl}/api/get-email-by-username`);
-              console.log('API URL source check:', {
-                envVar: getEnvVar('EXPO_PUBLIC_API_BASE_URL'),
-                final: apiUrl
+              // Add timeout to RPC call
+              const rpcPromise = supabase.rpc('get_email_by_username', {
+                username_input: requestedUsername,
               });
+              const rpcTimeout = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
+              );
               
-              // Add timeout to API call to prevent infinite loading (reduced to 5 seconds)
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => {
-                controller.abort();
-              }, 5000); // 5 second timeout
-              
-              let response: Response;
-              try {
-                response = await fetch(`${apiUrl}/api/get-email-by-username`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username: requestedUsername }),
-                  signal: controller.signal,
-                });
-                clearTimeout(timeoutId);
-              } catch (fetchError: any) {
-                clearTimeout(timeoutId);
-                if (fetchError.name === 'AbortError' || fetchError.message?.includes('aborted')) {
-                  throw new Error('Request timed out. Please check your connection and try again.');
-                }
-                throw fetchError;
-              }
-              
-              console.log('API response status:', response.status, response.statusText);
-              
-              if (response.ok) {
-                const data = await response.json();
-                console.log('API response data:', data);
-                if (data.email) {
-                  email = data.email;
-                  // Cache the mapping for future use
-                  await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
-                  console.log(`✅ Username "${requestedUsername}" resolved to email via API: ${email}`);
-                } else {
-                  throw new Error('No email returned from API');
-                }
-              } else {
-                const errorText = await response.text();
-                console.error('API error response:', errorText);
-                let errorData;
-                try {
-                  errorData = JSON.parse(errorText);
-                } catch {
-                  errorData = { message: errorText || 'API call failed' };
-                }
-                throw new Error(errorData.message || errorData.error || `API returned ${response.status}`);
-              }
-            } catch (apiError: any) {
-              console.error('API endpoint failed:', apiError);
-              console.error('API error details:', {
-                message: apiError?.message,
-                stack: apiError?.stack,
-                name: apiError?.name
-              });
-              
-              // Always clear loading state first to prevent infinite loading
-              setLoading(false);
-              
-              // Try cached email first - this is the most reliable fallback
-              const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
-              if (cachedEmail) {
-                console.log(`✅ Using cached email for username "${requestedUsername}"`);
-                email = cachedEmail;
-                // Continue with sign-in using cached email (don't return false)
-              } else {
-                // If no cache and API failed, show helpful error
-                const isTimeout = apiError?.message?.includes('timeout') || apiError?.message?.includes('timed out');
-                const errorMessage = isTimeout
-                  ? 'The server is not responding. Please check your internet connection and try again. If this persists, the API endpoint may need to be deployed.'
-                  : 'Could not verify username. Please check your connection and try again.';
-                Alert.alert('Sign In Error', errorMessage);
-                return false;
-              }
+              const rpcResult = await Promise.race([rpcPromise, rpcTimeout]) as any;
+              emailData = rpcResult?.data;
+              rpcError = rpcResult?.error;
+            } catch (rpcErr: any) {
+              console.log('RPC call failed, trying API endpoint:', rpcErr?.message);
+              rpcError = rpcErr;
             }
-          } else {
-            email = emailData;
-            // Cache the mapping for future use
-            await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
-            console.log(`✅ Username "${requestedUsername}" resolved to email via RPC: ${email}`);
+            
+            // Fallback: Use API endpoint if RPC fails (more reliable in production)
+            if (rpcError || !emailData) {
+              console.log('RPC failed or returned no data, trying API endpoint for username lookup:', requestedUsername);
+              console.log('RPC error:', rpcError?.message || 'No error object');
+              console.log('RPC data:', emailData);
+              
+              try {
+                // Use environment variable with correct fallback
+                // Use www subdomain to avoid redirect issues
+                let apiUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
+                
+                // Safety check: override old URL if somehow it got through
+                if (apiUrl.includes('bookshelfapp-five')) {
+                  console.warn('⚠️ Detected old API URL in env var, overriding:', apiUrl);
+                  apiUrl = 'https://www.bookshelfscan.app';
+                }
+                
+                // Ensure we use www to avoid redirect CORS issues
+                if (apiUrl === 'https://bookshelfscan.app') {
+                  apiUrl = 'https://www.bookshelfscan.app';
+                }
+                
+                console.log('Calling API endpoint:', `${apiUrl}/api/get-email-by-username`);
+                console.log('API URL source check:', {
+                  envVar: getEnvVar('EXPO_PUBLIC_API_BASE_URL'),
+                  final: apiUrl
+                });
+                
+                // Add timeout to API call to prevent infinite loading (reduced to 5 seconds)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                  controller.abort();
+                }, 5000); // 5 second timeout
+                
+                let response: Response;
+                try {
+                  response = await fetch(`${apiUrl}/api/get-email-by-username`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: requestedUsername }),
+                    signal: controller.signal,
+                  });
+                  clearTimeout(timeoutId);
+                } catch (fetchError: any) {
+                  clearTimeout(timeoutId);
+                  if (fetchError.name === 'AbortError' || fetchError.message?.includes('aborted')) {
+                    throw new Error('Request timed out. Please check your connection and try again.');
+                  }
+                  throw fetchError;
+                }
+                
+                console.log('API response status:', response.status, response.statusText);
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  console.log('API response data:', data);
+                  if (data.email) {
+                    email = data.email;
+                    // Cache the mapping for future use
+                    await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
+                    console.log(`✅ Username "${requestedUsername}" resolved to email via API: ${email}`);
+                  } else {
+                    throw new Error('No email returned from API');
+                  }
+                } else if (response.status === 404) {
+                  // Username doesn't exist - this is a valid response, not a connection error
+                  const errorText = await response.text();
+                  let errorData;
+                  try {
+                    errorData = JSON.parse(errorText);
+                  } catch {
+                    errorData = { message: errorText || 'Username not found' };
+                  }
+                  // Show user-friendly error and return false (don't try cached email for non-existent username)
+                  setLoading(false);
+                  Alert.alert('Sign In Error', errorData.message || 'This username does not exist. Please check your username and try again.');
+                  return false;
+                } else {
+                  // Other errors (500, etc.) - treat as connection/server error
+                  const errorText = await response.text();
+                  console.error('API error response:', errorText);
+                  let errorData;
+                  try {
+                    errorData = JSON.parse(errorText);
+                  } catch {
+                    errorData = { message: errorText || 'API call failed' };
+                  }
+                  throw new Error(errorData.message || errorData.error || `API returned ${response.status}`);
+                }
+              } catch (apiError: any) {
+                console.error('API endpoint failed:', apiError);
+                console.error('API error details:', {
+                  message: apiError?.message,
+                  stack: apiError?.stack,
+                  name: apiError?.name
+                });
+                
+                // Always clear loading state first to prevent infinite loading
+                setLoading(false);
+                
+                // Try cached email first - this is the most reliable fallback
+                const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
+                if (cachedEmail) {
+                  console.log(`✅ Using cached email for username "${requestedUsername}"`);
+                  email = cachedEmail;
+                  // Continue with sign-in using cached email (don't return false)
+                } else {
+                  // If no cache and API failed, show helpful error
+                  const isTimeout = apiError?.message?.includes('timeout') || apiError?.message?.includes('timed out');
+                  const errorMessage = isTimeout
+                    ? 'The server is not responding. Please check your internet connection and try again. If this persists, the API endpoint may need to be deployed.'
+                    : 'Could not verify username. Please check your connection and try again.';
+                  Alert.alert('Sign In Error', errorMessage);
+                  return false;
+                }
+              }
+            } else {
+              email = emailData;
+              // Cache the mapping for future use
+              await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, email);
+              console.log(`✅ Username "${requestedUsername}" resolved to email via RPC: ${email}`);
+            }
           }
         } catch (error: any) {
           console.error('Username lookup error:', error);
