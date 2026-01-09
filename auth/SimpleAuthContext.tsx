@@ -517,12 +517,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             
             try {
               // Use environment variable with correct fallback
-              let apiUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
+              // Use www subdomain to avoid redirect issues
+              let apiUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
               
               // Safety check: override old URL if somehow it got through
               if (apiUrl.includes('bookshelfapp-five')) {
                 console.warn('⚠️ Detected old API URL in env var, overriding:', apiUrl);
-                apiUrl = 'https://bookshelfscan.app';
+                apiUrl = 'https://www.bookshelfscan.app';
+              }
+              
+              // Ensure we use www to avoid redirect CORS issues
+              if (apiUrl === 'https://bookshelfscan.app') {
+                apiUrl = 'https://www.bookshelfscan.app';
               }
               
               console.log('Calling API endpoint:', `${apiUrl}/api/get-email-by-username`);

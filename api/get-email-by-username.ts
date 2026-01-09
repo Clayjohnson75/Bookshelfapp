@@ -2,10 +2,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Add CORS headers - handle both www and non-www
+  const origin = req.headers.origin || req.headers.referer || '*';
+  res.setHeader('Access-Control-Allow-Origin', origin === 'https://www.bookshelfscan.app' || origin === 'https://bookshelfscan.app' ? origin : '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -114,9 +116,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   } catch (error: any) {
     console.error('[API] Error in get-email-by-username:', error);
+    console.error('[API] Error stack:', error?.stack);
+    console.error('[API] Error details:', {
+      message: error?.message,
+      name: error?.name,
+      code: error?.code
+    });
+    
+    // Ensure CORS headers are set even on error
+    const origin = req.headers.origin || req.headers.referer || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin === 'https://www.bookshelfscan.app' || origin === 'https://bookshelfscan.app' ? origin : '*');
+    
     return res.status(500).json({ 
       error: 'Internal server error',
-      message: error?.message || 'An error occurred. Please try again later.'
+      message: error?.message || 'An error occurred. Please try again later.',
+      details: process.env.NODE_ENV === 'development' ? error?.stack : undefined
     });
   }
 }
