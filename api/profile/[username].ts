@@ -1060,13 +1060,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             <h1 class="profile-name">${profileData.displayName}</h1>
             <div class="profile-username">@${profileData.username}</div>
             ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
-            ${isEditMode ? `
-              <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
-                <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Edit your profile (coming soon)</p>
-                <button class="sign-in-button" style="background: #007AFF; margin-right: 10px;" onclick="alert('Edit functionality coming soon!')">Edit Profile</button>
+            <div id="profileEditButtons" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: none;">
+              <div style="margin-bottom: 15px;">
+                <button class="sign-in-button" style="background: #007AFF; margin-right: 10px;" onclick="openEditProfile()">Edit Profile</button>
                 <button class="sign-in-button" style="background: #666;" onclick="window.location.href='/${profileData.username}'">View Public Profile</button>
               </div>
-            ` : ''}
+            </div>
             
             <div class="stats-grid">
               <div class="stat-card">
@@ -1658,23 +1657,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const suggestedBooksContainer = document.getElementById('suggestedBooksContainer');
             const suggestedBooksGrid = document.getElementById('suggestedBooksGrid');
             
-            if (!suggestedBooksContainer || !suggestedBooksGrid) return;
+            if (!suggestedBooksContainer || !suggestedBooksGrid) {
+              console.error('Suggested books container not found');
+              return;
+            }
+            
+            if (!books || books.length === 0) {
+              suggestedBooksContainer.style.display = 'none';
+              return;
+            }
             
             suggestedBooksContainer.style.display = 'block';
             suggestedBooksGrid.innerHTML = '';
             
+            let booksFound = 0;
+            
             // Find full book data from allBooks
             books.forEach(bookData => {
-              const fullBook = allBooks.find(b => b.id === bookData.id);
+              if (!bookData || !bookData.id) return;
+              
+              const fullBook = allBooks.find(b => b && b.id === bookData.id);
               if (fullBook) {
+                booksFound++;
                 const bookIndex = allBooks.indexOf(fullBook);
                 const bookCard = document.createElement('div');
                 bookCard.className = 'book-card';
                 bookCard.onclick = () => openBookDetail(bookIndex);
                 
                 const cover = fullBook.cover_url 
-                  ? \`<img src="\${fullBook.cover_url}" alt="\${fullBook.title}" class="book-cover">\`
-                  : \`<div class="book-cover-placeholder">\${fullBook.title}</div>\`;
+                  ? \`<img src="\${fullBook.cover_url}" alt="\${fullBook.title || 'Book'}" class="book-cover">\`
+                  : \`<div class="book-cover-placeholder">\${(fullBook.title || 'Book').substring(0, 20)}</div>\`;
                 
                 bookCard.innerHTML = \`
                   \${cover}
@@ -1685,8 +1697,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 \`;
                 
                 suggestedBooksGrid.appendChild(bookCard);
+              } else {
+                console.warn('Book not found in allBooks:', bookData.id, bookData.title);
               }
             });
+            
+            if (booksFound === 0) {
+              console.warn('No suggested books found in library. Matched books:', books);
+              suggestedBooksContainer.style.display = 'none';
+            }
           }
           
           // Check if user is signed in and owns this profile on page load
@@ -1720,15 +1739,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   const profileUsername = '${profileData.username}'.toLowerCase();
                   
                   if (signedInUsername === profileUsername) {
-                    // User owns this profile
-                    if (!isEditMode) {
-                      // Redirect to edit mode if viewing own profile and not already in edit mode
-                      window.location.href = \`/\${username}?edit=true\`;
+                    // User owns this profile - show edit buttons
+                    const editButtonsDiv = document.getElementById('profileEditButtons');
+                    if (editButtonsDiv) {
+                      editButtonsDiv.style.display = 'block';
                     }
                   } else {
                     // User is signed in but viewing someone else's profile
+                    // Hide edit buttons (they shouldn't be visible anyway)
+                    const editButtonsDiv = document.getElementById('profileEditButtons');
+                    if (editButtonsDiv) {
+                      editButtonsDiv.style.display = 'none';
+                    }
+                    // If somehow in edit mode on someone else's profile, redirect to regular view
                     if (isEditMode) {
-                      // Redirect to regular view - can't edit someone else's profile
                       window.location.href = \`/\${username}\`;
                     }
                   }
@@ -1742,6 +1766,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           function openSignInModal() {
             window.location.href = '/signin';
+          }
+
+          function openEditProfile() {
+            // TODO: Implement full edit profile form/modal
+            // For now, show alert that editing is coming soon
+            alert('Profile editing will be available soon! You will be able to edit your display name, bio, and avatar.');
           }
 
           function closeSignInModal(event) {
@@ -1837,6 +1867,126 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
 
     return res.status(200).send(html);
+
+  } catch (error: any) {
+    console.error('[API] Error rendering profile page:', error);
+    console.error('[API] Error stack:', error?.stack);
+    console.error('[API] Error message:', error?.message);
+    
+    // Return a proper error page instead of just text
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error - Bookshelf Scanner</title>
+        <style>
+          body { font-family: system-ui; padding: 40px; text-align: center; }
+          h1 { color: #e74c3c; }
+          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+        </style>
+      </head>
+      <body>
+        <h1>Error Loading Profile</h1>
+        <p>An error occurred while loading this profile.</p>
+        <pre>${error?.message || 'Unknown error'}</pre>
+        <a href="/">Return to Home</a>
+      </body>
+      </html>
+    `);
+  }
+}
+
+
+
+  } catch (error: any) {
+    console.error('[API] Error rendering profile page:', error);
+    console.error('[API] Error stack:', error?.stack);
+    console.error('[API] Error message:', error?.message);
+    
+    // Return a proper error page instead of just text
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error - Bookshelf Scanner</title>
+        <style>
+          body { font-family: system-ui; padding: 40px; text-align: center; }
+          h1 { color: #e74c3c; }
+          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+        </style>
+      </head>
+      <body>
+        <h1>Error Loading Profile</h1>
+        <p>An error occurred while loading this profile.</p>
+        <pre>${error?.message || 'Unknown error'}</pre>
+        <a href="/">Return to Home</a>
+      </body>
+      </html>
+    `);
+  }
+}
+
+
+
+  } catch (error: any) {
+    console.error('[API] Error rendering profile page:', error);
+    console.error('[API] Error stack:', error?.stack);
+    console.error('[API] Error message:', error?.message);
+    
+    // Return a proper error page instead of just text
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error - Bookshelf Scanner</title>
+        <style>
+          body { font-family: system-ui; padding: 40px; text-align: center; }
+          h1 { color: #e74c3c; }
+          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+        </style>
+      </head>
+      <body>
+        <h1>Error Loading Profile</h1>
+        <p>An error occurred while loading this profile.</p>
+        <pre>${error?.message || 'Unknown error'}</pre>
+        <a href="/">Return to Home</a>
+      </body>
+      </html>
+    `);
+  }
+}
+
+
+
+  } catch (error: any) {
+    console.error('[API] Error rendering profile page:', error);
+    console.error('[API] Error stack:', error?.stack);
+    console.error('[API] Error message:', error?.message);
+    
+    // Return a proper error page instead of just text
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error - Bookshelf Scanner</title>
+        <style>
+          body { font-family: system-ui; padding: 40px; text-align: center; }
+          h1 { color: #e74c3c; }
+          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+        </style>
+      </head>
+      <body>
+        <h1>Error Loading Profile</h1>
+        <p>An error occurred while loading this profile.</p>
+        <pre>${error?.message || 'Unknown error'}</pre>
+        <a href="/">Return to Home</a>
+      </body>
+      </html>
+    `);
+  }
+}
+
+
 
   } catch (error: any) {
     console.error('[API] Error rendering profile page:', error);
