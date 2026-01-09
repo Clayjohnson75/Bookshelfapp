@@ -477,6 +477,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       if (requestedUsername) {
         try {
+        // FIRST: Check cached email - use it immediately if available (fastest path)
+        const cachedEmail = await AsyncStorage.getItem('usernameToEmail:' + requestedUsername);
+        if (cachedEmail) {
+          console.log(`✅ Using cached email for username "${requestedUsername}"`);
+          email = cachedEmail;
+        } else {
+          // No cache, try to fetch from server
           // CRITICAL: Clear any stale username-to-email mappings first to prevent wrong account sign-in
           // This ensures we always get fresh data from the server
           await AsyncStorage.removeItem('usernameToEmail:' + requestedUsername);
@@ -524,11 +531,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 final: apiUrl
               });
               
-              // Add timeout to API call to prevent infinite loading
+              // Add timeout to API call to prevent infinite loading (reduced to 5 seconds)
               const controller = new AbortController();
               const timeoutId = setTimeout(() => {
                 controller.abort();
-              }, 8000); // 8 second timeout
+              }, 5000); // 5 second timeout
               
               let response: Response;
               try {
