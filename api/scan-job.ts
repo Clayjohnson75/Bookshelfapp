@@ -257,7 +257,7 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       baseUrl = `https://${requestHost}`;
     } else {
       // Fallback: use production URL (never use VERCEL_URL as it might be preview)
-      baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfapp-five.vercel.app';
+      baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfscan.app';
       
       // Ensure it's a full URL with https
       if (!baseUrl.startsWith('http')) {

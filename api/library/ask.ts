@@ -4,6 +4,15 @@ import { createClient } from '@supabase/supabase-js';
 const refusal =
   "I can only answer questions about your library. Try asking which of your books cover a topic, or ask for recommendations from your collection.";
 
+// OpenAI API response type
+interface OpenAIResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
 interface Book {
   id: string;
   title: string | null;
@@ -153,7 +162,7 @@ async function classifyLibraryOnly(message: string): Promise<boolean> {
       return false; // Fail closed
     }
 
-    const data = await response.json();
+    const data = await response.json() as OpenAIResponse;
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       return false;
@@ -242,7 +251,7 @@ async function findRelevantBooksWithAI(query: string, allBooks: Book[]): Promise
       throw new Error('OpenAI API error');
     }
 
-    const data = await response.json();
+    const data = await response.json() as OpenAIResponse;
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error('Empty response');
@@ -347,7 +356,7 @@ async function extractSearchKeywords(query: string): Promise<string[]> {
       return allWords.filter((word) => word.length >= 2 && !stopWords.has(word));
     }
 
-    const data = await response.json();
+    const data = await response.json() as OpenAIResponse;
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error('Empty response');
@@ -701,7 +710,7 @@ async function answerFromBooks(message: string, books: Book[], isOwnLibrary: boo
       throw new Error('OpenAI API error');
     }
 
-    const data = await response.json();
+    const data = await response.json() as OpenAIResponse;
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error('Empty response from OpenAI');

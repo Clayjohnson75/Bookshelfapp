@@ -55,8 +55,8 @@ const BookshelfScannerAppInner: React.FC = () => {
     return () => subscription?.remove();
   }, []);
   
-  const screenWidth = dimensions.width;
-  const screenHeight = dimensions.height;
+  const screenWidth = dimensions.width || 375; // Fallback to default width
+  const screenHeight = dimensions.height || 667; // Fallback to default height
   const { user, signOut, loading: authLoading } = useAuth();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
@@ -206,7 +206,7 @@ const BookshelfScannerAppInner: React.FC = () => {
       console.log('🤖 Scanning image with AI via server API...');
       
       // Use server API endpoint instead of direct OpenAI calls (security)
-      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
       
       const response = await fetch(`${baseUrl}/api/scan`, {
         method: 'POST',

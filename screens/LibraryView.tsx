@@ -32,8 +32,6 @@ const getEnvVar = (key: string): string => {
          '';
 };
 
-const { width: screenWidth } = Dimensions.get('window');
-
 interface LibraryViewProps {
   onClose?: () => void;
   filterReadStatus?: 'read' | 'unread';
@@ -53,8 +51,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
     return () => subscription?.remove();
   }, []);
   
-  const screenWidth = dimensions.width;
-  const screenHeight = dimensions.height;
+  const screenWidth = dimensions.width || 375; // Fallback to default width
+  const screenHeight = dimensions.height || 667; // Fallback to default height
   
   const styles = useMemo(() => getStyles(screenWidth, screenHeight), [screenWidth, screenHeight]);
   
@@ -506,7 +504,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
             setIsAutoSorting(true);
             try {
               // Get API base URL
-              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
               
               if (!baseUrl) {
                 throw new Error('API server URL not configured');

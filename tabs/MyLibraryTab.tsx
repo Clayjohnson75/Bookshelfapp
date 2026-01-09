@@ -47,8 +47,11 @@ export const MyLibraryTab: React.FC = () => {
     return () => subscription?.remove();
   }, []);
   
-  const screenWidth = dimensions.width;
-  const screenHeight = dimensions.height;
+  const screenWidth = dimensions.width || 375; // Fallback to default width
+  const screenHeight = dimensions.height || 667; // Fallback to default height
+  
+  const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
+  
   const { user } = useAuth();
   const navigation = useNavigation();
   const [books, setBooks] = useState<Book[]>([]);
@@ -762,7 +765,7 @@ export const MyLibraryTab: React.FC = () => {
             setIsAutoSorting(true);
             try {
               // Get API base URL
-              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfapp-five.vercel.app';
+              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
               
               if (!baseUrl) {
                 throw new Error('API server URL not configured');
@@ -2763,7 +2766,7 @@ export const MyLibraryTab: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (screenWidth: number) => StyleSheet.create({
   safeContainer: {
     flex: 1,
     backgroundColor: '#f8f9fa', // Match Scans tab

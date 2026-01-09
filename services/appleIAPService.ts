@@ -487,7 +487,7 @@ async function validateReceiptServerSide(
   try {
     const apiBaseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
                        process.env.EXPO_PUBLIC_API_BASE_URL || 
-                       'https://bookshelfapp-five.vercel.app';
+                       'https://bookshelfscan.app';
 
     const response = await fetch(`${apiBaseUrl}/api/validate-apple-receipt`, {
       method: 'POST',

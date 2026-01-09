@@ -22,8 +22,6 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Book } from '../types/BookTypes';
 
-const { width: screenWidth } = Dimensions.get('window');
-
 interface User {
   uid: string;
   email: string;
@@ -47,6 +45,18 @@ type SearchResult = { type: 'user'; data: User } | { type: 'book'; data: BookRes
 export const ExploreTab: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { searchUsers, user: currentUser } = useAuth();
+  const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  
+  useEffect(() => {
+    const subscription = Dimensions.addEventListener('change', ({ window }) => {
+      setDimensions(window);
+    });
+    return () => subscription?.remove();
+  }, []);
+  
+  const screenWidth = dimensions.width || 375; // Fallback to default width
+  const screenHeight = dimensions.height || 667; // Fallback to default height
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,6 +67,8 @@ export const ExploreTab: React.FC = () => {
   const [bookPage, setBookPage] = useState(0);
   const [hasMoreBooks, setHasMoreBooks] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
 
   const loadBooks = async (query: string, page: number, isAuthorSearch: boolean = false) => {
     try {
@@ -504,7 +516,7 @@ export const ExploreTab: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (screenWidth: number) => StyleSheet.create({
   safeContainer: {
     flex: 1,
     backgroundColor: '#f8f9fa', // Match Scans tab

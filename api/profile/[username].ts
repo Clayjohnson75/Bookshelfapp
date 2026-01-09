@@ -32,10 +32,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
-    // Get user profile by username
+    // Get user profile by username (including profile_settings)
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
+      .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled, profile_settings')
       .eq('username', username.toLowerCase())
       .single();
 
@@ -288,6 +288,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(0, 5)
       .map(([author, count]) => ({ author, count }));
 
+    // Get profile settings or use defaults
+    const settings = (profile.profile_settings as any) || {
+      backgroundColor: '#f8f6f0',
+      buttonColor: '#007AFF',
+      textColor: '#2c3e50',
+      showTotalBooks: true,
+      showReadBooks: true,
+      showUnreadBooks: true,
+      showTopAuthors: true,
+      hideBio: false,
+      hideAvatar: false
+    };
+
     // Format profile data
     const profileData = {
       id: profile.id,
@@ -296,6 +309,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       avatarUrl: profile.avatar_url,
       bio: profile.profile_bio,
       createdAt: profile.created_at,
+      settings
     };
 
     const stats = {
@@ -327,8 +341,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f8f6f0;
-            color: #2c3e50;
+            background: ${settings.backgroundColor};
+            color: ${settings.textColor};
             line-height: 1.6;
           }
           .header {
@@ -456,21 +470,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .profile-name {
             font-size: 36px;
             font-weight: 800;
-            color: #2c3e50;
+            color: ${settings.textColor};
             margin-bottom: 10px;
             letter-spacing: 0.5px;
           }
           .profile-username {
             font-size: 18px;
-            color: #666;
+            color: ${settings.textColor}99;
             margin-bottom: 20px;
           }
           .profile-bio {
             font-size: 16px;
-            color: #555;
+            color: ${settings.textColor}cc;
             max-width: 600px;
             margin: 0 auto 30px;
             line-height: 1.8;
+            ${settings.hideBio ? 'display: none;' : ''}
           }
           .stats-grid {
             display: grid;
@@ -490,12 +505,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .stat-value {
             font-size: 32px;
             font-weight: 800;
-            color: #2c3e50;
+            color: ${settings.textColor};
             margin-bottom: 5px;
           }
           .stat-label {
             font-size: 14px;
-            color: #666;
+            color: ${settings.textColor}99;
             text-transform: uppercase;
             letter-spacing: 0.5px;
           }
@@ -505,7 +520,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .section-title {
             font-size: 28px;
             font-weight: 800;
-            color: #2c3e50;
+            color: ${settings.textColor};
             margin-bottom: 20px;
             letter-spacing: 0.5px;
           }
@@ -525,14 +540,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
           .search-input:focus {
             outline: none;
-            border-color: #007AFF;
-            box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+            border-color: ${settings.buttonColor};
+            box-shadow: 0 0 0 3px ${settings.buttonColor}1a;
           }
           .search-input::placeholder {
             color: #999;
           }
           .sign-in-button {
-            background: #007AFF;
+            background: ${settings.buttonColor};
             color: white;
             border: none;
             padding: 10px 20px;
@@ -544,7 +559,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
           }
           .sign-in-button:hover {
-            background: #0056CC;
+            opacity: 0.85;
           }
           .ask-library-button {
             background: linear-gradient(135deg, #007AFF 0%, #0056CC 100%);
@@ -586,14 +601,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
           }
           .mode-toggle-button:hover {
-            border-color: #007AFF;
-            color: #007AFF;
+            border-color: ${settings.buttonColor};
+            color: ${settings.buttonColor};
           }
           .mode-toggle-button.active {
-            background: linear-gradient(135deg, #007AFF 0%, #0056CC 100%);
+            background: ${settings.buttonColor};
             color: white;
-            border-color: #007AFF;
-            box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+            border-color: ${settings.buttonColor};
+            box-shadow: 0 2px 8px ${settings.buttonColor}40;
           }
           .ai-answer-box {
             background: linear-gradient(135deg, #f8f6f0 0%, #ffffff 100%);
@@ -1057,29 +1072,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         <div class="container">
           <div class="profile-header">
+            ${!settings.hideAvatar 
+              ? (profileData.avatarUrl 
+                  ? `<img src="${profileData.avatarUrl}" alt="${profileData.displayName}" class="avatar">` 
+                  : `<div class="avatar-placeholder">${profileData.displayName.charAt(0).toUpperCase()}</div>`)
+              : ''}
             <h1 class="profile-name">${profileData.displayName}</h1>
             <div class="profile-username">@${profileData.username}</div>
-            ${profileData.bio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
+            ${profileData.bio && !settings.hideBio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
             <div id="profileEditButtons" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: none;">
               <div style="margin-bottom: 15px;">
-                <button class="sign-in-button" style="background: #007AFF; margin-right: 10px;" onclick="openEditProfile()">Edit Profile</button>
+                <button class="sign-in-button" style="margin-right: 10px;" onclick="openEditProfile()">Edit Profile</button>
                 <button class="sign-in-button" style="background: #666;" onclick="window.location.href='/${profileData.username}'">View Public Profile</button>
               </div>
             </div>
             
             <div class="stats-grid">
+              ${settings.showTotalBooks ? `
               <div class="stat-card">
                 <div class="stat-value">${stats.totalBooks}</div>
                 <div class="stat-label">Total Books</div>
               </div>
+              ` : ''}
+              ${settings.showReadBooks ? `
               <div class="stat-card">
                 <div class="stat-value">${stats.readBooks}</div>
                 <div class="stat-label">Read</div>
               </div>
+              ` : ''}
+              ${settings.showUnreadBooks ? `
               <div class="stat-card">
                 <div class="stat-value">${stats.unreadBooks}</div>
                 <div class="stat-label">Unread</div>
               </div>
+              ` : ''}
             </div>
           </div>
 
@@ -1769,9 +1795,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
 
           function openEditProfile() {
-            // TODO: Implement full edit profile form/modal
-            // For now, show alert that editing is coming soon
-            alert('Profile editing will be available soon! You will be able to edit your display name, bio, and avatar.');
+            // Navigate to edit profile page
+            window.location.href = \`/${profileData.username}/edit\`;
           }
 
           function closeSignInModal(event) {

@@ -1,0 +1,321 @@
+# iOS build artifacts
+ios/
+ios/**/*
+
+# Android build artifacts
+android/
+android/**/*
+
+# Node modules
+node_modules/
+node_modules/**/*
+
+# Expo build artifacts
+.expo/
+.expo/**/*
+.expo-shared/
+.expo-shared/**/*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (keep .env.local for local dev)
+.env
+.env.production
+.env.development
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+*.sh
+setup-*.sh
+
+ios/
+ios/**/*
+
+# Android build artifacts
+android/
+android/**/*
+
+# Node modules
+node_modules/
+node_modules/**/*
+
+# Expo build artifacts
+.expo/
+.expo/**/*
+.expo-shared/
+.expo-shared/**/*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (keep .env.local for local dev)
+.env
+.env.production
+.env.development
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+*.sh
+setup-*.sh
+
+ios/
+ios/**/*
+
+# Android build artifacts
+android/
+android/**/*
+
+# Node modules
+node_modules/
+node_modules/**/*
+
+# Expo build artifacts
+.expo/
+.expo/**/*
+.expo-shared/
+.expo-shared/**/*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (keep .env.local for local dev)
+.env
+.env.production
+.env.development
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+*.sh
+setup-*.sh
+
+ios/
+ios/**/*
+
+# Android build artifacts
+android/
+android/**/*
+
+# Node modules
+node_modules/
+node_modules/**/*
+
+# Expo build artifacts
+.expo/
+.expo/**/*
+.expo-shared/
+.expo-shared/**/*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (keep .env.local for local dev)
+.env
+.env.production
+.env.development
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+*.sh
+setup-*.sh
+
+ios/
+ios/**/*
+
+# Android build artifacts
+android/
+android/**/*
+
+# Node modules
+node_modules/
+node_modules/**/*
+
+# Expo build artifacts
+.expo/
+.expo/**/*
+.expo-shared/
+.expo-shared/**/*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (keep .env.local for local dev)
+.env
+.env.production
+.env.development
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+*.sh
+setup-*.sh
+

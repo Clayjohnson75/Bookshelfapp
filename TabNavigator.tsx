@@ -18,17 +18,14 @@ export const TabNavigator = () => {
           tabBarInactiveTintColor: '#bdc3c7',
           headerShown: false,
           tabBarStyle: {
-            backgroundColor: '#ffffff', // Explicit solid background to prevent glass effects
+            backgroundColor: '#ffffff',
             borderTopWidth: 0.5,
             borderTopColor: '#e2e8f0',
-            elevation: 8, // Android shadow
+            elevation: 8,
             shadowColor: '#000',
             shadowOffset: { width: 0, height: -2 },
             shadowOpacity: 0.1,
             shadowRadius: 8,
-            height: 49, // Explicit height for iOS
-            paddingBottom: 0,
-            paddingTop: 0,
           },
         }}
       >

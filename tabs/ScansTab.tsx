@@ -87,8 +87,8 @@ export const ScansTab: React.FC = () => {
     return () => subscription?.remove();
   }, []);
   
-  const screenWidth = dimensions.width;
-  const screenHeight = dimensions.height;
+  const screenWidth = dimensions.width || 375; // Fallback to default width
+  const screenHeight = dimensions.height || 667; // Fallback to default height
   
   const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
   
