@@ -493,19 +493,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           let rpcError = null;
           
           try {
-            // Add timeout to RPC call
+            // Add timeout to RPC call (reduced to 3 seconds for faster fallback)
+            console.log('Attempting RPC call for username:', requestedUsername);
             const rpcPromise = supabase.rpc('get_email_by_username', {
               username_input: requestedUsername,
             });
             const rpcTimeout = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Username lookup timeout')), 5000)
+              setTimeout(() => reject(new Error('RPC timeout after 3 seconds')), 3000)
             );
             
             const rpcResult = await Promise.race([rpcPromise, rpcTimeout]) as any;
             emailData = rpcResult?.data;
             rpcError = rpcResult?.error;
+            console.log('RPC result:', { emailData, error: rpcError?.message });
           } catch (rpcErr: any) {
-            console.log('RPC call failed, trying API endpoint:', rpcErr?.message);
+            console.log('RPC call failed or timed out, trying API endpoint:', rpcErr?.message);
             rpcError = rpcErr;
           }
           
@@ -534,7 +536,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 console.log('Calling API endpoint:', `${apiUrl}/api/get-email-by-username`);
                 console.log('API URL source check:', {
                   envVar: getEnvVar('EXPO_PUBLIC_API_BASE_URL'),
-                  final: apiUrl
+                  final: apiUrl,
+                  isProduction: process.env.EAS_ENV === 'production' || Constants.expoConfig?.extra?.EAS_ENV === 'production',
+                  supabaseUrl: supabase?.supabaseUrl?.substring(0, 30) + '...' || 'not configured'
                 });
                 
                 // Add timeout to API call to prevent infinite loading (reduced to 5 seconds)
@@ -668,7 +672,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Sign in with timeout protection
       try {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password: cleanedPassword });
+        const signInPromise = supabase.auth.signInWithPassword({ email, password: cleanedPassword });
+        const signInTimeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Sign in timeout')), 10000)
+        );
+        const signInResult = await Promise.race([signInPromise, signInTimeoutPromise]) as any;
+        const { data, error } = signInResult;
         
         if (error || !data?.user) {
           const errorMessage = getSignInErrorMessage(error);
@@ -679,10 +688,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         const sUser = data.user;
         
-        // Fetch profile with error handling
+        // Fetch profile with error handling and timeout protection
         let profile;
         try {
-          profile = await fetchUserProfile(sUser.id);
+          const profilePromise = fetchUserProfile(sUser.id);
+          const profileTimeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+          );
+          profile = await Promise.race([profilePromise, profileTimeoutPromise]) as any;
         } catch (profileError) {
           console.warn('Profile fetch error, using basic user data:', profileError);
           // Use basic data if profile fetch fails
@@ -744,6 +757,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       Alert.alert('Sign In Error', errorMessage);
       setLoading(false);
       return false;
+    } finally {
+      // CRITICAL: Always clear loading state, even if something unexpected happens
+      // This prevents infinite loading screens
+      setLoading(false);
     }
   };
 
@@ -1082,6 +1099,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       Alert.alert('Sign Up Error', errorMessage);
       setLoading(false);
       return false;
+    } finally {
+      // CRITICAL: Always clear loading state, even if something unexpected happens
+      // This prevents infinite loading screens
+      setLoading(false);
     }
   };
 
