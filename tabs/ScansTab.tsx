@@ -427,22 +427,6 @@ export const ScansTab: React.FC = () => {
     }
   }, [user]);
   
-  // Reload data when tab is focused (user navigates back to this tab)
-  useFocusEffect(
-    useCallback(() => {
-      if (user) {
-        console.log('🔄 Tab focused, refreshing data...');
-        // Reload data in background
-        loadUserData().catch(error => {
-          console.error('❌ Error reloading user data on focus:', error);
-        });
-        loadScanUsage().catch(error => {
-          console.error('❌ Error reloading scan usage on focus:', error);
-        });
-      }
-    }, [user])
-  );
-  
   // Fallback function to load from AsyncStorage if Supabase fails
   const loadUserDataFromStorage = async () => {
     if (!user) return;
@@ -1060,6 +1044,23 @@ export const ScansTab: React.FC = () => {
       }
     }
   };
+  
+  // Reload data when tab is focused (user navigates back to this tab)
+  // Must be after loadUserData and loadScanUsage are defined
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        console.log('🔄 Tab focused, refreshing data...');
+        // Reload data in background
+        loadUserData().catch(error => {
+          console.error('❌ Error reloading user data on focus:', error);
+        });
+        loadScanUsage().catch(error => {
+          console.error('❌ Error reloading scan usage on focus:', error);
+        });
+      }
+    }, [user])
+  );
 
   const saveUserData = async (newPending: Book[], newApproved: Book[], newRejected: Book[], newPhotos: Photo[]) => {
     if (!user) return;
