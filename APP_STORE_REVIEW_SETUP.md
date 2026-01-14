@@ -94,8 +94,8 @@ UPDATE profiles
 SET 
   subscription_tier = 'pro',
   subscription_status = 'expired',
-  subscription_started_at = (NOW() - INTERVAL '2 months')::text,
-  subscription_ends_at = (NOW() - INTERVAL '1 month')::text,
+  subscription_started_at = NOW() - INTERVAL '2 months',
+  subscription_ends_at = NOW() - INTERVAL '1 month',
   updated_at = NOW()::text
 WHERE id = 'USER_ID_HERE';
 

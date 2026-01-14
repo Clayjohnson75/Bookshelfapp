@@ -21,7 +21,62 @@ async function getIAPModule() {
   }
   if (!iapModule) {
     try {
-      iapModule = await import('react-native-iap');
+      const module = await import('react-native-iap');
+      // react-native-iap v14 exports methods directly on default export
+      // Try different import patterns to find the correct one
+      iapModule = module.default || module;
+      
+      // If default is an object, check if it has the methods
+      if (iapModule && typeof iapModule === 'object' && !iapModule.initConnection) {
+        // Try accessing methods directly if they're on the module
+        if (module.initConnection) {
+          iapModule = module;
+        }
+      }
+      
+      console.log('📦 IAP module loaded:', {
+        hasDefault: !!module.default,
+        defaultType: typeof module.default,
+        defaultKeys: module.default ? Object.keys(module.default).slice(0, 10) : [],
+        moduleKeys: Object.keys(module).slice(0, 10),
+        iapModuleKeys: iapModule ? Object.keys(iapModule).slice(0, 10) : []
+      });
+      
+      // Verify critical methods exist
+      if (!iapModule) {
+        console.error('❌ IAP module is null or undefined');
+        return null;
+      }
+      
+      if (typeof iapModule.initConnection !== 'function') {
+        console.error('❌ IAP module missing initConnection method');
+        console.log('Available on iapModule:', Object.keys(iapModule).slice(0, 20));
+        return null;
+      }
+      if (typeof iapModule.purchaseUpdatedListener !== 'function') {
+        console.error('❌ IAP module missing purchaseUpdatedListener method');
+        console.log('Available methods:', Object.keys(iapModule).slice(0, 20));
+        // Try using module directly if it has the method
+        if (typeof module.purchaseUpdatedListener === 'function') {
+          console.log('✅ Found purchaseUpdatedListener on module, switching to module');
+          iapModule = module;
+        } else {
+          return null;
+        }
+      }
+      if (typeof iapModule.requestPurchase !== 'function') {
+        console.error('❌ IAP module missing requestPurchase method');
+        console.log('Available methods:', Object.keys(iapModule).slice(0, 20));
+        // Try using module directly if it has the method
+        if (typeof module.requestPurchase === 'function') {
+          console.log('✅ Found requestPurchase on module, switching to module');
+          iapModule = module;
+        } else {
+          return null;
+        }
+      }
+      
+      console.log('✅ IAP module verified - all required methods exist');
     } catch (error) {
       console.error('Failed to load react-native-iap:', error);
       return null;
@@ -119,15 +174,34 @@ export async function purchaseProSubscription(): Promise<void> {
   }
 
   try {
+    console.log('🔍 Getting IAP module...');
     const iap = await getIAPModule();
     if (!iap) {
+      console.error('❌ IAP module is null');
+      Alert.alert('Purchase Error', 'In-app purchase system is not available. Please make sure you\'re using a development build or TestFlight.');
       throw new Error('IAP module not available');
     }
 
+    console.log('✅ IAP module loaded. Available methods:', Object.keys(iap).slice(0, 20));
+    console.log('🔍 Checking specific methods:');
+    console.log('  - initConnection:', typeof iap.initConnection);
+    console.log('  - purchaseUpdatedListener:', typeof iap.purchaseUpdatedListener);
+    console.log('  - purchaseErrorListener:', typeof iap.purchaseErrorListener);
+    console.log('  - requestPurchase:', typeof iap.requestPurchase);
+    console.log('  - getProducts:', typeof iap.getProducts);
+    console.log('  - finishTransaction:', typeof iap.finishTransaction);
+
     // Initialize if not already done
     if (!isIAPInitialized) {
+      console.log('🔌 Initializing IAP connection...');
+      if (typeof iap.initConnection !== 'function') {
+        console.error('❌ initConnection is not a function');
+        Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized.');
+        throw new Error('initConnection is not a function');
+      }
       await iap.initConnection();
       isIAPInitialized = true;
+      console.log('✅ IAP connection initialized');
     }
 
     // First, verify the product exists
@@ -140,6 +214,26 @@ export async function purchaseProSubscription(): Promise<void> {
       throw new Error('Product not found');
     }
 
+    // Verify IAP methods exist before using them
+    if (typeof iap.purchaseUpdatedListener !== 'function') {
+      console.error('❌ purchaseUpdatedListener is not a function');
+      console.log('IAP module methods:', Object.keys(iap));
+      Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized. Please restart the app.');
+      throw new Error('purchaseUpdatedListener is not a function');
+    }
+    
+    if (typeof iap.purchaseErrorListener !== 'function') {
+      console.error('❌ purchaseErrorListener is not a function');
+      Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized. Please restart the app.');
+      throw new Error('purchaseErrorListener is not a function');
+    }
+    
+    if (typeof iap.requestPurchase !== 'function') {
+      console.error('❌ requestPurchase is not a function');
+      Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized. Please restart the app.');
+      throw new Error('requestPurchase is not a function');
+    }
+
     // Set up purchase listener before making purchase
     let purchaseResolve: ((purchase: Purchase) => void) | null = null;
     let purchaseReject: ((error: Error) => void) | null = null;
@@ -149,6 +243,7 @@ export async function purchaseProSubscription(): Promise<void> {
       purchaseReject = reject;
     });
 
+    console.log('✅ Setting up purchase listeners...');
     const purchaseUpdateSubscription = iap.purchaseUpdatedListener(async (purchase: Purchase) => {
       if (purchase.productId === PRODUCT_ID) {
         // Purchase successful - update Supabase
@@ -209,6 +304,16 @@ export async function purchaseProSubscription(): Promise<void> {
 
     // Attempt purchase
     try {
+      console.log('🛒 Requesting purchase for product:', PRODUCT_ID);
+      console.log('🔍 Final check - requestPurchase type:', typeof iap.requestPurchase);
+      
+      if (typeof iap.requestPurchase !== 'function') {
+        console.error('❌ CRITICAL: requestPurchase is not a function!');
+        console.error('IAP object:', iap);
+        console.error('All IAP methods:', Object.keys(iap));
+        throw new Error('requestPurchase method is not available on IAP module');
+      }
+      
       await iap.requestPurchase({ sku: PRODUCT_ID });
       
       // Wait for purchase to complete (listeners will resolve/reject)
