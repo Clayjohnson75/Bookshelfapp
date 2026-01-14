@@ -391,6 +391,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
               autoCapitalize="none"
               textContentType="newPassword"
               autoComplete="password-new"
+              passwordRules="minlength: 6;"
             />
             <TouchableOpacity 
               style={styles.eyeButton}
@@ -405,8 +406,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Confirm Password"
-              textContentType="newPassword"
-              autoComplete="password-new"
+              textContentType="none"
+              autoComplete="off"
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               secureTextEntry={!showConfirmPassword}
@@ -621,6 +622,7 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
               autoCapitalize="none"
               textContentType="newPassword"
               autoComplete="new-password"
+              passwordRules="minlength: 6;"
             />
             <TouchableOpacity 
               style={styles.eyeButton}
@@ -639,8 +641,8 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
               onChangeText={setConfirmPassword}
               secureTextEntry={!showConfirmPassword}
               autoCapitalize="none"
-              textContentType="newPassword"
-              autoComplete="new-password"
+              textContentType="none"
+              autoComplete="off"
             />
             <TouchableOpacity 
               style={styles.eyeButton}

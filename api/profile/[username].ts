@@ -10,8 +10,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { username, edit } = req.query;
   const isEditMode = edit === 'true';
 
-  if (!username || typeof username !== 'string') {
-    return res.status(400).send('Invalid username');
+  // Reject static file requests (favicon, etc.) that get incorrectly routed
+  const staticFilePatterns = ['favicon.ico', 'favicon.png', 'favicon.svg', 'robots.txt', 'sitemap.xml', '.well-known'];
+  if (!username || typeof username !== 'string' || staticFilePatterns.some(pattern => username.toLowerCase().includes(pattern))) {
+    return res.status(404).send('Not found');
   }
 
   try {
@@ -1893,33 +1895,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).send(html);
 
-  } catch (error: any) {
-    console.error('[API] Error rendering profile page:', error);
-    console.error('[API] Error stack:', error?.stack);
-    console.error('[API] Error message:', error?.message);
-    
-    // Return a proper error page instead of just text
-    return res.status(500).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Error - Bookshelf Scanner</title>
-        <style>
-          body { font-family: system-ui; padding: 40px; text-align: center; }
-          h1 { color: #e74c3c; }
-          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
-        </style>
-      </head>
-      <body>
-        <h1>Error Loading Profile</h1>
-        <p>An error occurred while loading this profile.</p>
-        <pre>${error?.message || 'Unknown error'}</pre>
-        <a href="/">Return to Home</a>
-      </body>
-      </html>
-    `);
-  }
-}
   } catch (error: any) {
     console.error('[API] Error rendering profile page:', error);
     console.error('[API] Error stack:', error?.stack);
