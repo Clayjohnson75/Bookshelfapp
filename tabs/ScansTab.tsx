@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { 
   View, 
   Text, 
@@ -426,6 +427,22 @@ export const ScansTab: React.FC = () => {
     }
   }, [user]);
   
+  // Reload data when tab is focused (user navigates back to this tab)
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        console.log('🔄 Tab focused, refreshing data...');
+        // Reload data in background
+        loadUserData().catch(error => {
+          console.error('❌ Error reloading user data on focus:', error);
+        });
+        loadScanUsage().catch(error => {
+          console.error('❌ Error reloading scan usage on focus:', error);
+        });
+      }
+    }, [user])
+  );
+  
   // Fallback function to load from AsyncStorage if Supabase fails
   const loadUserDataFromStorage = async () => {
     if (!user) return;
@@ -491,22 +508,46 @@ export const ScansTab: React.FC = () => {
       setCanScan(true); // Allow scanning if no user (shouldn't happen, but safe fallback)
       return;
     }
-    const usage = await getUserScanUsage(user.uid);
-    setScanUsage(usage);
     
-    // Determine if user can scan based on usage data
-    // Only disable if user is free tier AND has used all 5 scans
-    if (usage) {
-      const isFreeTier = usage.subscriptionTier === 'free';
-      const hasScansRemaining = usage.scansRemaining !== null && usage.scansRemaining > 0;
-      const userCanScan = !isFreeTier || hasScansRemaining;
-      setCanScan(userCanScan);
+    try {
+      // Add timeout to prevent hanging
+      const usagePromise = getUserScanUsage(user.uid);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Scan usage load timeout')), 5000)
+      );
       
-      console.log(`📊 Scan usage: tier=${usage.subscriptionTier}, scans=${usage.monthlyScans}/${usage.monthlyLimit}, remaining=${usage.scansRemaining}, canScan=${userCanScan}`);
-    } else {
-      // If we can't get usage, default to allowing scans (don't block users)
-      console.warn('⚠️ Could not load scan usage, allowing scans by default');
+      const usage = await Promise.race([usagePromise, timeoutPromise]) as ScanUsage | null;
+      setScanUsage(usage);
+      
+      // Determine if user can scan based on usage data
+      // Only disable if user is free tier AND has used all 5 scans
+      if (usage) {
+        const isFreeTier = usage.subscriptionTier === 'free';
+        const hasScansRemaining = usage.scansRemaining !== null && usage.scansRemaining > 0;
+        const userCanScan = !isFreeTier || hasScansRemaining;
+        setCanScan(userCanScan);
+        
+        console.log(`📊 Scan usage: tier=${usage.subscriptionTier}, scans=${usage.monthlyScans}/${usage.monthlyLimit}, remaining=${usage.scansRemaining}, canScan=${userCanScan}`);
+      } else {
+        // If we can't get usage, default to allowing scans (don't block users)
+        console.warn('⚠️ Could not load scan usage, allowing scans by default');
+        setCanScan(true);
+      }
+    } catch (error: any) {
+      if (error.message === 'Scan usage load timeout') {
+        console.warn('⚠️ Scan usage load timed out, allowing scans by default');
+      } else {
+        console.error('❌ Error loading scan usage:', error);
+      }
+      // Default to allowing scans if we can't load usage (don't block users)
       setCanScan(true);
+      // Set a default scanUsage so the banner doesn't show "loading" forever
+      setScanUsage({
+        subscriptionTier: 'free',
+        monthlyScans: 0,
+        monthlyLimit: 5,
+        scansRemaining: 5,
+      });
     }
   };
   
@@ -672,104 +713,137 @@ export const ScansTab: React.FC = () => {
     if (!user) return;
     
     try {
-      console.log('📥 Loading user data from Supabase...');
+      // Load from AsyncStorage FIRST for instant UI, then merge Supabase data
+      console.log('📥 Loading user data (AsyncStorage first, then Supabase)...');
       
-      // Load from Supabase first (primary source of truth)
-      const [supabaseBooks, supabasePhotos] = await Promise.all([
-        loadBooksFromSupabase(user.uid),
-        loadPhotosFromSupabase(user.uid),
+      const userPendingKey = `pending_books_${user.uid}`;
+      const userApprovedKey = `approved_books_${user.uid}`;
+      const userRejectedKey = `rejected_books_${user.uid}`;
+      const userPhotosKey = `photos_${user.uid}`;
+      
+      // Load from AsyncStorage immediately (fast, local)
+      const [savedPending, savedApproved, savedRejected, savedPhotos] = await Promise.all([
+        AsyncStorage.getItem(userPendingKey),
+        AsyncStorage.getItem(userApprovedKey),
+        AsyncStorage.getItem(userRejectedKey),
+        AsyncStorage.getItem(userPhotosKey),
       ]);
       
-      // Merge books from Supabase with existing state (don't replace - merge to preserve any local changes)
-      // Declare merged variables outside if block so they're accessible later
-      let mergedPending: Book[] = [];
-      let mergedApproved: Book[] = [];
-      let mergedRejected: Book[] = [];
+      // Set AsyncStorage data immediately so UI shows something right away
+      if (savedPending) {
+        try {
+          const parsed = JSON.parse(savedPending);
+          setPendingBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} pending books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing pending books:', e);
+        }
+      }
+      if (savedApproved) {
+        try {
+          const parsed = JSON.parse(savedApproved);
+          setApprovedBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} approved books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing approved books:', e);
+        }
+      }
+      if (savedRejected) {
+        try {
+          const parsed = JSON.parse(savedRejected);
+          setRejectedBooks(parsed);
+          console.log(`✅ Loaded ${parsed.length} rejected books from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing rejected books:', e);
+        }
+      }
+      if (savedPhotos) {
+        try {
+          const parsed = JSON.parse(savedPhotos);
+          setPhotos(parsed);
+          console.log(`✅ Loaded ${parsed.length} photos from AsyncStorage`);
+        } catch (e) {
+          console.error('Error parsing photos:', e);
+        }
+      }
       
-      if (supabaseBooks) {
-        // Merge instead of replace to preserve books that might not be in Supabase yet
-        setPendingBooks(prev => {
-          mergedPending = mergeBooks(prev, supabaseBooks.pending || []);
-          console.log(`📚 Merged pending: ${prev.length} existing + ${supabaseBooks.pending.length} from Supabase = ${mergedPending.length} total`);
-          return mergedPending;
-        });
-        setApprovedBooks(prev => {
-          mergedApproved = mergeBooks(prev, supabaseBooks.approved || []);
-          console.log(`📚 Merged approved: ${prev.length} existing + ${supabaseBooks.approved.length} from Supabase = ${mergedApproved.length} total`);
-          return mergedApproved;
-        });
-        setRejectedBooks(prev => {
-          mergedRejected = mergeBooks(prev, supabaseBooks.rejected || []);
-          console.log(`📚 Merged rejected: ${prev.length} existing + ${supabaseBooks.rejected.length} from Supabase = ${mergedRejected.length} total`);
-          return mergedRejected;
-        });
-        console.log(`✅ Loaded ${supabaseBooks.pending.length} pending, ${supabaseBooks.approved.length} approved, ${supabaseBooks.rejected.length} rejected books from Supabase`);
+      // Now load from Supabase with timeout and merge
+      try {
+        const supabasePromise = Promise.all([
+          loadBooksFromSupabase(user.uid),
+          loadPhotosFromSupabase(user.uid),
+        ]);
         
-        // Fetch covers for all merged books that don't have covers yet (all statuses)
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Supabase load timeout')), 5000)
+        );
+        
+        const [supabaseBooks, supabasePhotos] = await Promise.race([
+          supabasePromise,
+          timeoutPromise,
+        ]) as [any, any];
+      
+        
+        // Merge Supabase data with AsyncStorage data
+        let mergedPending: Book[] = [];
+        let mergedApproved: Book[] = [];
+        let mergedRejected: Book[] = [];
+        
+        if (supabaseBooks) {
+          setPendingBooks(prev => {
+            mergedPending = mergeBooks(prev, supabaseBooks.pending || []);
+            console.log(`📚 Merged pending: ${prev.length} existing + ${supabaseBooks.pending.length} from Supabase = ${mergedPending.length} total`);
+            return mergedPending;
+          });
+          setApprovedBooks(prev => {
+            mergedApproved = mergeBooks(prev, supabaseBooks.approved || []);
+            console.log(`📚 Merged approved: ${prev.length} existing + ${supabaseBooks.approved.length} from Supabase = ${mergedApproved.length} total`);
+            return mergedApproved;
+          });
+          setRejectedBooks(prev => {
+            mergedRejected = mergeBooks(prev, supabaseBooks.rejected || []);
+            console.log(`📚 Merged rejected: ${prev.length} existing + ${supabaseBooks.rejected.length} from Supabase = ${mergedRejected.length} total`);
+            return mergedRejected;
+          });
+          console.log(`✅ Merged ${supabaseBooks.pending.length} pending, ${supabaseBooks.approved.length} approved, ${supabaseBooks.rejected.length} rejected books from Supabase`);
+        }
+        
+        // Merge photos from Supabase
+        if (supabasePhotos && supabasePhotos.length > 0) {
+          const validPhotos = supabasePhotos.filter(photo => {
+            const hasValidUrl = photo.uri && 
+              typeof photo.uri === 'string' && 
+              photo.uri.startsWith('http') && 
+              photo.uri.includes('supabase.co');
+            return hasValidUrl;
+          });
+          
+          setPhotos(prev => {
+            // Simple merge: combine arrays and dedupe by id
+            const existingIds = new Set(prev.map(p => p.id));
+            const newPhotos = validPhotos.filter(p => !existingIds.has(p.id));
+            const merged = [...prev, ...newPhotos];
+            console.log(`📸 Merged photos: ${prev.length} existing + ${newPhotos.length} from Supabase = ${merged.length} total`);
+            return merged;
+          });
+        }
+        
+        // Fetch covers for all merged books that don't have covers yet
         const allBooks = [...mergedPending, ...mergedApproved, ...mergedRejected];
         const booksNeedingCovers = allBooks.filter(book => !book.coverUrl && !book.localCoverPath);
         if (booksNeedingCovers.length > 0) {
           console.log(`🖼️ Fetching covers for ${booksNeedingCovers.length} books without covers...`);
-          // Start fetching immediately (no delay) for faster loading
           fetchCoversForBooks(booksNeedingCovers).catch(error => {
             console.error('Error fetching covers for loaded books:', error);
           });
         }
-      } else {
-        // If Supabase returned null/empty, try AsyncStorage as fallback
-        console.log('⚠️ No books from Supabase, checking AsyncStorage fallback...');
-        const userPendingKey = `pending_books_${user.uid}`;
-        const userApprovedKey = `approved_books_${user.uid}`;
-        const userRejectedKey = `rejected_books_${user.uid}`;
-        
-        const [savedPending, savedApproved, savedRejected] = await Promise.all([
-          AsyncStorage.getItem(userPendingKey),
-          AsyncStorage.getItem(userApprovedKey),
-          AsyncStorage.getItem(userRejectedKey),
-        ]);
-        
-        if (savedPending) {
-          try {
-            const parsed = JSON.parse(savedPending);
-            setPendingBooks(parsed);
-            console.log(`✅ Loaded ${parsed.length} pending books from AsyncStorage fallback`);
-          } catch (e) {
-            console.error('Error parsing pending books:', e);
-          }
+      } catch (supabaseError: any) {
+        if (supabaseError.message === 'Supabase load timeout') {
+          console.warn('⚠️ Supabase load timed out, using AsyncStorage data only');
+        } else {
+          console.error('❌ Error loading from Supabase:', supabaseError);
         }
-        if (savedApproved) {
-          try {
-            const parsed = JSON.parse(savedApproved);
-            setApprovedBooks(parsed);
-            console.log(`✅ Loaded ${parsed.length} approved books from AsyncStorage fallback`);
-          } catch (e) {
-            console.error('Error parsing approved books:', e);
-          }
-        }
-        if (savedRejected) {
-          try {
-            const parsed = JSON.parse(savedRejected);
-            setRejectedBooks(parsed);
-            console.log(`✅ Loaded ${parsed.length} rejected books from AsyncStorage fallback`);
-          } catch (e) {
-            console.error('Error parsing rejected books:', e);
-          }
-        }
-        
-        // Fetch covers for fallback books
-        const allFallbackBooks = [
-          ...(savedPending ? JSON.parse(savedPending) : []),
-          ...(savedApproved ? JSON.parse(savedApproved) : []),
-          ...(savedRejected ? JSON.parse(savedRejected) : [])
-        ];
-        const fallbackBooksNeedingCovers = allFallbackBooks.filter((book: Book) => !book.coverUrl && !book.localCoverPath);
-        if (fallbackBooksNeedingCovers.length > 0) {
-          console.log(`🖼️ Fetching covers for ${fallbackBooksNeedingCovers.length} books without covers (from AsyncStorage fallback)...`);
-          // Start fetching immediately for faster loading
-          fetchCoversForBooks(fallbackBooksNeedingCovers).catch(error => {
-            console.error('Error fetching covers for fallback books:', error);
-          });
-        }
+        // Continue with AsyncStorage data - UI already shows it
       }
       
       // Merge photos from Supabase with existing state (don't replace - merge to prevent duplicates)
