@@ -945,11 +945,7 @@ export const ScansTab: React.FC = () => {
       }
       
       // Also cache to AsyncStorage for offline access
-      const userPendingKey = `pending_books_${user.uid}`;
-      const userApprovedKey = `approved_books_${user.uid}`;
-      const userRejectedKey = `rejected_books_${user.uid}`;
-      const userPhotosKey = `photos_${user.uid}`;
-      
+      // (userPendingKey, userApprovedKey, userRejectedKey, userPhotosKey already declared at top of function)
       if (supabaseBooks) {
         await Promise.all([
           AsyncStorage.setItem(userPendingKey, JSON.stringify(supabaseBooks.pending || [])),
