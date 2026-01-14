@@ -19,7 +19,7 @@
       "destination": "/api/profile"
     },
     {
-      "source": "/:username",
+      "source": "/:username((?!favicon\\.ico|favicon\\.png|favicon\\.svg|robots\\.txt|sitemap\\.xml|app-ads\\.txt|ads\\.txt|\\.well-known|apple-app-site-association|assetlinks\\.json).*)",
       "destination": "/api/profile/:username"
     }
   ]

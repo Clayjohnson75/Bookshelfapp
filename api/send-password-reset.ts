@@ -132,15 +132,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
 
     // Attempt to send custom email using Resend SDK
-    const emailApiKey = process.env.EMAIL_API_KEY;
+    const emailApiKey = process.env.EMAIL_API_KEY?.trim();
     // Default to Resend's test email if no sender is configured
     // To use a custom domain, verify it in Resend first, then set EMAIL_FROM
-    const emailFrom = process.env.EMAIL_FROM || 'onboarding@resend.dev';
+    const emailFrom = process.env.EMAIL_FROM?.trim() || 'onboarding@resend.dev';
 
-    if (emailApiKey) {
+    console.log('[API] Email configuration:', {
+      hasEmailApiKey: !!emailApiKey,
+      emailApiKeyLength: emailApiKey?.length || 0,
+      emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
+      emailFrom: emailFrom,
+      isDefaultEmail: !process.env.EMAIL_FROM?.trim()
+    });
+
+    if (emailApiKey && emailApiKey.length > 0) {
       try {
         // Use Resend SDK for better reliability
         const resend = new Resend(emailApiKey);
+        console.log('[API] Attempting to send password reset email via Resend...');
         
         const emailHtml = `
           <!DOCTYPE html>
@@ -172,6 +181,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           </html>
         `;
         
+        console.log('[API] Calling Resend API with:', {
+          from: emailFrom,
+          to: email,
+          subject: 'Reset Your Bookshelf Scanner Password'
+        });
+        
         const result = await resend.emails.send({
           from: emailFrom,
           to: email,
@@ -179,11 +194,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           html: emailHtml,
         });
 
+        console.log('[API] Resend API response:', {
+          hasError: !!result.error,
+          hasData: !!result.data,
+          errorType: result.error?.constructor?.name,
+          dataKeys: result.data ? Object.keys(result.data) : [],
+          fullResult: JSON.stringify(result, null, 2)
+        });
+
         if (result.error) {
-          console.error('[API] Resend error:', result.error);
-          throw new Error(result.error.message || 'Failed to send email');
+          console.error('[API] ❌ Resend API returned error:', result.error);
+          console.error('[API] Resend error details:', {
+            message: result.error.message,
+            name: result.error.name,
+            statusCode: result.error.statusCode,
+            fullError: JSON.stringify(result.error, null, 2)
+          });
+          throw new Error(`Resend failed: ${result.error.message || 'Unknown error'}`);
         }
-        console.log('[API] ✅ Password reset email sent successfully via Resend:', result.data?.id);
+        
+        if (!result.data || !result.data.id) {
+          console.error('[API] ❌ Resend returned no data or ID:', result);
+          throw new Error('Resend returned invalid response (no data.id)');
+        }
+        
+        console.log('[API] ✅ Password reset email sent successfully via Resend:', result.data.id);
         return res.status(200).json({ 
           success: true,
           message: 'If an account exists with this email, a password reset link has been sent.'

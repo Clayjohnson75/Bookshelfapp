@@ -51,8 +51,9 @@ async function getIAPModule() {
         hasDefault: !!RNIap.default,
         defaultType: typeof RNIap.default,
         defaultKeys: RNIap.default ? Object.keys(RNIap.default).slice(0, 10) : [],
-        rnIapKeys: Object.keys(RNIap).slice(0, 15),
-        iapModuleKeys: iapModule ? Object.keys(iapModule).slice(0, 15) : []
+        rnIapKeys: Object.keys(RNIap).slice(0, 20),
+        iapModuleKeys: iapModule ? Object.keys(iapModule).slice(0, 20) : [],
+        productMethods: iapModule ? Object.keys(iapModule).filter(k => k.toLowerCase().includes('product')) : []
       });
       
       // Verify critical methods exist
@@ -62,13 +63,21 @@ async function getIAPModule() {
       }
       
       // Check each method and provide helpful error
-      const requiredMethods = ['initConnection', 'purchaseUpdatedListener', 'purchaseErrorListener', 'requestPurchase', 'getProducts', 'finishTransaction'];
+      // Note: getProducts might be getProductsAsync in some versions
+      const requiredMethods = ['initConnection', 'purchaseUpdatedListener', 'purchaseErrorListener', 'requestPurchase', 'finishTransaction'];
+      const optionalMethods = ['getProducts', 'getProductsAsync'];
       const missingMethods: string[] = [];
       
       for (const method of requiredMethods) {
         if (typeof iapModule[method] !== 'function') {
           missingMethods.push(method);
         }
+      }
+      
+      // Check if at least one product-getting method exists
+      const hasGetProducts = optionalMethods.some(method => typeof iapModule[method] === 'function');
+      if (!hasGetProducts) {
+        missingMethods.push('getProducts or getProductsAsync');
       }
       
       if (missingMethods.length > 0) {
@@ -138,8 +147,16 @@ export async function initializeIAP(): Promise<IAPProduct[]> {
       isIAPInitialized = true;
     }
 
-    // Get products
-    const products: Product[] = await iap.getProducts({ skus: [PRODUCT_ID] });
+    // Get products - try different method names for v14 compatibility
+    let products: Product[] = [];
+    if (typeof iap.getProducts === 'function') {
+      products = await iap.getProducts({ skus: [PRODUCT_ID] });
+    } else if (typeof iap.getProductsAsync === 'function') {
+      products = await iap.getProductsAsync({ skus: [PRODUCT_ID] });
+    } else {
+      console.error('❌ getProducts method not found. Available methods:', Object.keys(iap).filter(k => k.toLowerCase().includes('product')));
+      throw new Error('getProducts method not available on IAP module');
+    }
 
     if (products.length === 0) {
       console.warn('⚠️ No products found. Make sure the product is configured in App Store Connect.');
@@ -217,15 +234,27 @@ export async function purchaseProSubscription(): Promise<void> {
       }
     }
 
-    // First, verify the product exists
-    console.log('🔍 Getting products...');
-    let products: Product[] = [];
-    try {
-      if (typeof iap.getProducts !== 'function') {
-        throw new Error('getProducts is not a function');
-      }
-      products = await iap.getProducts({ skus: [PRODUCT_ID] });
-      console.log('✅ getProducts returned:', products.length, 'products');
+      // First, verify the product exists
+      console.log('🔍 Getting products...');
+      let products: Product[] = [];
+      try {
+        // Try different method names for v14 compatibility
+        let getProductsMethod: any = null;
+        if (typeof iap.getProducts === 'function') {
+          getProductsMethod = iap.getProducts;
+          console.log('✅ Found getProducts method');
+        } else if (typeof iap.getProductsAsync === 'function') {
+          getProductsMethod = iap.getProductsAsync;
+          console.log('✅ Found getProductsAsync method');
+        } else {
+          console.error('❌ getProducts method not found');
+          console.error('Available methods with "product" in name:', Object.keys(iap).filter(k => k.toLowerCase().includes('product')));
+          console.error('All available methods:', Object.keys(iap).slice(0, 30));
+          throw new Error('getProducts method not available on IAP module');
+        }
+        
+        products = await getProductsMethod({ skus: [PRODUCT_ID] });
+        console.log('✅ getProducts returned:', products.length, 'products');
     } catch (getProductsError: any) {
       console.error('❌ ERROR in getProducts():', getProductsError);
       console.error('❌ getProducts error details:', {

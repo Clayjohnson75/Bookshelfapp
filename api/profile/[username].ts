@@ -11,7 +11,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const isEditMode = edit === 'true';
 
   // Reject static file requests (favicon, etc.) that get incorrectly routed
-  const staticFilePatterns = ['favicon.ico', 'favicon.png', 'favicon.svg', 'robots.txt', 'sitemap.xml', '.well-known'];
+  const staticFilePatterns = [
+    'favicon.ico', 'favicon.png', 'favicon.svg', 
+    'robots.txt', 'sitemap.xml', '.well-known',
+    'app-ads.txt', 'ads.txt', '.txt',
+    'apple-app-site-association', 'assetlinks.json'
+  ];
   if (!username || typeof username !== 'string' || staticFilePatterns.some(pattern => username.toLowerCase().includes(pattern))) {
     return res.status(404).send('Not found');
   }

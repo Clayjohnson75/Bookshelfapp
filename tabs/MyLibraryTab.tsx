@@ -84,6 +84,7 @@ export const MyLibraryTab: React.FC = () => {
   const [showFoldersExpanded, setShowFoldersExpanded] = useState(false);
   const [showUnreadBooks, setShowUnreadBooks] = useState(false);
   const [isAutoSorting, setIsAutoSorting] = useState(false);
+  const [isLoadingData, setIsLoadingData] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const searchBarRef = useRef<View>(null);
@@ -173,9 +174,18 @@ export const MyLibraryTab: React.FC = () => {
     if (user) {
       // Load data immediately on mount/user change
       console.log('🔄 User changed in MyLibraryTab, loading data immediately...');
-      loadUserData().catch(error => {
-        console.error('❌ Error loading user data in MyLibraryTab:', error);
-      });
+      // Add a small delay to ensure component is fully mounted
+      const timeoutId = setTimeout(() => {
+        loadUserData().catch(error => {
+          console.error('❌ Error loading user data in MyLibraryTab:', error);
+        });
+      }, 100);
+      return () => clearTimeout(timeoutId);
+    } else {
+      // Clear data when user signs out
+      console.log('🔄 User signed out, clearing data...');
+      setApprovedBooks([]);
+      setUserProfile(null);
     }
   }, [user]);
 
@@ -259,24 +269,17 @@ export const MyLibraryTab: React.FC = () => {
   );
 
   const loadUserData = async () => {
-    if (!user) return;
+    if (!user) {
+      console.log('⚠️ loadUserData called but user is null');
+      return;
+    }
+    
+    setIsLoadingData(true);
     
     try {
-      console.log('📥 Loading user data from Supabase...');
+      console.log('📥 Loading user data...');
       
-      // Load from Supabase first (primary source of truth for books with cover data)
-      let supabaseBooks = null;
-      let supabaseError = null;
-      try {
-        supabaseBooks = await loadBooksFromSupabase(user.uid);
-        console.log(`📚 Supabase returned: ${supabaseBooks?.approved?.length || 0} approved books`);
-      } catch (error) {
-        console.error('❌ Error loading books from Supabase:', error);
-        supabaseError = error;
-        // Continue with local data if Supabase fails - don't lose local books!
-      }
-      
-      // Also load from AsyncStorage for backwards compatibility
+      // Load from AsyncStorage FIRST (fast, shows data immediately)
       const userApprovedKey = `approved_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
       const userFoldersKey = `folders_${user.uid}`;
@@ -288,6 +291,37 @@ export const MyLibraryTab: React.FC = () => {
       const localBooks: Book[] = approvedData ? JSON.parse(approvedData) : [];
       const loadedPhotos: Photo[] = photosData ? JSON.parse(photosData) : [];
       const loadedFolders: Folder[] = foldersData ? JSON.parse(foldersData) : [];
+      
+      // Show local data immediately (fast UI update)
+      if (localBooks.length > 0) {
+        console.log(`📚 Loading ${localBooks.length} books from AsyncStorage (showing immediately)`);
+        setBooks(localBooks);
+        setPhotos(loadedPhotos);
+        setFolders(loadedFolders);
+      }
+      
+      // Then load from Supabase in parallel (slower, but has latest data)
+      let supabaseBooks = null;
+      let supabaseError = null;
+      try {
+        console.log('📥 Loading from Supabase (in background)...');
+        const supabasePromise = loadBooksFromSupabase(user.uid);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Supabase load timeout after 10 seconds')), 10000)
+        );
+        
+        supabaseBooks = await Promise.race([supabasePromise, timeoutPromise]) as any;
+        console.log(`📚 Supabase returned: ${supabaseBooks?.approved?.length || 0} approved books`);
+      } catch (error: any) {
+        console.error('❌ Error loading books from Supabase:', error);
+        console.error('❌ Supabase error details:', {
+          message: error?.message,
+          name: error?.name,
+          isTimeout: error?.message?.includes('timeout')
+        });
+        supabaseError = error;
+        // Continue with local data if Supabase fails - don't lose local books!
+      }
       
       // Merge Supabase books (which have cover data) with local books
       // CRITICAL: Start with ALL local books, then merge in Supabase data
@@ -451,23 +485,10 @@ export const MyLibraryTab: React.FC = () => {
         }
       }
       
-      // CRITICAL: Only set books if we have some, OR if both Supabase and local are empty
-      // If Supabase failed but local had books, we already handled that above
-      // If both are empty, that's fine (new user or all books deleted)
-      if (finalBooks.length > 0 || (localBooks.length === 0 && (!supabaseBooks || supabaseBooks.approved.length === 0))) {
-        setBooks(finalBooks);
-      } else {
-        // This should never happen due to our safeguards, but log it if it does
-        console.error('❌ CRITICAL: Attempted to set empty books when local had books! Keeping local books instead.');
-        setBooks(localBooks);
-        // Also save local books to prevent this from happening again
-        if (user && localBooks.length > 0) {
-          const userApprovedKey = `approved_books_${user.uid}`;
-          AsyncStorage.setItem(userApprovedKey, JSON.stringify(localBooks)).catch(error => {
-            console.error('❌ Error saving local books to AsyncStorage:', error);
-          });
-        }
-      }
+      // Always update with merged data (even if we already showed local books)
+      // This ensures Supabase data is merged in when it arrives
+      console.log(`📚 Setting final merged books: ${finalBooks.length} total`);
+      setBooks(finalBooks);
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
       
@@ -541,8 +562,19 @@ export const MyLibraryTab: React.FC = () => {
           return profile;
         });
       }
+      
+      console.log(`✅ Successfully loaded ${mergedBooks.length} books, ${scansWithApprovedBooks.length} photos`);
+      setIsLoadingData(false);
     } catch (error) {
       console.error('Error loading user data:', error);
+      setIsLoadingData(false);
+      // Even on error, try to show local data if available
+      if (localBooks && localBooks.length > 0) {
+        console.log('⚠️ Showing local books despite error');
+        setBooks(localBooks);
+        setPhotos(loadedPhotos);
+        setFolders(loadedFolders);
+      }
     }
   };
 
