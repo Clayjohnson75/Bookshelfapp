@@ -21,25 +21,38 @@ async function getIAPModule() {
   }
   if (!iapModule) {
     try {
-      const module = await import('react-native-iap');
-      // react-native-iap v14 exports methods directly on default export
-      // Try different import patterns to find the correct one
-      iapModule = module.default || module;
+      // Try static import first (most reliable for v14)
+      let RNIap: any;
+      try {
+        RNIap = require('react-native-iap');
+      } catch (requireError) {
+        // Fallback to dynamic import
+        const module = await import('react-native-iap');
+        RNIap = module.default || module;
+      }
       
-      // If default is an object, check if it has the methods
-      if (iapModule && typeof iapModule === 'object' && !iapModule.initConnection) {
-        // Try accessing methods directly if they're on the module
-        if (module.initConnection) {
-          iapModule = module;
+      // react-native-iap v14 can export in different ways:
+      // 1. Named exports directly: { initConnection, requestPurchase, ... }
+      // 2. Default export with methods: default.initConnection
+      // 3. Both: default has methods AND named exports exist
+      
+      // Try default export first
+      iapModule = RNIap.default || RNIap;
+      
+      // If default doesn't have methods, check if named exports exist
+      if (!iapModule || (typeof iapModule === 'object' && typeof iapModule.initConnection !== 'function')) {
+        // Check if methods are on RNIap directly (named exports)
+        if (typeof RNIap.initConnection === 'function') {
+          iapModule = RNIap;
         }
       }
       
       console.log('📦 IAP module loaded:', {
-        hasDefault: !!module.default,
-        defaultType: typeof module.default,
-        defaultKeys: module.default ? Object.keys(module.default).slice(0, 10) : [],
-        moduleKeys: Object.keys(module).slice(0, 10),
-        iapModuleKeys: iapModule ? Object.keys(iapModule).slice(0, 10) : []
+        hasDefault: !!RNIap.default,
+        defaultType: typeof RNIap.default,
+        defaultKeys: RNIap.default ? Object.keys(RNIap.default).slice(0, 10) : [],
+        rnIapKeys: Object.keys(RNIap).slice(0, 15),
+        iapModuleKeys: iapModule ? Object.keys(iapModule).slice(0, 15) : []
       });
       
       // Verify critical methods exist
@@ -48,32 +61,21 @@ async function getIAPModule() {
         return null;
       }
       
-      if (typeof iapModule.initConnection !== 'function') {
-        console.error('❌ IAP module missing initConnection method');
-        console.log('Available on iapModule:', Object.keys(iapModule).slice(0, 20));
+      // Check each method and provide helpful error
+      const requiredMethods = ['initConnection', 'purchaseUpdatedListener', 'purchaseErrorListener', 'requestPurchase', 'getProducts', 'finishTransaction'];
+      const missingMethods: string[] = [];
+      
+      for (const method of requiredMethods) {
+        if (typeof iapModule[method] !== 'function') {
+          missingMethods.push(method);
+        }
+      }
+      
+      if (missingMethods.length > 0) {
+        console.error('❌ IAP module missing methods:', missingMethods);
+        console.log('Available on iapModule:', Object.keys(iapModule).slice(0, 30));
+        console.log('Available on RNIap:', Object.keys(RNIap).slice(0, 30));
         return null;
-      }
-      if (typeof iapModule.purchaseUpdatedListener !== 'function') {
-        console.error('❌ IAP module missing purchaseUpdatedListener method');
-        console.log('Available methods:', Object.keys(iapModule).slice(0, 20));
-        // Try using module directly if it has the method
-        if (typeof module.purchaseUpdatedListener === 'function') {
-          console.log('✅ Found purchaseUpdatedListener on module, switching to module');
-          iapModule = module;
-        } else {
-          return null;
-        }
-      }
-      if (typeof iapModule.requestPurchase !== 'function') {
-        console.error('❌ IAP module missing requestPurchase method');
-        console.log('Available methods:', Object.keys(iapModule).slice(0, 20));
-        // Try using module directly if it has the method
-        if (typeof module.requestPurchase === 'function') {
-          console.log('✅ Found requestPurchase on module, switching to module');
-          iapModule = module;
-        } else {
-          return null;
-        }
       }
       
       console.log('✅ IAP module verified - all required methods exist');
@@ -199,13 +201,41 @@ export async function purchaseProSubscription(): Promise<void> {
         Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized.');
         throw new Error('initConnection is not a function');
       }
-      await iap.initConnection();
-      isIAPInitialized = true;
-      console.log('✅ IAP connection initialized');
+      try {
+        await iap.initConnection();
+        isIAPInitialized = true;
+        console.log('✅ IAP connection initialized');
+      } catch (initError: any) {
+        console.error('❌ ERROR in initConnection():', initError);
+        console.error('❌ initConnection error details:', {
+          message: initError?.message,
+          stack: initError?.stack,
+          name: initError?.name,
+          code: initError?.code
+        });
+        throw new Error(`initConnection failed: ${initError?.message || 'Unknown error'}`);
+      }
     }
 
     // First, verify the product exists
-    const products: Product[] = await iap.getProducts({ skus: [PRODUCT_ID] });
+    console.log('🔍 Getting products...');
+    let products: Product[] = [];
+    try {
+      if (typeof iap.getProducts !== 'function') {
+        throw new Error('getProducts is not a function');
+      }
+      products = await iap.getProducts({ skus: [PRODUCT_ID] });
+      console.log('✅ getProducts returned:', products.length, 'products');
+    } catch (getProductsError: any) {
+      console.error('❌ ERROR in getProducts():', getProductsError);
+      console.error('❌ getProducts error details:', {
+        message: getProductsError?.message,
+        stack: getProductsError?.stack,
+        name: getProductsError?.name,
+        code: getProductsError?.code
+      });
+      throw new Error(`getProducts failed: ${getProductsError?.message || 'Unknown error'}`);
+    }
     if (products.length === 0) {
       Alert.alert(
         'Product Not Available',
@@ -244,7 +274,14 @@ export async function purchaseProSubscription(): Promise<void> {
     });
 
     console.log('✅ Setting up purchase listeners...');
-    const purchaseUpdateSubscription = iap.purchaseUpdatedListener(async (purchase: Purchase) => {
+    let purchaseUpdateSubscription: any;
+    let purchaseErrorSubscription: any;
+    
+    try {
+      if (typeof iap.purchaseUpdatedListener !== 'function') {
+        throw new Error('purchaseUpdatedListener is not a function at call site');
+      }
+      purchaseUpdateSubscription = iap.purchaseUpdatedListener(async (purchase: Purchase) => {
       if (purchase.productId === PRODUCT_ID) {
         // Purchase successful - update Supabase
         const transactionId = purchase.transactionId || purchase.transactionReceipt;
@@ -285,8 +322,22 @@ export async function purchaseProSubscription(): Promise<void> {
         }
       }
     });
+    console.log('✅ purchaseUpdatedListener set up');
+    } catch (listenerError: any) {
+      console.error('❌ ERROR setting up purchaseUpdatedListener:', listenerError);
+      console.error('❌ Listener error details:', {
+        message: listenerError?.message,
+        stack: listenerError?.stack,
+        name: listenerError?.name
+      });
+      throw new Error(`purchaseUpdatedListener setup failed: ${listenerError?.message || 'Unknown error'}`);
+    }
 
-    const purchaseErrorSubscription = iap.purchaseErrorListener((error) => {
+    try {
+      if (typeof iap.purchaseErrorListener !== 'function') {
+        throw new Error('purchaseErrorListener is not a function at call site');
+      }
+      purchaseErrorSubscription = iap.purchaseErrorListener((error) => {
       console.error('Purchase error:', error);
       
       if (purchaseReject) {
@@ -301,6 +352,16 @@ export async function purchaseProSubscription(): Promise<void> {
         Alert.alert('Purchase Error', error.message || 'Failed to complete purchase. Please try again.');
       }
     });
+    console.log('✅ purchaseErrorListener set up');
+    } catch (errorListenerError: any) {
+      console.error('❌ ERROR setting up purchaseErrorListener:', errorListenerError);
+      console.error('❌ Error listener error details:', {
+        message: errorListenerError?.message,
+        stack: errorListenerError?.stack,
+        name: errorListenerError?.name
+      });
+      throw new Error(`purchaseErrorListener setup failed: ${errorListenerError?.message || 'Unknown error'}`);
+    }
 
     // Attempt purchase
     try {
@@ -314,7 +375,40 @@ export async function purchaseProSubscription(): Promise<void> {
         throw new Error('requestPurchase method is not available on IAP module');
       }
       
-      await iap.requestPurchase({ sku: PRODUCT_ID });
+      // react-native-iap v14 may use 'sku' or 'productId' parameter
+      // Try both to be safe
+      try {
+        console.log('🛒 Calling requestPurchase with sku:', PRODUCT_ID);
+        await iap.requestPurchase({ sku: PRODUCT_ID });
+        console.log('✅ requestPurchase({ sku }) call completed');
+      } catch (skuError: any) {
+        console.error('❌ ERROR in requestPurchase({ sku }):', skuError);
+        console.error('❌ requestPurchase sku error details:', {
+          message: skuError?.message,
+          stack: skuError?.stack,
+          name: skuError?.name,
+          code: skuError?.code
+        });
+        // If sku fails, try productId (v14 might use this)
+        if (skuError?.message?.includes('sku') || skuError?.code === 'E_DEVELOPER_ERROR') {
+          console.log('⚠️ requestPurchase with sku failed, trying productId...');
+          try {
+            await iap.requestPurchase({ productId: PRODUCT_ID });
+            console.log('✅ requestPurchase({ productId }) call completed');
+          } catch (productIdError: any) {
+            console.error('❌ ERROR in requestPurchase({ productId }):', productIdError);
+            console.error('❌ requestPurchase productId error details:', {
+              message: productIdError?.message,
+              stack: productIdError?.stack,
+              name: productIdError?.name,
+              code: productIdError?.code
+            });
+            throw productIdError;
+          }
+        } else {
+          throw skuError;
+        }
+      }
       
       // Wait for purchase to complete (listeners will resolve/reject)
       await purchasePromise;
@@ -341,16 +435,28 @@ export async function purchaseProSubscription(): Promise<void> {
     }
   } catch (error: any) {
     console.error('Purchase error:', error);
+    console.error('Purchase error details:', {
+      message: error?.message,
+      code: error?.code,
+      name: error?.name,
+      stack: error?.stack,
+      userCancelled: error?.userCancelled,
+      fullError: JSON.stringify(error, null, 2)
+    });
     
     // Don't show alert if user cancelled
-    if (error?.message === 'User cancelled purchase' || error?.code === 'E_USER_CANCELLED') {
+    if (error?.message === 'User cancelled purchase' || error?.code === 'E_USER_CANCELLED' || error?.userCancelled) {
       throw error;
     }
     
-    // Show error alert for other errors
-    if (!error?.message?.includes('User cancelled') && !error?.userCancelled) {
-      Alert.alert('Purchase Error', error?.message || 'Failed to complete purchase. Please try again.');
-    }
+    // Show detailed error alert
+    const errorMessage = error?.message || error?.code || 'An unknown error occurred';
+    const errorDetails = error?.code ? ` (Code: ${error.code})` : '';
+    
+    Alert.alert(
+      'Purchase Error', 
+      `${errorMessage}${errorDetails}\n\nCheck console logs for more details.`
+    );
     
     throw error;
   }

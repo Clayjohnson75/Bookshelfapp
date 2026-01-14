@@ -810,6 +810,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const getSignUpErrorMessage = (error: any): string => {
     if (!error) return 'Failed to create account. Please try again.';
     
+    // Log full error for debugging
+    console.error('Sign up error details:', {
+      message: error?.message,
+      code: error?.code,
+      name: error?.name,
+      status: error?.status,
+      fullError: JSON.stringify(error, null, 2)
+    });
+    
     const errorMessage = error?.message || error?.toString() || '';
     const errorCode = error?.code || error?.status || '';
     
