@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { initializeIAP, purchaseProSubscription, restorePurchases, checkSubscriptionStatus as checkIAPStatus } from '../services/appleIAPService';
@@ -157,14 +158,17 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             </View>
           ) : products.length > 0 ? (
             <View style={styles.pricingCard}>
+              <Text style={styles.subscriptionTitle}>{products[0].title}</Text>
               <Text style={styles.price}>{products[0].localizedPrice}</Text>
               <Text style={styles.pricePeriod}>per month</Text>
-              <Text style={styles.productTitle}>{products[0].title}</Text>
+              <Text style={styles.subscriptionLength}>Auto-renewable subscription, 1 month duration</Text>
             </View>
           ) : (
             <View style={styles.pricingCard}>
+              <Text style={styles.subscriptionTitle}>Pro Monthly Subscription</Text>
               <Text style={styles.price}>$4.99</Text>
               <Text style={styles.pricePeriod}>per month</Text>
+              <Text style={styles.subscriptionLength}>Auto-renewable subscription, 1 month duration</Text>
             </View>
           )}
 
@@ -212,6 +216,22 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             Payment will be charged to your Apple ID account at confirmation. Subscription
             automatically renews unless cancelled at least 24 hours before the end of the current period.
           </Text>
+
+          <View style={styles.linksContainer}>
+            <TouchableOpacity
+              onPress={() => Linking.openURL('https://bookshelfscan.app/terms.html')}
+              style={styles.linkButton}
+            >
+              <Text style={styles.linkText}>Terms of Use</Text>
+            </TouchableOpacity>
+            <Text style={styles.linkSeparator}> • </Text>
+            <TouchableOpacity
+              onPress={() => Linking.openURL('https://bookshelfscan.app/privacy.html')}
+              style={styles.linkButton}
+            >
+              <Text style={styles.linkText}>Privacy Policy</Text>
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </SafeAreaView>
     </Modal>
@@ -348,7 +368,40 @@ const styles = StyleSheet.create({
     color: '#718096',
     textAlign: 'center',
     lineHeight: 18,
+    marginBottom: 16,
+  },
+  subscriptionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#2d3748',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  subscriptionLength: {
+    fontSize: 12,
+    color: '#718096',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  linksContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
     marginBottom: 20,
+  },
+  linkButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  linkText: {
+    fontSize: 12,
+    color: '#4299e1',
+    textDecorationLine: 'underline',
+  },
+  linkSeparator: {
+    fontSize: 12,
+    color: '#718096',
   },
   proBadge: {
     backgroundColor: '#48bb78',

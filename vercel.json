@@ -19,7 +19,7 @@
       "destination": "/api/profile"
     },
     {
-      "source": "/:username((?!favicon\\.ico|favicon\\.png|favicon\\.svg|robots\\.txt|sitemap\\.xml|app-ads\\.txt|ads\\.txt|\\.well-known|apple-app-site-association|assetlinks\\.json).*)",
+      "source": "/:username((?!favicon\\.ico|favicon\\.png|favicon\\.svg|robots\\.txt|sitemap\\.xml|app-ads\\.txt|ads\\.txt|\\.well-known|apple-app-site-association|assetlinks\\.json|terms\\.html|privacy\\.html|support\\.html|index\\.html|logo\\.png|.*\\.(html|png|jpg|jpeg|gif|svg|css|js|json|xml|txt|webmanifest|ico)$).*)",
       "destination": "/api/profile/:username"
     }
   ]

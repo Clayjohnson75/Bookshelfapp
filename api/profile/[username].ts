@@ -27,8 +27,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('[API] Missing Supabase credentials');
-      return res.status(500).send('Server configuration error');
+      console.error('[API] Missing Supabase credentials', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseServiceKey,
+        urlLength: supabaseUrl?.length || 0,
+        keyLength: supabaseServiceKey?.length || 0
+      });
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Server Error - Bookshelf Scanner</title>
+          <style>
+            body { font-family: system-ui; padding: 40px; text-align: center; background: #f8f6f0; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; }
+            h1 { color: #e74c3c; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Server Configuration Error</h1>
+            <p>The server is missing required configuration. Please contact support.</p>
+            <a href="/">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
     }
 
     // Use service role key to bypass RLS for public profiles
@@ -48,6 +72,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Handle errors
     if (profileError) {
+      console.error('[API] Profile fetch error:', {
+        code: profileError.code,
+        message: profileError.message,
+        details: profileError.details,
+        hint: profileError.hint,
+        username: username
+      });
+      
       if (profileError.code === 'PGRST116') {
         // Profile doesn't exist
         return res.status(404).send(`
@@ -119,8 +151,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `);
       }
       
-      // Other errors
-      return res.status(500).send('Error loading profile');
+      // Other errors - return proper error page
+      console.error('[API] Database error details:', profileError);
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Error - Bookshelf Scanner</title>
+          <style>
+            body { font-family: system-ui; padding: 40px; text-align: center; background: #f8f6f0; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; }
+            h1 { color: #e74c3c; }
+            a { color: #007AFF; text-decoration: none; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Error Loading Profile</h1>
+            <p>An error occurred while loading this profile. Please try again later.</p>
+            <a href="/">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
     }
 
     // Check if profile exists
