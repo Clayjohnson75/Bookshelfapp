@@ -20,7 +20,7 @@ if (__DEV__) {
 }
 
 const AppContent: React.FC = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, refreshAuthState } = useAuth();
   const [resetToken, setResetToken] = useState<string | null>(null);
   const [confirmingEmail, setConfirmingEmail] = useState(false);
 
@@ -37,12 +37,31 @@ const AppContent: React.FC = () => {
       // Handle email confirmation
       if (parsedUrl.path === 'confirm-email') {
         setConfirmingEmail(true);
-        // Supabase automatically handles email confirmation when the deep link opens
-        // The session token is in the URL hash, which Supabase client processes automatically
-        // The auth context will detect the session change and update the user state
-        setTimeout(() => {
-          setConfirmingEmail(false);
-        }, 2000); // Give Supabase time to process the session
+        
+        // If email was just confirmed (from web redirect), the email is now confirmed in Supabase
+        // The user can now sign in - we just need to clear the loading state quickly
+        // No need to wait for auth state refresh since there's no active session yet
+        if (parsedUrl.queryParams?.confirmed === 'true') {
+          // Brief loading state, then allow sign-in
+          setTimeout(() => {
+            setConfirmingEmail(false);
+          }, 1000); // Reduced from 2000ms - just enough to show feedback
+        } else if (parsedUrl.queryParams?.token) {
+          // Handle token-based confirmation (if token is in URL)
+          // Supabase automatically handles email confirmation when the deep link opens
+          // The auth context will detect the session change and update the user state
+          setTimeout(() => {
+            if (refreshAuthState) {
+              refreshAuthState();
+            }
+            setConfirmingEmail(false);
+          }, 2000);
+        } else {
+          // Just a brief loading state for any confirm-email deep link
+          setTimeout(() => {
+            setConfirmingEmail(false);
+          }, 1000);
+        }
       }
     };
 
@@ -52,7 +71,7 @@ const AppContent: React.FC = () => {
 
     const subscription = Linking.addEventListener('url', handleDeepLink);
     return () => subscription.remove();
-  }, []);
+  }, [refreshAuthState]);
 
   if (loading || confirmingEmail) {
     return (

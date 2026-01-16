@@ -151,8 +151,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `);
       }
       
-      // Other errors - return proper error page
-      console.error('[API] Database error details:', profileError);
+      // Other errors - return proper error page with more details
+      console.error('[API] Database error details:', {
+        code: profileError.code,
+        message: profileError.message,
+        details: profileError.details,
+        hint: profileError.hint,
+        username: username
+      });
+      
+      // Provide more helpful error message based on error type
+      let errorMessage = 'An error occurred while loading this profile. Please try again later.';
+      if (profileError.code === 'PGRST301' || profileError.message?.includes('permission') || profileError.message?.includes('RLS')) {
+        errorMessage = 'You do not have permission to view this profile.';
+      } else if (profileError.message?.includes('timeout') || profileError.message?.includes('network')) {
+        errorMessage = 'The request timed out. Please check your connection and try again.';
+      } else if (profileError.code) {
+        errorMessage = `Database error (${profileError.code}): ${profileError.message || 'Unknown error'}`;
+      }
+      
       return res.status(500).send(`
         <!DOCTYPE html>
         <html>
@@ -162,14 +179,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             body { font-family: system-ui; padding: 40px; text-align: center; background: #f8f6f0; }
             .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; }
             h1 { color: #e74c3c; }
-            a { color: #007AFF; text-decoration: none; }
+            p { color: #666; margin: 10px 0; }
+            .error-details { font-size: 12px; color: #999; margin-top: 20px; }
+            a { color: #007AFF; text-decoration: none; display: inline-block; margin-top: 20px; }
           </style>
         </head>
         <body>
           <div class="container">
             <h1>Error Loading Profile</h1>
-            <p>An error occurred while loading this profile. Please try again later.</p>
+            <p>${errorMessage}</p>
+            <div class="error-details">Error Code: ${profileError.code || 'Unknown'}</div>
             <a href="/">Return to Home</a>
+            <br>
+            <a href="/profile">Try Signing In Again</a>
           </div>
         </body>
         </html>
@@ -1910,19 +1932,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   body: JSON.stringify({ session: data.session })
                 });
                 
-                if (usernameResponse.ok) {
-                  const usernameData = await usernameResponse.json();
-                  if (usernameData.username) {
-                    // Redirect to their own profile edit page
+              if (usernameResponse.ok) {
+                const usernameData = await usernameResponse.json();
+                if (usernameData.username) {
+                  // Redirect to their own profile edit page with a small delay
+                  // This ensures session is stored before redirect
+                  setTimeout(() => {
                     window.location.href = \`/\${usernameData.username}?edit=true\`;
-                  } else {
-                    // Fallback to profile page
-                    window.location.href = '/profile';
-                  }
+                  }, 100);
                 } else {
+                  console.error('No username in response from get-username');
                   // Fallback to profile page
                   window.location.href = '/profile';
                 }
+              } else {
+                const errorData = await usernameResponse.json().catch(() => ({}));
+                console.error('Error getting username after sign-in:', errorData);
+                // If profile not found, redirect to profile page to sign in again
+                if (usernameResponse.status === 404) {
+                  alert('Profile not found. Your account may need to be set up. Please contact support if this persists.');
+                }
+                window.location.href = '/profile';
+              }
               } else {
                 closeSignInModal();
                 window.location.href = \`/\${username}\`;

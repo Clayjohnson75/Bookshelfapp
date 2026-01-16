@@ -425,7 +425,7 @@ export const ScansTab: React.FC = () => {
       setScanUsage(null);
       setCanScan(true);
     }
-  }, [user]);
+  }, [user?.uid]); // Use user.uid instead of user object to catch sign-in/out events
   
   // Fallback function to load from AsyncStorage if Supabase fails
   const loadUserDataFromStorage = async () => {

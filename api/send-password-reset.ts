@@ -270,7 +270,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } else {
       // If custom email service not configured, use Supabase's default email
-      console.log('[API] No Resend API key configured, using Supabase default email');
+      console.log('[API] ⚠️ EMAIL_API_KEY not configured, using Supabase default email');
+      console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
       try {
         const { error: supabaseEmailError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
           redirectTo: webFallbackUrl,

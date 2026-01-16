@@ -196,10 +196,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 successDiv.classList.add('show');
                 btn.style.display = 'none';
                 
-                // Redirect to app after 3 seconds
+                // Redirect to app immediately with confirmation flag
+                // This allows the app to refresh auth state and auto-sign-in
                 setTimeout(() => {
-                  window.location.href = 'bookshelfscanner://';
-                }, 3000);
+                  window.location.href = 'bookshelfscanner://confirm-email?confirmed=true';
+                }, 1500); // Reduced from 3 seconds to 1.5 seconds
               } else {
                 // Show error
                 errorDiv.textContent = data.message || 'Failed to confirm email. The link may be invalid or expired.';

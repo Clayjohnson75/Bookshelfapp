@@ -35,8 +35,12 @@ export const ScanLimitBanner = forwardRef<ScanLimitBannerRef, ScanLimitBannerPro
     useEffect(() => {
       if (user) {
         loadUsage();
+      } else {
+        // Clear usage when user signs out
+        setUsage(null);
+        setLoading(false);
       }
-    }, [user]);
+    }, [user?.uid]); // Use user.uid instead of user object to catch sign-in events
 
     // Refresh when tab is focused
     useFocusEffect(
@@ -44,7 +48,7 @@ export const ScanLimitBanner = forwardRef<ScanLimitBannerRef, ScanLimitBannerPro
         if (user) {
           loadUsage();
         }
-      }, [user])
+      }, [user?.uid]) // Use user.uid instead of user object
     );
 
     if (loading || !usage) {

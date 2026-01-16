@@ -116,10 +116,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const deepLink = `bookshelfscanner://confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
 
     // Send custom email using Resend
-    const emailApiKey = process.env.EMAIL_API_KEY;
-    const emailFrom = process.env.EMAIL_FROM || 'noreply@bookshelfscan.app';
+    const emailApiKey = process.env.EMAIL_API_KEY?.trim();
+    const emailFrom = process.env.EMAIL_FROM?.trim() || 'noreply@bookshelfscan.app';
 
-    if (emailApiKey) {
+    console.log('[API] Email configuration check:', {
+      hasEmailApiKey: !!emailApiKey,
+      emailApiKeyLength: emailApiKey?.length || 0,
+      emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
+      emailFrom: emailFrom,
+    });
+
+    if (emailApiKey && emailApiKey.length > 0) {
       try {
         const resend = new Resend(emailApiKey);
         
@@ -197,6 +204,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } else {
       // If Resend not configured, use Supabase's default email
+      console.log('[API] ⚠️ EMAIL_API_KEY not configured, using Supabase default email');
+      console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
       await supabaseAdmin.auth.resend({
         type: 'signup',
         email: email,

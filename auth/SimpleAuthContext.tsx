@@ -34,6 +34,7 @@ interface AuthContextType {
   searchUsers: (query: string) => Promise<User[]>;
   getUserByUsername: (username: string) => Promise<User | null>;
   deleteAccount: () => Promise<void>;
+  refreshAuthState: () => Promise<void>;
   biometricCapabilities: BiometricAuth.BiometricCapabilities | null;
   isBiometricEnabled: () => Promise<boolean>;
   enableBiometric: (email: string, password: string) => Promise<void>;
@@ -950,6 +951,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Sign up with metadata so trigger can create profile (with timeout)
       // Enable email confirmation - user must confirm email before accessing account
+      // 
+      // IMPORTANT: To prevent duplicate emails, disable Supabase's automatic email sending:
+      // 1. Go to Supabase Dashboard → Authentication → Settings
+      // 2. Under "Email Auth", toggle OFF "Enable email confirmations" 
+      //    OR configure custom SMTP with a no-op email service
+      // 3. Our custom API at /api/send-confirmation-email handles all emails via Resend
+      //
+      // If automatic emails are enabled in Supabase, users will receive TWO emails:
+      // - One from Supabase (automatic when signUp() is called)
+      // - One from Resend (via our custom API)
       try {
         const signUpPromise = supabase.auth.signUp({
           email,
@@ -1445,6 +1456,49 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  const refreshAuthState = async (): Promise<void> => {
+    try {
+      if (!supabase) return;
+      
+      // Check for current session
+      const { data, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.warn('Error refreshing auth state:', error.message);
+        return;
+      }
+      
+      const sessionUser = data?.session?.user;
+      if (sessionUser) {
+        // Fetch updated profile and update user state
+        try {
+          const profile = await fetchUserProfile(sessionUser.id);
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: profile?.username || '',
+            displayName: profile?.displayName,
+            photoURL: profile?.photoURL,
+          };
+          setUser(userData);
+          await saveUserToStorage(userData);
+        } catch (profileError) {
+          console.warn('Profile fetch error during refresh:', profileError);
+          // Use basic session data if profile fetch fails
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: sessionUser.email?.split('@')[0] || '',
+          };
+          setUser(userData);
+          await saveUserToStorage(userData);
+        }
+      }
+    } catch (error) {
+      console.warn('Error refreshing auth state:', error);
+    }
+  };
+
   const value: AuthContextType = {
     user,
     loading,
@@ -1457,6 +1511,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     searchUsers,
     getUserByUsername,
     deleteAccount,
+    refreshAuthState,
     biometricCapabilities,
     isBiometricEnabled: BiometricAuth.isBiometricEnabled,
     enableBiometric,

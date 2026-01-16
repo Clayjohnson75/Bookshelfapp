@@ -172,6 +172,22 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             </View>
           )}
 
+          {/* Prominent Terms and Privacy Links - Required by Apple Guidelines 3.1.2 */}
+          <View style={styles.legalLinksSection}>
+            <TouchableOpacity
+              onPress={() => Linking.openURL('https://bookshelfscan.app/terms.html')}
+              style={styles.legalLinkButton}
+            >
+              <Text style={styles.legalLinkText}>Terms of Use (EULA)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => Linking.openURL('https://bookshelfscan.app/privacy.html')}
+              style={[styles.legalLinkButton, styles.lastLegalLinkButton]}
+            >
+              <Text style={styles.legalLinkText}>Privacy Policy</Text>
+            </TouchableOpacity>
+          </View>
+
           <View style={styles.benefitsSection}>
             <Text style={styles.benefitsTitle}>Pro Features</Text>
             {[
@@ -217,6 +233,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             automatically renews unless cancelled at least 24 hours before the end of the current period.
           </Text>
 
+          {/* Additional Terms and Privacy Links at bottom */}
           <View style={styles.linksContainer}>
             <TouchableOpacity
               onPress={() => Linking.openURL('https://bookshelfscan.app/terms.html')}
@@ -382,6 +399,36 @@ const styles = StyleSheet.create({
     color: '#718096',
     marginTop: 4,
     textAlign: 'center',
+  },
+  legalLinksSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  legalLinkButton: {
+    backgroundColor: '#f7fafc',
+    borderRadius: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+  },
+  legalLinkText: {
+    fontSize: 15,
+    color: '#4299e1',
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  lastLegalLinkButton: {
+    marginBottom: 0,
   },
   linksContainer: {
     flexDirection: 'row',

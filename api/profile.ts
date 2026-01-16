@@ -335,11 +335,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               if (usernameResponse.ok) {
                 const usernameData = await usernameResponse.json();
                 if (usernameData.username) {
-                  window.location.href = \`/\${usernameData.username}?edit=true\`;
+                  // Redirect to profile with a small delay to ensure session is stored
+                  setTimeout(() => {
+                    window.location.href = \`/\${usernameData.username}?edit=true\`;
+                  }, 100);
                 } else {
+                  console.error('No username returned from get-username API');
                   window.location.href = '/search';
                 }
               } else {
+                const errorData = await usernameResponse.json().catch(() => ({}));
+                console.error('Error getting username:', errorData);
+                // If profile not found error, might be a new account - redirect to search
+                if (usernameResponse.status === 404) {
+                  alert('Your profile may not be set up yet. Redirecting to search...');
+                }
                 window.location.href = '/search';
               }
             } else {
