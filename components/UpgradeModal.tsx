@@ -70,18 +70,31 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
       // Purchase is handled by appleIAPService which updates Supabase automatically
       await purchaseProSubscription();
       
-      // Wait a moment for the purchase to process
+      // Wait a moment for the purchase to process, then refresh status
+      // Use a shorter delay and ensure loading is always cleared
       setTimeout(async () => {
-        await checkCurrentTier();
-        if (onUpgradeComplete) {
-          onUpgradeComplete();
+        try {
+          await checkCurrentTier();
+          if (onUpgradeComplete) {
+            onUpgradeComplete();
+          }
+        } catch (refreshError) {
+          console.error('Error refreshing subscription status:', refreshError);
+        } finally {
+          setLoading(false);
         }
-        setLoading(false);
-      }, 2000);
+      }, 1500); // Reduced from 2000ms for faster feedback
     } catch (error: any) {
-      console.error('Purchase error:', error);
+      console.error('Purchase error in UpgradeModal:', error);
       // Error alerts are handled by appleIAPService
+      // Ensure loading state is always cleared
       setLoading(false);
+      
+      // Don't show duplicate error if user cancelled
+      if (error?.message?.includes('cancelled') || error?.message?.includes('User cancelled')) {
+        // User cancelled - just clear loading state, no error needed
+        return;
+      }
     }
   };
 

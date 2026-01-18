@@ -362,10 +362,27 @@ export async function purchaseProSubscription(): Promise<void> {
     // Set up purchase listener before making purchase
     let purchaseResolve: ((purchase: Purchase) => void) | null = null;
     let purchaseReject: ((error: Error) => void) | null = null;
+    let purchaseTimeout: NodeJS.Timeout | null = null;
+
+    // Helper to clear timeout when promise resolves/rejects
+    const clearPurchaseTimeout = () => {
+      if (purchaseTimeout) {
+        clearTimeout(purchaseTimeout);
+        purchaseTimeout = null;
+      }
+    };
 
     const purchasePromise = new Promise<Purchase>((resolve, reject) => {
       purchaseResolve = resolve;
       purchaseReject = reject;
+      
+      // Add timeout to prevent hanging forever (60 seconds)
+      purchaseTimeout = setTimeout(() => {
+        clearPurchaseTimeout();
+        if (purchaseReject) {
+          purchaseReject(new Error('Purchase timed out. Please try again or check your internet connection.'));
+        }
+      }, 60000); // 60 second timeout
     });
 
     console.log('✅ Setting up purchase listeners...');
@@ -400,6 +417,7 @@ export async function purchaseProSubscription(): Promise<void> {
           await iap.finishTransaction({ purchase, isConsumable: false });
 
           // Resolve the promise
+          clearPurchaseTimeout();
           if (purchaseResolve) {
             purchaseResolve(purchase);
           }
@@ -411,6 +429,7 @@ export async function purchaseProSubscription(): Promise<void> {
           await iap.finishTransaction({ purchase, isConsumable: false });
           
           // Resolve anyway since purchase succeeded
+          clearPurchaseTimeout();
           if (purchaseResolve) {
             purchaseResolve(purchase);
           }
@@ -435,6 +454,7 @@ export async function purchaseProSubscription(): Promise<void> {
       purchaseErrorSubscription = iap.purchaseErrorListener((error) => {
       console.error('Purchase error:', error);
       
+      clearPurchaseTimeout();
       if (purchaseReject) {
         if (error.code === 'E_USER_CANCELLED' || error.userCancelled) {
           purchaseReject(new Error('User cancelled purchase'));
@@ -443,9 +463,8 @@ export async function purchaseProSubscription(): Promise<void> {
         }
       }
       
-      if (error.code !== 'E_USER_CANCELLED' && !error.userCancelled) {
-        Alert.alert('Purchase Error', error.message || 'Failed to complete purchase. Please try again.');
-      }
+      // Don't show alert here - let the outer catch handle it with better messaging
+      // This prevents duplicate error messages
     });
     console.log('✅ purchaseErrorListener set up');
     } catch (errorListenerError: any) {
@@ -508,10 +527,16 @@ export async function purchaseProSubscription(): Promise<void> {
       // Wait for purchase to complete (listeners will resolve/reject)
       await purchasePromise;
       
+      // Clear timeout if we got here (should already be cleared, but just in case)
+      clearPurchaseTimeout();
+      
       // Clean up listeners
       purchaseUpdateSubscription.remove();
       purchaseErrorSubscription.remove();
     } catch (purchaseError: any) {
+      // Clear timeout
+      clearPurchaseTimeout();
+      
       // Clean up listeners
       purchaseUpdateSubscription.remove();
       purchaseErrorSubscription.remove();
@@ -522,11 +547,9 @@ export async function purchaseProSubscription(): Promise<void> {
         throw new Error('User cancelled purchase');
       }
       
-      const errorMessage = purchaseError.message || 'Purchase failed';
-      if (!purchaseError.message?.includes('User cancelled')) {
-        Alert.alert('Purchase Failed', errorMessage);
-      }
-      throw new Error(errorMessage);
+      // Don't show alert here - let outer catch handle with user-friendly message
+      // This prevents duplicate alerts and ensures consistent messaging
+      throw purchaseError;
     }
   } catch (error: any) {
     console.error('Purchase error:', error);
@@ -544,13 +567,25 @@ export async function purchaseProSubscription(): Promise<void> {
       throw error;
     }
     
-    // Show detailed error alert
-    const errorMessage = error?.message || error?.code || 'An unknown error occurred';
-    const errorDetails = error?.code ? ` (Code: ${error.code})` : '';
+    // Show user-friendly error message (no technical details)
+    let userMessage = 'Unable to complete purchase.';
+    
+    // Provide more helpful messages based on error type
+    if (error?.message?.includes('timeout')) {
+      userMessage = 'The purchase took too long. Please check your internet connection and try again.';
+    } else if (error?.message?.includes('network') || error?.message?.includes('connection')) {
+      userMessage = 'Network error. Please check your internet connection and try again.';
+    } else if (error?.code === 'E_SERVICE_ERROR' || error?.code === 'E_NETWORK_ERROR') {
+      userMessage = 'Unable to connect to the App Store. Please check your internet connection and try again.';
+    } else if (error?.code === 'E_ITEM_UNAVAILABLE') {
+      userMessage = 'This subscription is temporarily unavailable. Please try again later.';
+    } else if (error?.message?.includes('not available')) {
+      userMessage = 'In-app purchases are not available right now. Please try again later.';
+    }
     
     Alert.alert(
-      'Purchase Error', 
-      `${errorMessage}${errorDetails}\n\nCheck console logs for more details.`
+      'Purchase Unavailable', 
+      userMessage
     );
     
     throw error;
