@@ -414,7 +414,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         <meta name="description" content="View ${profileData.displayName}'s book collection on Bookshelf Scanner">
         <meta property="og:title" content="${profileData.displayName}'s Library - Bookshelf Scanner">
         <meta property="og:description" content="${stats.totalBooks} books in ${profileData.displayName}'s collection">
-        <meta property="og:image" content="${profileData.avatarUrl || '/logo.png'}">
+        <meta property="og:image" content="/logo.png">
         <meta property="og:type" content="profile">
         <meta name="twitter:card" content="summary">
         <style>
@@ -1156,11 +1156,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         <div class="container">
           <div class="profile-header">
-            ${!settings.hideAvatar 
-              ? (profileData.avatarUrl 
-                  ? `<img src="${String(profileData.avatarUrl)}" alt="${String(profileData.displayName).replace(/"/g, '&quot;')}" class="avatar">` 
-                  : `<div class="avatar-placeholder">${String(profileData.displayName).charAt(0).toUpperCase()}</div>`)
-              : ''}
             <h1 class="profile-name">${String(profileData.displayName).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h1>
             <div class="profile-username">@${String(profileData.username).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
             ${profileData.bio && !settings.hideBio ? `<div class="profile-bio">${String(profileData.bio || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')}</div>` : ''}
