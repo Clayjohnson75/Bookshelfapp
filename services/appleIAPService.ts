@@ -332,11 +332,14 @@ export async function purchaseProSubscription(): Promise<void> {
       throw new Error(`getProducts failed: ${getProductsError?.message || 'Unknown error'}`);
     }
     if (products.length === 0) {
-      Alert.alert(
-        'Product Not Available',
-        'The subscription product is not available. Please make sure it\'s configured in App Store Connect.',
-      );
-      throw new Error('Product not found');
+      // Don't show error during app review - Apple tests in sandbox where products should be available
+      // If products are empty, it might be a configuration issue or the product isn't in "Ready to Submit" state
+      console.error('❌ No products found. This may be because:');
+      console.error('  1. Product is not in "Ready to Submit" state in App Store Connect');
+      console.error('  2. Product is not included in the app submission');
+      console.error('  3. Product ID mismatch: expected', PRODUCT_ID);
+      console.error('  4. Paid Apps Agreement not accepted');
+      throw new Error('Product not available - ensure subscription is in "Ready to Submit" state and included in app submission');
     }
 
     // Verify IAP methods exist before using them
