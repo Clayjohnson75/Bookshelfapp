@@ -20,14 +20,7 @@
     },
     {
       "source": "/:username",
-      "destination": "/api/profile/:username",
-      "has": [
-        {
-          "type": "header",
-          "key": "accept",
-          "value": "text/html"
-        }
-      ]
+      "destination": "/api/profile/:username"
     }
   ]
 }
