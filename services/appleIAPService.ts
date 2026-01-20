@@ -8,7 +8,7 @@ import { Platform, Alert } from 'react-native';
 import Constants from 'expo-constants';
 
 // Product ID - Update this to match your App Store Connect product
-const PRODUCT_ID = 'com.bookshelfscanner.pro.monthly';
+const PRODUCT_ID = 'com.bookshelfscanner.pro.monthly.v2';
 
 // Check if we're in Expo Go (IAP doesn't work in Expo Go)
 const isExpoGo = Constants.appOwnership === 'expo';
