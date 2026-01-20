@@ -277,18 +277,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                       </div>
                       <div>
                         <span style="font-weight: 600; color: #2c3e50;">\${data.stats.readBooks}</span> 
-                          <span style="color: #666; font-size: 14px;">Read</span>
-                        </div>
-                        <div>
-                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.unreadBooks}</span> 
-                          <span style="color: #666; font-size: 14px;">Unread</span>
-                        </div>
+                        <span style="color: #666; font-size: 14px;">Read</span>
                       </div>
-                      <a href="/\${data.profile.username}" target="_blank" style="display: inline-block; background: #34495e; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 2px solid #2c3e50;">View Profile</a>
+                      <div>
+                        <span style="font-weight: 600; color: #2c3e50;">\${data.stats.unreadBooks}</span> 
+                        <span style="color: #666; font-size: 14px;">Unread</span>
+                      </div>
                     </div>
-                  \`;
-                });
-              }
+                    <a href="/\${data.profile.username}" target="_blank" style="display: inline-block; background: #34495e; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 2px solid #2c3e50;">View Profile</a>
+                  </div>
+                \`;
+              });
             } catch (error) {
               // Only log actual errors (not expected 404s which are handled above)
               console.error('Search error:', error);
