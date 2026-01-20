@@ -129,10 +129,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
-    // Get user profile by username
+    // Get user profile by username (profile_settings column doesn't exist yet, using defaults)
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_url, profile_bio, profile_settings')
+      .select('id, username, display_name, avatar_url, profile_bio')
       .eq('username', username.toLowerCase())
       .single();
 
