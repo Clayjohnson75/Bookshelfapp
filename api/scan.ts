@@ -104,7 +104,6 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
           },
         ],
         max_completion_tokens: 1200,
-        temperature: 0.1,
       }),
     });
     if (!res.ok) {

@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import * as BiometricAuth from '../services/biometricAuth';
 import { UpgradeModal } from './UpgradeModal';
+import { checkSubscriptionStatus as checkIAPSubscriptionStatus } from '../services/appleIAPService';
 import { checkSubscriptionStatus } from '../services/subscriptionService';
 
 // Safe import for LocalAuthentication
@@ -140,10 +141,18 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
   const checkSubscriptionTier = async () => {
     if (!user) return;
     try {
-      const tier = await checkSubscriptionStatus();
+      // Use IAP check which checks both Apple IAP and Supabase
+      const tier = await checkIAPSubscriptionStatus();
       setSubscriptionTier(tier);
     } catch (error) {
       console.error('Error checking subscription tier:', error);
+      // Fallback to Supabase check if IAP check fails
+      try {
+        const fallbackTier = await checkSubscriptionStatus();
+        setSubscriptionTier(fallbackTier);
+      } catch (fallbackError) {
+        console.error('Error in fallback subscription check:', fallbackError);
+      }
     }
   };
 
