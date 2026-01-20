@@ -46,8 +46,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const data = await response.json();
-    const imageBase64 = data.data[0].b64_json;
+    const data = await response.json() as { data?: Array<{ b64_json?: string }> };
+    const imageBase64 = data.data?.[0]?.b64_json;
+
+    if (!imageBase64) {
+      return res.status(500).json({ 
+        error: 'No image data received from OpenAI',
+        details: 'OpenAI did not return image data'
+      });
+    }
 
     // Return the base64 image
     return res.status(200).json({

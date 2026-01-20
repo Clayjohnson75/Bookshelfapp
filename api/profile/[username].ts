@@ -7,7 +7,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   
-  const { username, edit } = req.query;
+  // Ensure username is a string (could be array if in query params)
+  const username = Array.isArray(req.query.username) ? req.query.username[0] : req.query.username;
+  const edit = Array.isArray(req.query.edit) ? req.query.edit[0] : req.query.edit;
   const isEditMode = edit === 'true';
 
   // Reject static file requests (favicon, etc.) that get incorrectly routed
@@ -383,14 +385,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       hideAvatar: false
     };
 
-    // Format profile data
+    // Format profile data with safe defaults
     const profileData = {
-      id: profile.id,
-      username: profile.username,
-      displayName: profile.display_name || profile.username,
-      avatarUrl: profile.avatar_url,
-      bio: profile.profile_bio,
-      createdAt: profile.created_at,
+      id: profile.id || '',
+      username: String(profile.username || username || ''),
+      displayName: String(profile.display_name || profile.username || username || 'Unknown'),
+      avatarUrl: profile.avatar_url || null,
+      bio: profile.profile_bio || null,
+      createdAt: profile.created_at || null,
       settings
     };
 
@@ -1156,12 +1158,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           <div class="profile-header">
             ${!settings.hideAvatar 
               ? (profileData.avatarUrl 
-                  ? `<img src="${profileData.avatarUrl}" alt="${profileData.displayName}" class="avatar">` 
-                  : `<div class="avatar-placeholder">${profileData.displayName.charAt(0).toUpperCase()}</div>`)
+                  ? `<img src="${String(profileData.avatarUrl)}" alt="${String(profileData.displayName).replace(/"/g, '&quot;')}" class="avatar">` 
+                  : `<div class="avatar-placeholder">${String(profileData.displayName).charAt(0).toUpperCase()}</div>`)
               : ''}
-            <h1 class="profile-name">${profileData.displayName}</h1>
-            <div class="profile-username">@${profileData.username}</div>
-            ${profileData.bio && !settings.hideBio ? `<div class="profile-bio">${profileData.bio}</div>` : ''}
+            <h1 class="profile-name">${String(profileData.displayName).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h1>
+            <div class="profile-username">@${String(profileData.username).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+            ${profileData.bio && !settings.hideBio ? `<div class="profile-bio">${String(profileData.bio || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')}</div>` : ''}
             <div id="profileEditButtons" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: none;">
               <div style="margin-bottom: 15px;">
                 <button class="sign-in-button" style="margin-right: 10px;" onclick="openEditProfile()">Edit Profile</button>
@@ -1988,24 +1990,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('[API] Error rendering profile page:', error);
     console.error('[API] Error stack:', error?.stack);
     console.error('[API] Error message:', error?.message);
+    console.error('[API] Error details:', {
+      username,
+      isEditMode,
+      errorType: error?.constructor?.name,
+      errorCode: error?.code,
+      errorDetails: error?.details
+    });
     
-    // Return a proper error page instead of just text
+    // Return a proper error page with sanitized error message
+    const errorMessage = error?.message ? String(error.message).replace(/</g, '&lt;').replace(/>/g, '&gt;') : 'Unknown error';
+    const errorDetails = error?.stack ? String(error.stack).slice(0, 500).replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+    
     return res.status(500).send(`
       <!DOCTYPE html>
       <html>
       <head>
         <title>Error - Bookshelf Scanner</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-          body { font-family: system-ui; padding: 40px; text-align: center; }
-          h1 { color: #e74c3c; }
-          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+          body { font-family: system-ui; padding: 40px; text-align: center; background: #f8f6f0; }
+          .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          h1 { color: #e74c3c; margin-bottom: 20px; }
+          p { color: #666; margin: 10px 0; }
+          pre { background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; font-size: 12px; max-height: 300px; overflow-y: auto; }
+          a { color: #007AFF; text-decoration: none; display: inline-block; margin-top: 20px; }
+          a:hover { text-decoration: underline; }
         </style>
       </head>
       <body>
-        <h1>Error Loading Profile</h1>
-        <p>An error occurred while loading this profile.</p>
-        <pre>${error?.message || 'Unknown error'}</pre>
-        <a href="/">Return to Home</a>
+        <div class="container">
+          <h1>Error Loading Profile</h1>
+          <p>An error occurred while loading this profile.</p>
+          ${errorMessage ? `<pre>Error: ${errorMessage}</pre>` : ''}
+          ${errorDetails && process.env.NODE_ENV !== 'production' ? `<pre>Details: ${errorDetails}</pre>` : ''}
+          <a href="/">Return to Home</a>
+          <br>
+          <a href="/profile">Try Signing In Again</a>
+        </div>
       </body>
       </html>
     `);

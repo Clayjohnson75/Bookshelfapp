@@ -112,7 +112,7 @@ Return ONLY the JSON array, no explanations or markdown.`,
       return res.status(500).json({ error: 'Failed to sort books with AI' });
     }
 
-    const data = await response.json();
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     let content = data.choices?.[0]?.message?.content?.trim() || '';
 
     if (!content) {

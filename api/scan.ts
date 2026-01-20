@@ -112,7 +112,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
       console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
       return [];
     }
-    const data = await res.json();
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     let content = data.choices?.[0]?.message?.content?.trim() || '';
     
     console.log(`[API] OpenAI raw response length: ${content.length} chars`);
@@ -195,7 +195,12 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
     return [];
   }
-  const data = await res.json();
+  const data = await res.json() as { 
+    candidates?: Array<{ 
+      content?: { parts?: Array<{ text?: string }> }; 
+      text?: string 
+    }> 
+  };
   let content = '';
   if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
     content = data.candidates[0].content.parts[0].text;
@@ -312,7 +317,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
       return book;
     }
 
-    const data = await res.json();
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content?.trim();
 
     if (!content) return book;

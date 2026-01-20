@@ -278,7 +278,7 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       throw new Error(`Scan API returned ${scanResponse.status}: ${errorText.substring(0, 200)}`);
     }
     
-    const scanData = await scanResponse.json();
+    const scanData = await scanResponse.json() as { books?: unknown[] };
     const books = Array.isArray(scanData.books) ? scanData.books : [];
     
     // Update job with results

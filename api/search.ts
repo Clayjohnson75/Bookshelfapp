@@ -239,25 +239,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               return;
             }
 
+            // Require minimum 2 characters to prevent too many API calls for partial usernames
+            if (query.length < 2) {
+              resultsDiv.innerHTML = '<div class="empty-state-text">Enter at least 2 characters to search</div>';
+              return;
+            }
+            
+            // Increase debounce delay for better UX and fewer API calls
+
             resultsDiv.innerHTML = '<div class="empty-state-text">Searching...</div>';
 
             try {
-              const response = await fetch(\`/api/public-profile/\${query}\`);
-              if (response.ok) {
-                const data = await response.json();
-                // Use requestAnimationFrame for smooth DOM updates
-                requestAnimationFrame(() => {
-                  resultsDiv.innerHTML = \`
-                    <div style="padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 2px solid #34495e;">
-                      <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
-                      <p style="color: #666; margin-bottom: 10px;">@\${data.profile.username}</p>
-                      <div style="display: flex; gap: 20px; margin-bottom: 15px; flex-wrap: wrap;">
-                        <div>
-                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.totalBooks}</span> 
-                          <span style="color: #666; font-size: 14px;">Total Books</span>
-                        </div>
-                        <div>
-                          <span style="font-weight: 600; color: #2c3e50;">\${data.stats.readBooks}</span> 
+              const response = await fetch(\`/api/public-profile/\${encodeURIComponent(query)}\`);
+              
+              // Handle 404s silently - user doesn't exist, which is expected
+              if (response.status === 404) {
+                resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
+                return;
+              }
+              
+              if (!response.ok) {
+                // Only show error for non-404 status codes
+                throw new Error(\`Search failed: \${response.status}\`);
+              }
+              
+              const data = await response.json();
+              // Use requestAnimationFrame for smooth DOM updates
+              requestAnimationFrame(() => {
+                resultsDiv.innerHTML = \`
+                  <div style="padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 2px solid #34495e;">
+                    <h3 style="font-size: 20px; font-weight: 700; color: #2c3e50; margin-bottom: 10px;">\${data.profile.displayName}</h3>
+                    <p style="color: #666; margin-bottom: 10px;">@\${data.profile.username}</p>
+                    <div style="display: flex; gap: 20px; margin-bottom: 15px; flex-wrap: wrap;">
+                      <div>
+                        <span style="font-weight: 600; color: #2c3e50;">\${data.stats.totalBooks}</span> 
+                        <span style="color: #666; font-size: 14px;">Total Books</span>
+                      </div>
+                      <div>
+                        <span style="font-weight: 600; color: #2c3e50;">\${data.stats.readBooks}</span> 
                           <span style="color: #666; font-size: 14px;">Read</span>
                         </div>
                         <div>
@@ -269,17 +288,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     </div>
                   \`;
                 });
-              } else {
-                requestAnimationFrame(() => {
-                  resultsDiv.innerHTML = '<div class="empty-state-text">User not found</div>';
-                });
               }
             } catch (error) {
+              // Only log actual errors (not expected 404s which are handled above)
+              console.error('Search error:', error);
               requestAnimationFrame(() => {
                 resultsDiv.innerHTML = '<div class="empty-state-text">Error searching. Please try again.</div>';
               });
             }
-          }, 300);
+          }, 500); // Increased from 300ms to 500ms to reduce API calls
         }
 
         // Button always says "Profile" now

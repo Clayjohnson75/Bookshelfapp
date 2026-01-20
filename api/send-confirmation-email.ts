@@ -42,12 +42,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // Generate confirmation link from Supabase
+    // Note: For signup links, password is required but not used since we handle signup separately
     const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
       type: 'signup',
       email: email,
+      password: 'temp-password-not-used', // Required by API but not used for email confirmation links
       options: {
         redirectTo: 'https://bookshelfscan.app/api/confirm-email',
-      } as any,
+      },
     });
 
     if (supabaseError) {
