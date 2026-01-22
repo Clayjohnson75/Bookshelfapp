@@ -103,7 +103,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_completion_tokens: 1200,
+        max_completion_tokens: 8000, // gpt-5 uses reasoning tokens - need much more room (reasoning can use 1200+, need 2000+ for response)
       }),
     });
     if (!res.ok) {
@@ -148,6 +148,14 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
                 choice.text?.trim() || 
                 choice.message?.text?.trim() || 
                 '';
+    }
+    
+    // Method 3: If finish_reason is "length", the response was truncated
+    // gpt-5 uses reasoning tokens - if all tokens were used for reasoning, we need more tokens
+    if (!content && finishReason === 'length') {
+      const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens || 0;
+      const totalTokens = data.usage?.completion_tokens || 0;
+      console.warn(`[API] OpenAI response truncated: used ${totalTokens} tokens (${reasoningTokens} for reasoning). Increase max_completion_tokens.`);
     }
     
     console.log(`[API] OpenAI raw response length: ${content.length} chars, finish_reason: ${finishReason}`);

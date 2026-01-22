@@ -605,25 +605,22 @@ export const MyLibraryTab: React.FC = () => {
 
   // Helper to get cover URI - checks local cache first, then remote URL
   const getBookCoverUri = (book: Book): string | undefined => {
-    // In production builds, local file paths may not work reliably
-    // Always prefer remote coverUrl if available, fall back to local only if remote doesn't exist
+    // In production builds, always prefer remote coverUrl (more reliable)
     if (book.coverUrl) {
-      // If we have a remote URL, use it (works in both Expo Go and production)
-      return book.coverUrl;
+      // Validate URL format
+      const url = book.coverUrl.trim();
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        return url;
+      } else {
+        console.warn(`⚠️ Invalid coverUrl format for "${book.title}": ${url.substring(0, 50)}`);
+        return undefined;
+      }
     }
     
     // Fall back to local path only if no remote URL exists
     if (book.localCoverPath && FileSystem.documentDirectory) {
       try {
         const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
-        // In production, verify file exists before using local path
-        FileSystem.getInfoAsync(localPath).then(fileInfo => {
-          if (!fileInfo.exists) {
-            console.warn(`⚠️ Local cover file doesn't exist: ${localPath}`);
-          }
-        }).catch(() => {
-          // Ignore errors in async check
-        });
         return localPath;
       } catch (error) {
         console.warn('Error getting local cover path:', error);
@@ -732,14 +729,27 @@ export const MyLibraryTab: React.FC = () => {
       
       // Save to Supabase immediately so covers persist
       const { saveBookToSupabase } = await import('../services/supabaseSync');
+      let savedCount = 0;
       for (const [_, updatedBook] of bookUpdates) {
         if (user && updatedBook.coverUrl) {
+          console.log(`💾 Saving cover to Supabase: "${updatedBook.title}" - URL: ${updatedBook.coverUrl.substring(0, 80)}`);
           saveBookToSupabase(user.uid, updatedBook, updatedBook.status || 'approved')
+            .then(success => {
+              if (success) {
+                savedCount++;
+                console.log(`✅ Saved cover to Supabase: "${updatedBook.title}"`);
+              } else {
+                console.warn(`⚠️ Failed to save cover to Supabase: "${updatedBook.title}"`);
+              }
+            })
             .catch(error => {
-              console.error(`Error saving book cover to Supabase for ${updatedBook.title}:`, error);
+              console.error(`❌ Error saving book cover to Supabase for ${updatedBook.title}:`, error);
             });
+        } else {
+          console.warn(`⚠️ Skipping save - no coverUrl for "${updatedBook.title}"`);
         }
       }
+      console.log(`💾 Saving ${bookUpdates.size} books with covers to Supabase...`);
       
       setBooks(prev => {
         const updated = prev.map(b => {
