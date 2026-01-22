@@ -10,6 +10,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!username || typeof username !== 'string') {
       return res.status(400).json({ error: 'Invalid username' });
     }
+    
+    // Reject static file requests
+    const lowerUsername = username.toLowerCase();
+    const hasFileExtension = /\.(png|ico|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot)$/i.test(username);
+    const matchesStaticPattern = ['favicon', 'robots', 'sitemap', '.well-known'].some(pattern => lowerUsername.includes(pattern));
+    
+    if (hasFileExtension || matchesStaticPattern || !/^[a-z0-9_-]+$/i.test(username)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     if (!authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Unauthorized' });
@@ -129,10 +138,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
+    // Validate username format (reject static file requests)
+    if (!username || typeof username !== 'string') {
+      return res.status(404).send('Not found');
+    }
+    
+    const lowerUsername = username.toLowerCase();
+    const hasFileExtension = /\.(png|ico|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot)$/i.test(username);
+    const matchesStaticPattern = ['favicon', 'robots', 'sitemap', '.well-known'].some(pattern => lowerUsername.includes(pattern));
+    
+    if (hasFileExtension || matchesStaticPattern || !/^[a-z0-9_-]+$/i.test(username)) {
+      return res.status(404).send('Not found');
+    }
+
     // Get user profile by username
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_url, profile_bio, profile_settings')
+      .select('id, username, display_name, avatar_url, profile_bio')
       .eq('username', username.toLowerCase())
       .single();
 
@@ -148,8 +170,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).send('Profile not found');
     }
 
-    // Get current settings or defaults
-    const settings = (profile.profile_settings as any) || {
+    // Get current settings or defaults (profile_settings column doesn't exist yet, use defaults)
+    const settings = {
       backgroundColor: '#f8f6f0',
       buttonColor: '#007AFF',
       textColor: '#2c3e50',

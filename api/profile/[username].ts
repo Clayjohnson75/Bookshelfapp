@@ -13,13 +13,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const isEditMode = edit === 'true';
 
   // Reject static file requests (favicon, etc.) that get incorrectly routed
+  if (!username || typeof username !== 'string') {
+    return res.status(404).send('Not found');
+  }
+  
+  const lowerUsername = username.toLowerCase();
   const staticFilePatterns = [
-    'favicon.ico', 'favicon.png', 'favicon.svg', 
-    'robots.txt', 'sitemap.xml', '.well-known',
-    'app-ads.txt', 'ads.txt', '.txt',
-    'apple-app-site-association', 'assetlinks.json'
+    'favicon', 'robots.txt', 'sitemap.xml', '.well-known',
+    'app-ads.txt', 'ads.txt', 'apple-app-site-association', 
+    'assetlinks.json', '.png', '.ico', '.svg', '.jpg', '.jpeg',
+    '.gif', '.txt', '.xml', '.json', '.css', '.js'
   ];
-  if (!username || typeof username !== 'string' || staticFilePatterns.some(pattern => username.toLowerCase().includes(pattern))) {
+  
+  // Check if it's a static file request (has file extension or matches patterns)
+  const hasFileExtension = /\.(png|ico|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot)$/i.test(username);
+  const matchesStaticPattern = staticFilePatterns.some(pattern => lowerUsername.includes(pattern));
+  
+  if (hasFileExtension || matchesStaticPattern) {
+    return res.status(404).send('Not found');
+  }
+  
+  // Also validate username format (should be alphanumeric + underscore/hyphen, no dots)
+  if (!/^[a-z0-9_-]+$/i.test(username)) {
     return res.status(404).send('Not found');
   }
 
@@ -68,7 +83,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Get user profile by username
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled, profile_settings')
+      .select('id, username, display_name, avatar_url, profile_bio, created_at, public_profile_enabled')
       .eq('username', username.toLowerCase())
       .single();
 
@@ -372,8 +387,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(0, 5)
       .map(([author, count]) => ({ author, count }));
 
-    // Get profile settings or use defaults
-    const settings = (profile.profile_settings as any) || {
+    // Get profile settings or use defaults (profile_settings column doesn't exist yet, use defaults)
+    const settings = {
       backgroundColor: '#f8f6f0',
       buttonColor: '#007AFF',
       textColor: '#2c3e50',

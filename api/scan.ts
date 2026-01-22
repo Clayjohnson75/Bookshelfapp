@@ -79,7 +79,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000); // 30 seconds - fail fast if OpenAI is slow
+  const timeout = setTimeout(() => controller.abort(), 45000); // 45 seconds - gpt-4o is faster than gpt-5
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -89,7 +89,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'gpt-5',
+        model: 'gpt-4o', // Using gpt-4o instead of gpt-5 - faster and more reliable for vision tasks
         messages: [
           {
             role: 'user',
@@ -103,7 +103,7 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
             ],
           },
         ],
-        max_completion_tokens: 8000, // gpt-5 uses reasoning tokens - need much more room (reasoning can use 1200+, need 2000+ for response)
+        max_tokens: 2000, // gpt-4o doesn't use reasoning tokens, so 2000 is plenty
       }),
     });
     if (!res.ok) {
@@ -325,7 +325,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000); // 5 seconds per book - fast validation
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10 seconds per book
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -336,7 +336,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'gpt-5',
+        model: 'gpt-4o-mini', // Faster model for validation
         messages: [
           {
             role: 'user',
@@ -516,8 +516,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Process in small batches to avoid Vercel 300s timeout
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
     
-    const VALIDATION_BATCH_SIZE = 3; // Small batches
-    const VALIDATION_TIMEOUT_PER_BOOK = 5000; // 5 seconds per book
+    const VALIDATION_BATCH_SIZE = 5; // Larger batches since using faster model
+    const VALIDATION_TIMEOUT_PER_BOOK = 10000; // 10 seconds per book
     const validatedBooks: any[] = [];
     
     for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {

@@ -2573,7 +2573,7 @@ export const ScansTab: React.FC = () => {
     setSelectedBooks(new Set());
     setShowEditActions(false);
 
-    Alert.alert('Cover Removed', 'The cover has been removed from this book.');
+    // Cover removed silently (no popup)
   }, [pendingBooks, photos, approvedBooks, rejectedBooks, user]);
 
   const handleSwitchCovers = useCallback(async (bookId: string) => {

@@ -473,7 +473,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
         onBookUpdate(updatedBook);
       }
 
-      Alert.alert('Cover Removed', 'The cover has been removed from this book everywhere.');
+      // Cover removed silently (no popup)
     } catch (error) {
       console.error('Error removing cover:', error);
       Alert.alert('Error', 'Failed to remove cover. Please try again.');
