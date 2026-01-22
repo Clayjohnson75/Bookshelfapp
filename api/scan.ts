@@ -284,11 +284,15 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     return [];
   }
   
-  // Remove markdown code blocks
-  if (content.includes('```')) {
-    content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  }
-  content = content.trim();
+  // Remove markdown code blocks more aggressively
+  // Handle both ```json\n...\n``` and ```\n...\n``` formats
+  content = content
+    .replace(/^```json\s*\n?/i, '')  // Remove opening ```json (case insensitive)
+    .replace(/^```\s*\n?/g, '')       // Remove opening ```
+    .replace(/\n?```\s*$/g, '')      // Remove closing ```
+    .replace(/```json\s*\n?/gi, '')  // Remove any ```json in middle
+    .replace(/```\s*\n?/g, '')        // Remove any remaining ```
+    .trim();
   
   // Try to extract JSON array from response
   let parsed: any = null;
@@ -302,17 +306,43 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     }
   } catch {}
   
-  // Second try: find JSON array in content
-  const arrayMatch = content.match(/\[[\s\S]*\]/);
-  if (arrayMatch) {
+  // Second try: find complete JSON array in content (must have closing bracket)
+  const completeArrayMatch = content.match(/\[[\s\S]*\]/);
+  if (completeArrayMatch) {
     try {
-      parsed = JSON.parse(arrayMatch[0]);
+      const arrayStr = completeArrayMatch[0];
+      parsed = JSON.parse(arrayStr);
       if (Array.isArray(parsed)) {
         console.log(`[API] Gemini parsed ${parsed.length} books (extracted from text)`);
         return parsed;
       }
-    } catch (e) {
-      console.error(`[API] Gemini failed to parse extracted JSON:`, e);
+    } catch (e: any) {
+      // If complete array fails, log the error and try partial extraction
+      console.log(`[API] Gemini complete array parse failed: ${e?.message}, array length: ${completeArrayMatch[0].length}, trying partial extraction...`);
+    }
+  } else {
+    console.log(`[API] Gemini: No complete array match found (no closing bracket)`);
+  }
+  
+  // Third try: find incomplete JSON array and try to complete it
+  // Look for array start and extract all complete objects
+  const arrayStart = content.indexOf('[');
+  if (arrayStart !== -1) {
+    const arrayContent = content.substring(arrayStart);
+    // Try to find all complete JSON objects in the array
+    const objectMatches = arrayContent.match(/\{[^}]*"title"[^}]*"author"[^}]*\}/g);
+    if (objectMatches && objectMatches.length > 0) {
+      try {
+        // Reconstruct array from complete objects
+        const reconstructed = '[' + objectMatches.join(',') + ']';
+        parsed = JSON.parse(reconstructed);
+        if (Array.isArray(parsed)) {
+          console.log(`[API] Gemini parsed ${parsed.length} books (reconstructed from partial)`);
+          return parsed;
+        }
+      } catch (e) {
+        console.log(`[API] Gemini reconstruction failed:`, e);
+      }
     }
   }
   

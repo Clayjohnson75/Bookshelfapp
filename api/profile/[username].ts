@@ -2,6 +2,19 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Check URL path directly first to catch static file requests early
+  const url = req.url || '';
+  const pathname = url.split('?')[0]; // Remove query params
+  
+  // Reject static file requests immediately (favicon, robots.txt, etc.)
+  if (pathname.match(/\.(png|ico|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot|webp|avif)$/i) ||
+      pathname.toLowerCase().includes('favicon') ||
+      pathname.toLowerCase().includes('robots') ||
+      pathname.toLowerCase().includes('sitemap') ||
+      pathname.toLowerCase().includes('.well-known')) {
+    return res.status(404).end(); // Silent 404, no body
+  }
+  
   // Add cache control headers to ensure fresh data
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -14,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Reject static file requests (favicon, etc.) that get incorrectly routed
   if (!username || typeof username !== 'string') {
-    return res.status(404).send('Not found');
+    return res.status(404).end(); // Silent 404
   }
   
   const lowerUsername = username.toLowerCase();
@@ -30,12 +43,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const matchesStaticPattern = staticFilePatterns.some(pattern => lowerUsername.includes(pattern));
   
   if (hasFileExtension || matchesStaticPattern) {
-    return res.status(404).send('Not found');
+    return res.status(404).end(); // Silent 404
   }
   
   // Also validate username format (should be alphanumeric + underscore/hyphen, no dots)
   if (!/^[a-z0-9_-]+$/i.test(username)) {
-    return res.status(404).send('Not found');
+    return res.status(404).end(); // Silent 404
   }
 
   try {

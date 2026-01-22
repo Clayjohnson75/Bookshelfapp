@@ -2,6 +2,19 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Check URL path directly first to catch static file requests early
+  const url = req.url || '';
+  const pathname = url.split('?')[0]; // Remove query params
+  
+  // Reject static file requests immediately (favicon, robots.txt, etc.)
+  if (pathname.match(/\.(png|ico|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot|webp|avif)$/i) ||
+      pathname.toLowerCase().includes('favicon') ||
+      pathname.toLowerCase().includes('robots') ||
+      pathname.toLowerCase().includes('sitemap') ||
+      pathname.toLowerCase().includes('.well-known')) {
+    return res.status(404).end(); // Silent 404, no body
+  }
+  
   // Handle POST requests to save settings
   if (req.method === 'POST') {
     const { username } = req.query;
@@ -17,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const matchesStaticPattern = ['favicon', 'robots', 'sitemap', '.well-known'].some(pattern => lowerUsername.includes(pattern));
     
     if (hasFileExtension || matchesStaticPattern || !/^[a-z0-9_-]+$/i.test(username)) {
-      return res.status(404).json({ error: 'Not found' });
+      return res.status(404).end(); // Silent 404
     }
 
     if (!authHeader.startsWith('Bearer ')) {
@@ -140,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Validate username format (reject static file requests)
     if (!username || typeof username !== 'string') {
-      return res.status(404).send('Not found');
+      return res.status(404).end(); // Silent 404
     }
     
     const lowerUsername = username.toLowerCase();
@@ -148,7 +161,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const matchesStaticPattern = ['favicon', 'robots', 'sitemap', '.well-known'].some(pattern => lowerUsername.includes(pattern));
     
     if (hasFileExtension || matchesStaticPattern || !/^[a-z0-9_-]+$/i.test(username)) {
-      return res.status(404).send('Not found');
+      return res.status(404).end(); // Silent 404
     }
 
     // Get user profile by username
