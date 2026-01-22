@@ -79,7 +79,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000); // Increased to 120 seconds for gpt-5 reasoning
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30 seconds - fail fast if OpenAI is slow
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -325,7 +325,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // Reduced to 15s per book since we're batching
+  const timeout = setTimeout(() => controller.abort(), 5000); // 5 seconds per book - fast validation
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -460,21 +460,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
     
-    // Run scans and capture detailed error info
+    // Run scans in parallel - both at the same time
+    // If one fails, just use the other (no waiting, no retries)
+    console.log('[API] Starting OpenAI and Gemini scans in parallel...');
+    
     let openaiError: any = null;
     let geminiError: any = null;
     
+    // Start both scans immediately in parallel
+    const openaiPromise = scanWithOpenAI(imageDataURL).catch((err) => {
+      openaiError = err;
+      console.error('[API] OpenAI scan failed:', err?.message || err);
+      return []; // Return empty array on failure
+    });
+    
+    const geminiPromise = scanWithGemini(imageDataURL).catch((err) => {
+      geminiError = err;
+      console.error('[API] Gemini scan failed:', err?.message || err);
+      return []; // Return empty array on failure
+    });
+    
+    // Wait for both to complete (or fail) - whichever finishes first doesn't block the other
     const [openai, gemini] = await Promise.all([
-      withRetries(() => scanWithOpenAI(imageDataURL), 2, 1200).catch((err) => {
-        openaiError = err;
-        console.error('[API] OpenAI scan failed after retries:', err?.message || err);
-        return [];
-      }),
-      withRetries(() => scanWithGemini(imageDataURL), 2, 1200).catch((err) => {
-        geminiError = err;
-        console.error('[API] Gemini scan failed after retries:', err?.message || err);
-        return [];
-      }),
+      openaiPromise,
+      geminiPromise
     ]);
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
@@ -504,27 +513,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     
     // Validate all detected books with ChatGPT (server-side)
-    // Batch validation to avoid Vercel function timeout (max 10s for hobby, 60s for pro)
+    // Process in small batches to avoid Vercel 300s timeout
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
-    const BATCH_SIZE = 5; // Process 5 books at a time
+    
+    const VALIDATION_BATCH_SIZE = 3; // Small batches
+    const VALIDATION_TIMEOUT_PER_BOOK = 5000; // 5 seconds per book
     const validatedBooks: any[] = [];
     
-    for (let i = 0; i < merged.length; i += BATCH_SIZE) {
-      const batch = merged.slice(i, i + BATCH_SIZE);
-      console.log(`[API] Validating batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(merged.length / BATCH_SIZE)} (${batch.length} books)...`);
+    for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {
+      const batch = merged.slice(i, i + VALIDATION_BATCH_SIZE);
+      const batchNum = Math.floor(i / VALIDATION_BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(merged.length / VALIDATION_BATCH_SIZE);
+      
+      console.log(`[API] Validating batch ${batchNum}/${totalBatches} (${batch.length} books)...`);
       
       const batchResults = await Promise.all(
-        batch.map(book => validateBookWithChatGPT(book).catch(err => {
-          console.warn(`[API] Validation failed for "${book.title}", using original:`, err?.message || err);
-          return book; // Return original book if validation fails
-        }))
+        batch.map(book => {
+          return Promise.race([
+            validateBookWithChatGPT(book),
+            new Promise((resolve) => {
+              setTimeout(() => {
+                console.warn(`[API] Validation timeout for "${book.title}", using original`);
+                resolve(book);
+              }, VALIDATION_TIMEOUT_PER_BOOK);
+            })
+          ]).catch(err => {
+            console.warn(`[API] Validation failed for "${book.title}", using original:`, err?.message || err);
+            return book;
+          });
+        })
       );
       
       validatedBooks.push(...batchResults);
       
-      // Small delay between batches to avoid rate limits
-      if (i + BATCH_SIZE < merged.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+      // Small delay between batches
+      if (i + VALIDATION_BATCH_SIZE < merged.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
     

@@ -1568,7 +1568,10 @@ export const ScansTab: React.FC = () => {
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+      const timeoutId = setTimeout(() => {
+        console.warn('⏱️ Scan request timeout after 2 minutes - server may be slow');
+        controller.abort();
+      }, 120000); // 2 minute timeout - fail faster if server is slow
       
         const resp = await fetch(`${baseUrl}/api/scan`, {
           method: 'POST',
@@ -1674,13 +1677,23 @@ export const ScansTab: React.FC = () => {
       }
     } catch (e: any) {
       const errorMsg = e?.message || String(e);
+      const isAborted = errorMsg.includes('Aborted') || errorMsg.includes('aborted') || e?.name === 'AbortError';
+      
       console.error('❌ Server API request failed:', errorMsg);
       console.error('❌ Error details:', {
         message: errorMsg,
         name: e?.name,
+        isAborted,
         stack: e?.stack?.slice(0, 500),
         baseUrl: baseUrl
       });
+      
+      // If aborted, it's likely a timeout - server took too long
+      if (isAborted) {
+        console.warn('⚠️ Scan request was aborted (likely timeout) - server took too long');
+        // Don't show error alert, just return empty and let fallback handle it
+        return { books: [], fromVercel: false };
+      }
       
       // Check if it's a network error vs other error
       if (errorMsg.includes('Network request failed') || errorMsg.includes('Failed to fetch')) {
