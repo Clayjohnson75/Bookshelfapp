@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { 
   View, 
   Text, 
@@ -78,6 +78,7 @@ interface ScanQueueItem {
 
 export const ScansTab: React.FC = () => {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const { user } = useAuth();
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
   
@@ -87,6 +88,19 @@ export const ScansTab: React.FC = () => {
     });
     return () => subscription?.remove();
   }, []);
+
+  // Hide/show tab bar based on camera state
+  useEffect(() => {
+    if (isCameraActive) {
+      navigation.setOptions({
+        tabBarStyle: { display: 'none' }
+      });
+    } else {
+      navigation.setOptions({
+        tabBarStyle: undefined // Reset to default
+      });
+    }
+  }, [isCameraActive, navigation]);
   
   const screenWidth = dimensions.width || 375; // Fallback to default width
   const screenHeight = dimensions.height || 667; // Fallback to default height
@@ -3026,13 +3040,15 @@ export const ScansTab: React.FC = () => {
         // Store photo URI first before any state changes
         const photoUri = photo.uri;
         
-        // Don't close camera - allow taking multiple photos
-          // Reset caption modal state
-          setShowCaptionModal(false);
-          setCaptionText('');
+        // Close camera automatically after taking photo
+        setIsCameraActive(false);
         
-        // Start scanning immediately (camera stays open for more photos)
-          handleImageSelected(photoUri);
+        // Reset caption modal state
+        setShowCaptionModal(false);
+        setCaptionText('');
+        
+        // Start scanning immediately
+        handleImageSelected(photoUri);
       } else {
         console.error('Photo captured but no URI returned');
         Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
