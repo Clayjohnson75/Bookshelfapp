@@ -73,6 +73,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       endsAt: data.subscription_ends_at
     });
 
+    // 🎛️ FEATURE FLAG: Check if pro is enabled for everyone
+    // Note: This is a server-side API, so we check an environment variable
+    // For now, we'll use a simple check - you can set this via env var if needed
+    const ENABLE_PRO_FOR_EVERYONE = process.env.ENABLE_PRO_FOR_EVERYONE === 'true';
+    
+    if (ENABLE_PRO_FOR_EVERYONE) {
+      return res.status(200).json({ isPro: true });
+    }
+
     // Check if subscription is active and not expired
     let isPro = false;
     if (data.subscription_tier === 'pro' || data.subscription_tier === 'owner') {

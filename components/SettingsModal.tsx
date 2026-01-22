@@ -19,7 +19,7 @@ import { supabase } from '../lib/supabaseClient';
 import * as BiometricAuth from '../services/biometricAuth';
 import { UpgradeModal } from './UpgradeModal';
 import { checkSubscriptionStatus as checkIAPSubscriptionStatus } from '../services/appleIAPService';
-import { checkSubscriptionStatus } from '../services/subscriptionService';
+import { checkSubscriptionStatus, isSubscriptionUIHidden } from '../services/subscriptionService';
 
 // Safe import for LocalAuthentication
 let LocalAuthentication: any = null;
@@ -544,7 +544,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
               </View>
             </View>
 
-            {subscriptionTier === 'free' && (
+            {/* 🎛️ FEATURE FLAG: Hide upgrade button when pro is enabled for everyone */}
+            {subscriptionTier === 'free' && !isSubscriptionUIHidden() && (
               <TouchableOpacity
                 style={styles.upgradeButton}
                 onPress={() => setShowUpgradeModal(true)}

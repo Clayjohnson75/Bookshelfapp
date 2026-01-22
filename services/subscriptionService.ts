@@ -6,6 +6,29 @@
 
 import { supabase } from '../lib/supabaseClient';
 
+/**
+ * 🎛️ FEATURE FLAG: Enable Pro Features for Everyone
+ * 
+ * Set to `true` to give all users unlimited scans and pro features.
+ * Set to `false` to use normal subscription checks.
+ * 
+ * When enabled:
+ * - All users get 'pro' tier
+ * - Unlimited scans for everyone
+ * - All pro features unlocked
+ * - Subscription UI is hidden
+ * 
+ * To toggle: Change this single value and rebuild the app.
+ */
+const ENABLE_PRO_FOR_EVERYONE = true; // ⚠️ CHANGE THIS TO false TO RE-ENABLE SUBSCRIPTIONS
+
+/**
+ * Check if subscription UI should be hidden (when pro is enabled for everyone)
+ */
+export function isSubscriptionUIHidden(): boolean {
+  return ENABLE_PRO_FOR_EVERYONE;
+}
+
 export interface ScanUsage {
   subscriptionTier: 'free' | 'pro' | 'owner';
   monthlyScans: number;
@@ -18,6 +41,11 @@ export interface ScanUsage {
  * Check if user can perform a scan
  */
 export async function canUserScan(userId: string): Promise<boolean> {
+  // 🎛️ FEATURE FLAG: If pro enabled for everyone, always allow scans
+  if (ENABLE_PRO_FOR_EVERYONE) {
+    return true;
+  }
+
   if (!supabase) {
     console.warn('Supabase not available, allowing scan');
     return true;
@@ -45,6 +73,17 @@ export async function canUserScan(userId: string): Promise<boolean> {
  * Get user's scan usage information
  */
 export async function getUserScanUsage(userId: string): Promise<ScanUsage | null> {
+  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return unlimited usage
+  if (ENABLE_PRO_FOR_EVERYONE) {
+    return {
+      subscriptionTier: 'pro',
+      monthlyScans: 0,
+      monthlyLimit: null, // null = unlimited
+      scansRemaining: null, // null = unlimited
+      resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
+    };
+  }
+
   if (!supabase) {
     return null;
   }
@@ -115,6 +154,11 @@ export async function incrementScanCount(userId: string): Promise<boolean> {
  * Get user's subscription tier
  */
 export async function getUserSubscriptionTier(userId: string): Promise<'free' | 'pro' | 'owner'> {
+  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return 'pro'
+  if (ENABLE_PRO_FOR_EVERYONE) {
+    return 'pro';
+  }
+
   if (!supabase) {
     return 'free';
   }
@@ -142,6 +186,11 @@ export async function getUserSubscriptionTier(userId: string): Promise<'free' | 
  * Gets the authenticated user and returns their subscription tier
  */
 export async function checkSubscriptionStatus(): Promise<'free' | 'pro'> {
+  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return 'pro'
+  if (ENABLE_PRO_FOR_EVERYONE) {
+    return 'pro';
+  }
+
   if (!supabase) {
     return 'free';
   }

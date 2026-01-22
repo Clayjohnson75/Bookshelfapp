@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { initializeIAP, purchaseProSubscription, restorePurchases, checkSubscriptionStatus as checkIAPStatus } from '../services/appleIAPService';
-import { checkSubscriptionStatus } from '../services/subscriptionService';
+import { checkSubscriptionStatus, isSubscriptionUIHidden } from '../services/subscriptionService';
 import { useAuth } from '../auth/SimpleAuthContext';
 
 interface UpgradeModalProps {
@@ -33,6 +33,18 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const [currentTier, setCurrentTier] = useState<'free' | 'pro'>('free');
   const [products, setProducts] = useState<Array<{ productId: string; title: string; localizedPrice: string }>>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
+
+  // 🎛️ FEATURE FLAG: Hide subscription UI when pro is enabled for everyone
+  if (isSubscriptionUIHidden()) {
+    // If visible prop is true but feature flag is enabled, close immediately
+    if (visible) {
+      // Close the modal immediately
+      setTimeout(() => {
+        onClose();
+      }, 0);
+    }
+    return null; // Don't render anything
+  }
 
   useEffect(() => {
     if (visible && user) {

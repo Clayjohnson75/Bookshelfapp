@@ -138,58 +138,99 @@ export async function initializeIAP(): Promise<IAPProduct[]> {
   try {
     const iap = await getIAPModule();
     if (!iap) {
+      console.error('❌ IAP module not available - check if using development build');
       return [];
     }
 
     // Initialize react-native-iap connection
     if (!isIAPInitialized) {
+      if (typeof iap.initConnection !== 'function') {
+        console.error('❌ initConnection is not a function');
+        throw new Error('IAP module not properly loaded');
+      }
+      try {
       await iap.initConnection();
       isIAPInitialized = true;
+        console.log('✅ IAP connection initialized successfully');
+      } catch (initError: any) {
+        console.error('❌ Failed to initialize IAP connection:', initError);
+        throw new Error(`IAP initialization failed: ${initError?.message || 'Unknown error'}`);
+      }
     }
 
-    // Get products - try different method names for v14 compatibility
+    // ✅ FIX: Use getSubscriptions() for auto-renewable subscriptions (not getProducts)
+    // For react-native-iap v14.7.0, subscriptions use getSubscriptions()
     let products: Product[] = [];
-    let getProductsMethod: any = null;
+    let getSubscriptionsMethod: any = null;
     
-    // Try to find the getProducts method
-    const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getSubscriptions', 'getInAppProducts'];
-    for (const methodName of methodNames) {
-      if (typeof iap[methodName] === 'function') {
-        getProductsMethod = iap[methodName];
-        console.log(`✅ Found ${methodName} method in initializeIAP`);
-        break;
+    // Priority: getSubscriptions first (correct for subscriptions)
+    if (typeof iap.getSubscriptions === 'function') {
+      getSubscriptionsMethod = iap.getSubscriptions;
+      console.log('✅ Using getSubscriptions() for subscription products');
+    } else {
+      // Fallback to other methods if getSubscriptions doesn't exist
+      const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getInAppProducts'];
+      for (const methodName of methodNames) {
+        if (typeof iap[methodName] === 'function') {
+          getSubscriptionsMethod = iap[methodName];
+          console.log(`⚠️ Using fallback ${methodName} method (should use getSubscriptions for subscriptions)`);
+          break;
+        }
       }
     }
     
-    // Also check all function methods
-    if (!getProductsMethod) {
-      const allMethods = Object.keys(iap).filter(k => typeof iap[k] === 'function');
-      const productMethod = allMethods.find(m => 
-        m.toLowerCase().includes('product') || 
-        m.toLowerCase().includes('subscription')
-      );
-      if (productMethod) {
-        getProductsMethod = iap[productMethod];
-        console.log(`✅ Found product method in initializeIAP: ${productMethod}`);
-      }
-    }
-    
-    if (!getProductsMethod) {
-      console.error('❌ getProducts method not found in initializeIAP');
+    if (!getSubscriptionsMethod) {
+      console.error('❌ getSubscriptions/getProducts method not found');
       console.error('Available function methods:', Object.keys(iap).filter(k => typeof iap[k] === 'function').slice(0, 30));
-      throw new Error('getProducts method not available on IAP module');
+      throw new Error('getSubscriptions method not available on IAP module');
     }
     
-    // Try calling with different parameter formats
+    // For react-native-iap v14.7.0, getSubscriptions uses { skus: [...] } format
+    // Try skus first, then productIds as fallback
     try {
-      products = await getProductsMethod({ skus: [PRODUCT_ID] });
+      console.log('🔍 Requesting subscriptions with skus:', PRODUCT_ID);
+      products = await getSubscriptionsMethod({ skus: [PRODUCT_ID] });
     } catch (skuError: any) {
+      console.log('⚠️ getSubscriptions with skus failed, trying productIds...');
       try {
-        products = await getProductsMethod({ productIds: [PRODUCT_ID] });
+        products = await getSubscriptionsMethod({ productIds: [PRODUCT_ID] });
       } catch (productIdError: any) {
-        products = await getProductsMethod([PRODUCT_ID]);
+        console.log('⚠️ getSubscriptions with productIds failed, trying array...');
+        products = await getSubscriptionsMethod([PRODUCT_ID]);
       }
     }
+
+    // 🔍 INSTANT DIAGNOSTIC: Print subscriptions returned from Apple
+    console.log('🔍 ========================================');
+    console.log('🔍 INSTANT DIAGNOSTIC: Subscriptions from Apple');
+    console.log('🔍 ========================================');
+    console.log('🔍 Requested Product ID:', PRODUCT_ID);
+    console.log('🔍 Subscriptions array length:', products.length);
+    if (products.length === 0) {
+      console.log('❌ EMPTY ARRAY - This means:');
+      console.log('   → Product ID mismatch (check:', PRODUCT_ID, ')');
+      console.log('   → Product not available in App Store Connect');
+      console.log('   → Wrong bundle ID');
+      console.log('   → Wrong storefront');
+      console.log('   → Product not in "Ready to Submit" state');
+      console.log('   → Using wrong method (should use getSubscriptions, not getProducts)');
+    } else {
+      console.log('✅ Subscriptions found:');
+      products.forEach((product, index) => {
+        console.log(`   [${index}] Product ID: ${product.productId}`);
+        console.log(`       Title: ${product.title || 'N/A'}`);
+        console.log(`       Price: ${product.localizedPrice || 'N/A'}`);
+        console.log(`       Description: ${product.description?.substring(0, 50) || 'N/A'}...`);
+      });
+      const foundProduct = products.find(p => p.productId === PRODUCT_ID);
+      if (foundProduct) {
+        console.log('✅ Expected product ID found:', PRODUCT_ID);
+      } else {
+        console.log('❌ Expected product ID NOT found:', PRODUCT_ID);
+        console.log('   Found IDs:', products.map(p => p.productId).join(', '));
+      }
+    }
+    console.log('🔍 ========================================');
 
     if (products.length === 0) {
       console.warn('⚠️ No products found. Make sure the product is configured in App Store Connect.');
@@ -205,6 +246,81 @@ export async function initializeIAP(): Promise<IAPProduct[]> {
   } catch (error: any) {
     console.error('Error initializing IAP:', error);
     throw new Error(error?.message || 'Failed to load subscription products');
+  }
+}
+
+/**
+ * Validate that the product is available before purchase
+ * Returns true if product is available, throws error if not
+ */
+export async function validateProductAvailability(): Promise<boolean> {
+  if (isExpoGo) {
+    throw new Error('IAP not available in Expo Go');
+  }
+
+  if (Platform.OS !== 'ios') {
+    throw new Error('IAP only supported on iOS');
+  }
+
+  try {
+    const iap = await getIAPModule();
+    if (!iap) {
+      throw new Error('IAP module not available');
+    }
+
+    // Initialize if not already done
+    if (!isIAPInitialized) {
+      if (typeof iap.initConnection !== 'function') {
+        throw new Error('initConnection is not a function');
+      }
+      await iap.initConnection();
+      isIAPInitialized = true;
+    }
+
+    // ✅ FIX: Use getSubscriptions() for subscriptions
+    let getSubscriptionsMethod: any = null;
+    if (typeof iap.getSubscriptions === 'function') {
+      getSubscriptionsMethod = iap.getSubscriptions;
+    } else {
+      // Fallback
+      const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getInAppProducts'];
+      for (const methodName of methodNames) {
+        if (typeof iap[methodName] === 'function') {
+          getSubscriptionsMethod = iap[methodName];
+          break;
+        }
+      }
+    }
+    
+    if (!getSubscriptionsMethod) {
+      throw new Error('getSubscriptions method not available on IAP module');
+    }
+    
+    // For react-native-iap v14.7.0, getSubscriptions uses { skus: [...] } format
+    let products: Product[] = [];
+    try {
+      products = await getSubscriptionsMethod({ skus: [PRODUCT_ID] });
+    } catch (skuError: any) {
+      try {
+        products = await getSubscriptionsMethod({ productIds: [PRODUCT_ID] });
+      } catch (productIdError: any) {
+        products = await getSubscriptionsMethod([PRODUCT_ID]);
+      }
+    }
+
+    if (products.length === 0) {
+      throw new Error(`Product ${PRODUCT_ID} not found. Ensure it's in "Ready to Submit" state in App Store Connect.`);
+    }
+
+    const foundProduct = products.find(p => p.productId === PRODUCT_ID);
+    if (!foundProduct) {
+      throw new Error(`Product ID mismatch: expected ${PRODUCT_ID} but found ${products.map(p => p.productId).join(', ')}`);
+    }
+
+    return true;
+  } catch (error: any) {
+    console.error('Product validation failed:', error);
+    throw error;
   }
 }
 
@@ -239,8 +355,10 @@ export async function purchaseProSubscription(): Promise<void> {
     console.log('  - initConnection:', typeof iap.initConnection);
     console.log('  - purchaseUpdatedListener:', typeof iap.purchaseUpdatedListener);
     console.log('  - purchaseErrorListener:', typeof iap.purchaseErrorListener);
-    console.log('  - requestPurchase:', typeof iap.requestPurchase);
-    console.log('  - getProducts:', typeof iap.getProducts);
+    console.log('  - requestSubscription:', typeof iap.requestSubscription, '(for subscriptions)');
+    console.log('  - requestPurchase:', typeof iap.requestPurchase, '(fallback)');
+    console.log('  - getSubscriptions:', typeof iap.getSubscriptions, '(for subscriptions)');
+    console.log('  - getProducts:', typeof iap.getProducts, '(fallback)');
     console.log('  - finishTransaction:', typeof iap.finishTransaction);
 
     // Initialize if not already done
@@ -267,59 +385,79 @@ export async function purchaseProSubscription(): Promise<void> {
       }
     }
 
-      // First, verify the product exists
-      console.log('🔍 Getting products...');
+      // ✅ FIX: Use getSubscriptions() for auto-renewable subscriptions
+      console.log('🔍 Getting subscriptions...');
       let products: Product[] = [];
       try {
-        // Try different method names for v14 compatibility
-        // In v14, methods might be: getProducts, getProductsAsync, getAvailablePurchases, etc.
-        let getProductsMethod: any = null;
-        const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getSubscriptions', 'getInAppProducts'];
-        
+        // Priority: getSubscriptions first (correct for subscriptions)
+        let getSubscriptionsMethod: any = null;
+        if (typeof iap.getSubscriptions === 'function') {
+          getSubscriptionsMethod = iap.getSubscriptions;
+          console.log('✅ Using getSubscriptions() for subscription products');
+        } else {
+          // Fallback to other methods if getSubscriptions doesn't exist
+          const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getInAppProducts'];
         for (const methodName of methodNames) {
           if (typeof iap[methodName] === 'function') {
-            getProductsMethod = iap[methodName];
-            console.log(`✅ Found ${methodName} method`);
+              getSubscriptionsMethod = iap[methodName];
+              console.log(`⚠️ Using fallback ${methodName} method (should use getSubscriptions for subscriptions)`);
             break;
           }
-        }
-        
-        // Also check if it's a direct property with different casing
-        if (!getProductsMethod) {
-          const allMethods = Object.keys(iap).filter(k => typeof iap[k] === 'function');
-          const productMethod = allMethods.find(m => 
-            m.toLowerCase().includes('product') || 
-            m.toLowerCase().includes('subscription') ||
-            m.toLowerCase().includes('purchase')
-          );
-          if (productMethod) {
-            getProductsMethod = iap[productMethod];
-            console.log(`✅ Found product method: ${productMethod}`);
           }
         }
         
-        if (!getProductsMethod) {
-          console.error('❌ getProducts method not found');
-          console.error('Available methods with "product" in name:', Object.keys(iap).filter(k => k.toLowerCase().includes('product')));
+        if (!getSubscriptionsMethod) {
+          console.error('❌ getSubscriptions/getProducts method not found');
+          console.error('Available methods with "subscription" in name:', Object.keys(iap).filter(k => k.toLowerCase().includes('subscription')));
           console.error('All available function methods:', Object.keys(iap).filter(k => typeof iap[k] === 'function').slice(0, 30));
-          console.error('All available methods:', Object.keys(iap).slice(0, 30));
-          throw new Error('getProducts method not available on IAP module');
+          throw new Error('getSubscriptions method not available on IAP module');
         }
         
-        // Try calling with different parameter formats
+        // For react-native-iap v14.7.0, getSubscriptions uses { skus: [...] } format
         try {
-          products = await getProductsMethod({ skus: [PRODUCT_ID] });
+          console.log('🔍 Requesting subscriptions with skus:', PRODUCT_ID);
+          products = await getSubscriptionsMethod({ skus: [PRODUCT_ID] });
         } catch (skuError: any) {
-          // Try with productIds instead of skus
-          console.log('⚠️ getProducts with skus failed, trying productIds...');
+          console.log('⚠️ getSubscriptions with skus failed, trying productIds...');
           try {
-            products = await getProductsMethod({ productIds: [PRODUCT_ID] });
+            products = await getSubscriptionsMethod({ productIds: [PRODUCT_ID] });
           } catch (productIdError: any) {
-            // Try with just array
-            console.log('⚠️ getProducts with productIds failed, trying array...');
-            products = await getProductsMethod([PRODUCT_ID]);
+            console.log('⚠️ getSubscriptions with productIds failed, trying array...');
+            products = await getSubscriptionsMethod([PRODUCT_ID]);
           }
         }
+        
+        // 🔍 INSTANT DIAGNOSTIC: Print subscriptions returned from Apple
+        console.log('🔍 ========================================');
+        console.log('🔍 INSTANT DIAGNOSTIC: Subscriptions from Apple');
+        console.log('🔍 ========================================');
+        console.log('🔍 Requested Product ID:', PRODUCT_ID);
+        console.log('🔍 Subscriptions array length:', products.length);
+        if (products.length === 0) {
+          console.log('❌ EMPTY ARRAY - This means:');
+          console.log('   → Product ID mismatch (check:', PRODUCT_ID, ')');
+          console.log('   → Product not available in App Store Connect');
+          console.log('   → Wrong bundle ID');
+          console.log('   → Wrong storefront');
+          console.log('   → Product not in "Ready to Submit" state');
+          console.log('   → Using wrong method (should use getSubscriptions, not getProducts)');
+        } else {
+          console.log('✅ Subscriptions found:');
+          products.forEach((product, index) => {
+            console.log(`   [${index}] Product ID: ${product.productId}`);
+            console.log(`       Title: ${product.title || 'N/A'}`);
+            console.log(`       Price: ${product.localizedPrice || 'N/A'}`);
+            console.log(`       Description: ${product.description?.substring(0, 50) || 'N/A'}...`);
+          });
+          const foundProduct = products.find(p => p.productId === PRODUCT_ID);
+          if (foundProduct) {
+            console.log('✅ Expected product ID found:', PRODUCT_ID);
+          } else {
+            console.log('❌ Expected product ID NOT found:', PRODUCT_ID);
+            console.log('   Found IDs:', products.map(p => p.productId).join(', '));
+          }
+        }
+        console.log('🔍 ========================================');
         console.log('✅ getProducts returned:', products.length, 'products');
     } catch (getProductsError: any) {
       console.error('❌ ERROR in getProducts():', getProductsError);
@@ -332,15 +470,38 @@ export async function purchaseProSubscription(): Promise<void> {
       throw new Error(`getProducts failed: ${getProductsError?.message || 'Unknown error'}`);
     }
     if (products.length === 0) {
-      // Don't show error during app review - Apple tests in sandbox where products should be available
-      // If products are empty, it might be a configuration issue or the product isn't in "Ready to Submit" state
-      console.error('❌ No products found. This may be because:');
-      console.error('  1. Product is not in "Ready to Submit" state in App Store Connect');
-      console.error('  2. Product is not included in the app submission');
-      console.error('  3. Product ID mismatch: expected', PRODUCT_ID);
-      console.error('  4. Paid Apps Agreement not accepted');
+      // 🔍 INSTANT DIAGNOSTIC: Empty products array
+      console.error('🔍 ========================================');
+      console.error('❌ INSTANT DIAGNOSTIC: EMPTY PRODUCTS ARRAY');
+      console.error('🔍 ========================================');
+      console.error('This means one of these issues:');
+      console.error('  1. Product ID mismatch - Expected:', PRODUCT_ID);
+      console.error('  2. Product not available in App Store Connect');
+      console.error('  3. Wrong bundle ID');
+      console.error('  4. Wrong storefront');
+      console.error('  5. Product not in "Ready to Submit" state');
+      console.error('  6. Product not included in app submission');
+      console.error('  7. Paid Apps Agreement not accepted');
+      console.error('  8. Testing in sandbox but not signed in with sandbox account');
+      console.error('  9. Product not yet propagated (wait 5-10 minutes)');
+      console.error('🔍 ========================================');
       throw new Error('Product not available - ensure subscription is in "Ready to Submit" state and included in app submission');
     }
+    
+    // Verify the product ID matches
+    const foundProduct = products.find(p => p.productId === PRODUCT_ID);
+    if (!foundProduct) {
+      console.error('❌ Product ID mismatch!');
+      console.error('  Expected:', PRODUCT_ID);
+      console.error('  Found products:', products.map(p => p.productId));
+      throw new Error(`Product ID mismatch: expected ${PRODUCT_ID} but found ${products.map(p => p.productId).join(', ')}`);
+    }
+    
+    console.log('✅ Product verified:', {
+      productId: foundProduct.productId,
+      title: foundProduct.title,
+      price: foundProduct.localizedPrice,
+    });
 
     // Verify IAP methods exist before using them
     if (typeof iap.purchaseUpdatedListener !== 'function') {
@@ -356,10 +517,11 @@ export async function purchaseProSubscription(): Promise<void> {
       throw new Error('purchaseErrorListener is not a function');
     }
     
-    if (typeof iap.requestPurchase !== 'function') {
-      console.error('❌ requestPurchase is not a function');
+    // ✅ FIX: Use requestSubscription() for subscriptions (not requestPurchase)
+    if (typeof iap.requestSubscription !== 'function' && typeof iap.requestPurchase !== 'function') {
+      console.error('❌ requestSubscription/requestPurchase is not a function');
       Alert.alert('Purchase Error', 'In-app purchase system is not properly initialized. Please restart the app.');
-      throw new Error('requestPurchase is not a function');
+      throw new Error('requestSubscription/requestPurchase method not available');
     }
 
     // Set up purchase listener before making purchase
@@ -480,27 +642,38 @@ export async function purchaseProSubscription(): Promise<void> {
       throw new Error(`purchaseErrorListener setup failed: ${errorListenerError?.message || 'Unknown error'}`);
     }
 
-    // Attempt purchase
+    // ✅ FIX: Attempt purchase using requestSubscription() for subscriptions
     try {
-      console.log('🛒 Requesting purchase for product:', PRODUCT_ID);
-      console.log('🔍 Final check - requestPurchase type:', typeof iap.requestPurchase);
+      console.log('🛒 Requesting subscription purchase for:', PRODUCT_ID);
       
-      if (typeof iap.requestPurchase !== 'function') {
-        console.error('❌ CRITICAL: requestPurchase is not a function!');
+      // Priority: requestSubscription first (correct for subscriptions)
+      let requestMethod: any = null;
+      let methodName = '';
+      
+      if (typeof iap.requestSubscription === 'function') {
+        requestMethod = iap.requestSubscription;
+        methodName = 'requestSubscription';
+        console.log('✅ Using requestSubscription() for subscription purchase');
+      } else if (typeof iap.requestPurchase === 'function') {
+        requestMethod = iap.requestPurchase;
+        methodName = 'requestPurchase';
+        console.log('⚠️ Using requestPurchase() as fallback (should use requestSubscription for subscriptions)');
+      } else {
+        console.error('❌ CRITICAL: requestSubscription/requestPurchase is not a function!');
         console.error('IAP object:', iap);
         console.error('All IAP methods:', Object.keys(iap));
-        throw new Error('requestPurchase method is not available on IAP module');
+        throw new Error('requestSubscription/requestPurchase method is not available on IAP module');
       }
       
-      // react-native-iap v14 may use 'sku' or 'productId' parameter
-      // Try both to be safe
+      // For react-native-iap v14.7.0, requestSubscription uses { sku: ... } format
+      // Try sku first, then productId as fallback
       try {
-        console.log('🛒 Calling requestPurchase with sku:', PRODUCT_ID);
-        await iap.requestPurchase({ sku: PRODUCT_ID });
-        console.log('✅ requestPurchase({ sku }) call completed');
+        console.log(`🛒 Calling ${methodName} with sku:`, PRODUCT_ID);
+        await requestMethod({ sku: PRODUCT_ID });
+        console.log(`✅ ${methodName}({ sku }) call completed`);
       } catch (skuError: any) {
-        console.error('❌ ERROR in requestPurchase({ sku }):', skuError);
-        console.error('❌ requestPurchase sku error details:', {
+        console.error(`❌ ERROR in ${methodName}({ sku }):`, skuError);
+        console.error(`❌ ${methodName} sku error details:`, {
           message: skuError?.message,
           stack: skuError?.stack,
           name: skuError?.name,
@@ -508,13 +681,13 @@ export async function purchaseProSubscription(): Promise<void> {
         });
         // If sku fails, try productId (v14 might use this)
         if (skuError?.message?.includes('sku') || skuError?.code === 'E_DEVELOPER_ERROR') {
-          console.log('⚠️ requestPurchase with sku failed, trying productId...');
+          console.log(`⚠️ ${methodName} with sku failed, trying productId...`);
           try {
-            await iap.requestPurchase({ productId: PRODUCT_ID });
-            console.log('✅ requestPurchase({ productId }) call completed');
+            await requestMethod({ productId: PRODUCT_ID });
+            console.log(`✅ ${methodName}({ productId }) call completed`);
           } catch (productIdError: any) {
-            console.error('❌ ERROR in requestPurchase({ productId }):', productIdError);
-            console.error('❌ requestPurchase productId error details:', {
+            console.error(`❌ ERROR in ${methodName}({ productId }):`, productIdError);
+            console.error(`❌ ${methodName} productId error details:`, {
               message: productIdError?.message,
               stack: productIdError?.stack,
               name: productIdError?.name,
@@ -570,8 +743,9 @@ export async function purchaseProSubscription(): Promise<void> {
       throw error;
     }
     
-    // Show user-friendly error message (no technical details)
+    // Show user-friendly error message with better diagnostics
     let userMessage = 'Unable to complete purchase.';
+    let errorTitle = 'Purchase Unavailable';
     
     // Provide more helpful messages based on error type
     if (error?.message?.includes('timeout')) {
@@ -580,14 +754,35 @@ export async function purchaseProSubscription(): Promise<void> {
       userMessage = 'Network error. Please check your internet connection and try again.';
     } else if (error?.code === 'E_SERVICE_ERROR' || error?.code === 'E_NETWORK_ERROR') {
       userMessage = 'Unable to connect to the App Store. Please check your internet connection and try again.';
-    } else if (error?.code === 'E_ITEM_UNAVAILABLE') {
-      userMessage = 'This subscription is temporarily unavailable. Please try again later.';
+    } else if (error?.code === 'E_ITEM_UNAVAILABLE' || error?.message?.includes('Product not available')) {
+      errorTitle = 'Subscription Unavailable';
+      userMessage = 'This subscription is temporarily unavailable. Please ensure:\n\n• The subscription is approved in App Store Connect\n• You\'re using a development build or TestFlight\n• You\'re signed in with a sandbox account (for testing)';
+    } else if (error?.message?.includes('getProducts failed') || error?.message?.includes('Product not available')) {
+      errorTitle = 'Subscription Not Found';
+      userMessage = 'The subscription product could not be found. Please verify:\n\n• Product ID matches App Store Connect: ' + PRODUCT_ID + '\n• Product is in "Ready to Submit" or "Approved" state\n• Product is included in your app submission';
+    } else if (error?.message?.includes('initConnection failed')) {
+      errorTitle = 'Initialization Error';
+      userMessage = 'Failed to initialize the purchase system. Please:\n\n• Restart the app\n• Ensure you\'re using a development build or TestFlight\n• Check your internet connection';
+    } else if (error?.message?.includes('IAP module not available')) {
+      errorTitle = 'Purchase System Unavailable';
+      userMessage = 'In-app purchases are not available. Please:\n\n• Use a development build or TestFlight (not Expo Go)\n• Test on a physical device (not simulator)\n• Ensure react-native-iap is properly installed';
     } else if (error?.message?.includes('not available')) {
       userMessage = 'In-app purchases are not available right now. Please try again later.';
     }
     
+    // Log detailed error for debugging
+    console.error('📋 Purchase Error Summary:', {
+      title: errorTitle,
+      message: userMessage,
+      errorCode: error?.code,
+      errorMessage: error?.message,
+      productId: PRODUCT_ID,
+      isExpoGo,
+      platform: Platform.OS,
+    });
+    
     Alert.alert(
-      'Purchase Unavailable', 
+      errorTitle, 
       userMessage
     );
     
@@ -658,6 +853,19 @@ export async function restorePurchases(): Promise<boolean> {
  * Check current subscription status
  */
 export async function checkSubscriptionStatus(): Promise<'free' | 'pro'> {
+  // 🎛️ FEATURE FLAG: Check if pro is enabled for everyone
+  // Import the flag from subscriptionService
+  try {
+    const { checkSubscriptionStatus: checkSubStatus } = await import('./subscriptionService');
+    const status = await checkSubStatus();
+    // If subscriptionService returns 'pro' (due to feature flag), return it
+    if (status === 'pro') {
+      return 'pro';
+    }
+  } catch (error) {
+    // If import fails, continue with normal check
+  }
+
   if (isExpoGo || Platform.OS !== 'ios') {
     // Fallback to Supabase check
     return await checkSubscriptionFromSupabase();
@@ -780,6 +988,18 @@ async function updateSubscriptionInSupabase({
  * Check subscription status from Supabase
  */
 async function checkSubscriptionFromSupabase(): Promise<'free' | 'pro'> {
+  // 🎛️ FEATURE FLAG: Check if pro is enabled for everyone
+  try {
+    const { checkSubscriptionStatus: checkSubStatus } = await import('./subscriptionService');
+    const status = await checkSubStatus();
+    // If subscriptionService returns 'pro' (due to feature flag), return it
+    if (status === 'pro') {
+      return 'pro';
+    }
+  } catch (error) {
+    // If import fails, continue with normal check
+  }
+
   if (!supabase) {
     return 'free';
   }
@@ -860,4 +1080,96 @@ async function validateReceiptServerSide(
     console.error('Receipt validation error:', error);
     throw error;
   }
+}
+
+/**
+ * Diagnostic function to check IAP setup and configuration
+ * Use this to debug IAP issues
+ */
+export async function diagnoseIAPSetup(): Promise<{
+  isExpoGo: boolean;
+  platform: string;
+  iapModuleAvailable: boolean;
+  iapInitialized: boolean;
+  productId: string;
+  productsFound: number;
+  productDetails?: IAPProduct[];
+  errors: string[];
+}> {
+  const diagnostics = {
+    isExpoGo,
+    platform: Platform.OS,
+    iapModuleAvailable: false,
+    iapInitialized: false,
+    productId: PRODUCT_ID,
+    productsFound: 0,
+    productDetails: undefined as IAPProduct[] | undefined,
+    errors: [] as string[],
+  };
+
+  try {
+    // Check environment
+    if (isExpoGo) {
+      diagnostics.errors.push('Running in Expo Go - IAP will not work. Use development build or TestFlight.');
+      return diagnostics;
+    }
+
+    if (Platform.OS !== 'ios') {
+      diagnostics.errors.push(`Platform is ${Platform.OS} - IAP only works on iOS`);
+      return diagnostics;
+    }
+
+    // Check IAP module
+    try {
+      const iap = await getIAPModule();
+      if (!iap) {
+        diagnostics.errors.push('IAP module is null - check if react-native-iap is installed and app is rebuilt');
+        return diagnostics;
+      }
+      diagnostics.iapModuleAvailable = true;
+
+      // Check initialization
+      if (isIAPInitialized) {
+        diagnostics.iapInitialized = true;
+      } else {
+        try {
+          if (typeof iap.initConnection === 'function') {
+            await iap.initConnection();
+            isIAPInitialized = true;
+            diagnostics.iapInitialized = true;
+          } else {
+            diagnostics.errors.push('initConnection is not a function on IAP module');
+          }
+        } catch (initError: any) {
+          diagnostics.errors.push(`initConnection failed: ${initError?.message || 'Unknown error'}`);
+        }
+      }
+
+      // Try to get products
+      if (diagnostics.iapInitialized) {
+        try {
+          const products = await initializeIAP();
+          diagnostics.productsFound = products.length;
+          diagnostics.productDetails = products;
+
+          if (products.length === 0) {
+            diagnostics.errors.push(`No products found for ID: ${PRODUCT_ID}. Check App Store Connect configuration.`);
+          } else {
+            const foundProduct = products.find(p => p.productId === PRODUCT_ID);
+            if (!foundProduct) {
+              diagnostics.errors.push(`Product ID mismatch: expected ${PRODUCT_ID} but found ${products.map(p => p.productId).join(', ')}`);
+            }
+          }
+        } catch (productError: any) {
+          diagnostics.errors.push(`Failed to get products: ${productError?.message || 'Unknown error'}`);
+        }
+      }
+    } catch (moduleError: any) {
+      diagnostics.errors.push(`Failed to load IAP module: ${moduleError?.message || 'Unknown error'}`);
+    }
+  } catch (error: any) {
+    diagnostics.errors.push(`Diagnostic error: ${error?.message || 'Unknown error'}`);
+  }
+
+  return diagnostics;
 }

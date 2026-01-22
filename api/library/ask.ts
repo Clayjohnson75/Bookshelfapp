@@ -69,6 +69,13 @@ function supabaseForUser(jwt: string) {
 }
 
 async function requirePro(userId: string, supabase: any): Promise<boolean> {
+  // 🎛️ FEATURE FLAG: Check if pro is enabled for everyone
+  const ENABLE_PRO_FOR_EVERYONE = process.env.ENABLE_PRO_FOR_EVERYONE === 'true';
+  
+  if (ENABLE_PRO_FOR_EVERYONE) {
+    return true;
+  }
+
   try {
     const { data, error } = await supabase
       .from('profiles')

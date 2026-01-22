@@ -39,7 +39,7 @@ import {
   deletePhotoFromSupabase,
   deleteBookFromSupabase,
 } from '../services/supabaseSync';
-import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage } from '../services/subscriptionService';
+import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage, isSubscriptionUIHidden } from '../services/subscriptionService';
 import { ScanLimitBanner, ScanLimitBannerRef } from '../components/ScanLimitBanner';
 import { UpgradeModal } from '../components/UpgradeModal';
 
@@ -162,15 +162,17 @@ export const ScansTab: React.FC = () => {
     if (user) {
       const canScan = await canUserScan(user.uid);
       if (!canScan) {
-        // Limit reached, show upgrade modal
-        Alert.alert(
-          'Scan Limit Reached',
-          'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
-          ]
-        );
+        // Limit reached, show upgrade modal (only if subscription UI is not hidden)
+        if (!isSubscriptionUIHidden()) {
+          Alert.alert(
+            'Scan Limit Reached',
+            'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
+            ]
+          );
+        }
         return;
       }
     }
@@ -1586,13 +1588,16 @@ export const ScansTab: React.FC = () => {
           try {
             const errorData = JSON.parse(errorText);
             if (errorData.error === 'scan_limit_reached') {
-              Alert.alert(
-                'Scan Limit Reached',
-                errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
-                [
-                  { text: 'OK', onPress: () => setShowUpgradeModal(true) }
-                ]
-              );
+              // 🎛️ FEATURE FLAG: Only show upgrade prompt if subscription UI is not hidden
+              if (!isSubscriptionUIHidden()) {
+                Alert.alert(
+                  'Scan Limit Reached',
+                  errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
+                  [
+                    { text: 'OK', onPress: () => setShowUpgradeModal(true) }
+                  ]
+                );
+              }
               // Refresh scan usage
               if (user) {
                 loadScanUsage();
@@ -3272,8 +3277,10 @@ export const ScansTab: React.FC = () => {
                 // Double-check with server to be sure
                 const canScanNow = await canUserScan(user.uid);
                 if (!canScanNow) {
-                  // User is out of scans - show upgrade modal
-                  setShowUpgradeModal(true);
+                  // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
+                  if (!isSubscriptionUIHidden()) {
+                    setShowUpgradeModal(true);
+                  }
                   loadScanUsage();
                   return;
                 }
@@ -3283,7 +3290,10 @@ export const ScansTab: React.FC = () => {
               // If scanUsage not loaded yet, check with server
               const canScanNow = await canUserScan(user.uid);
               if (!canScanNow) {
-                setShowUpgradeModal(true);
+                // 🎛️ FEATURE FLAG: Only show upgrade modal if subscription UI is not hidden
+                if (!isSubscriptionUIHidden()) {
+                  setShowUpgradeModal(true);
+                }
                 loadScanUsage();
                 return;
               }
@@ -3311,8 +3321,10 @@ export const ScansTab: React.FC = () => {
                 // Double-check with server to be sure
                 const canScanNow = await canUserScan(user.uid);
                 if (!canScanNow) {
-                  // User is out of scans - show upgrade modal
-                  setShowUpgradeModal(true);
+                  // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
+                  if (!isSubscriptionUIHidden()) {
+                    setShowUpgradeModal(true);
+                  }
                   loadScanUsage();
                   return;
                 }
