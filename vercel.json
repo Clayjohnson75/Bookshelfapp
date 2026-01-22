@@ -19,7 +19,7 @@
       "destination": "/api/profile"
     },
     {
-      "source": "/:username((?!favicon|robots|sitemap|.*\\.(ico|png|svg|jpg|jpeg|gif|txt|xml|json|css|js|woff|woff2|ttf|eot|webp|avif)$).*)",
+      "source": "/:username",
       "destination": "/api/profile/:username"
     }
   ],
@@ -44,5 +44,3 @@
     }
   ]
 }
-
-
