@@ -12,22 +12,39 @@ function normalize(s?: string) {
 }
 
 function normalizeTitle(title?: string) {
+  if (!title) return '';
   const normalized = normalize(title);
   // Remove "the", "a", "an" from the beginning
-  return normalized.replace(/^(the|a|an)\s+/, '').trim();
+  let cleaned = normalized.replace(/^(the|a|an)\s+/, '').trim();
+  // Remove common prefixes/suffixes that might vary
+  cleaned = cleaned.replace(/^(a|an|the)\s+/i, '');
+  // Remove extra whitespace and normalize
+  return cleaned.replace(/\s+/g, ' ').trim();
 }
 
 function normalizeAuthor(author?: string) {
+  if (!author) return '';
   const normalized = normalize(author);
   // Remove common suffixes
-  return normalized.replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+  let cleaned = normalized.replace(/\s+(jr|sr|iii?|iv)$/i, '').trim();
+  // Handle "and" in author names (e.g., "Hoffman and Casnocha" vs "Reid Hoffman and Ben Casnocha")
+  // For deduplication, we'll use a simpler approach - just normalize the string
+  cleaned = cleaned.replace(/\s+and\s+/gi, ' & ');
+  // Remove extra whitespace
+  return cleaned.replace(/\s+/g, ' ').trim();
 }
 
 function dedupeBooks(books: any[]) {
+  if (!books || books.length === 0) return [];
+  
   const map: Record<string, any> = {};
-  for (const b of books || []) {
+  for (const b of books) {
+    if (!b || !b.title) continue;
     const k = `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
-    if (!map[k]) map[k] = b;
+    // Keep the first one we see, or one with higher confidence
+    if (!map[k] || (b.confidence === 'high' && map[k].confidence !== 'high')) {
+      map[k] = b;
+    }
   }
   const deduped = Object.values(map);
   
@@ -37,18 +54,47 @@ function dedupeBooks(books: any[]) {
     const bookTitle = normalizeTitle(book.title);
     const bookAuthor = normalizeAuthor(book.author);
     
+    if (!bookTitle || bookTitle.length < 2) continue; // Skip invalid books
+    
     let isDuplicate = false;
     for (const existing of final) {
       const existingTitle = normalizeTitle(existing.title);
       const existingAuthor = normalizeAuthor(existing.author);
       
-      // If authors match and titles are very similar (one contains the other)
-      if (bookAuthor === existingAuthor && bookAuthor && bookAuthor !== 'unknown' && bookAuthor !== 'unknown author') {
-        if (bookTitle.length > 3 && existingTitle.length > 3) {
-          if (bookTitle.includes(existingTitle) || existingTitle.includes(bookTitle)) {
-            isDuplicate = true;
-            break;
+      // Exact match on normalized title and author
+      if (bookTitle === existingTitle && bookAuthor === existingAuthor) {
+        isDuplicate = true;
+        break;
+      }
+      
+      // If authors match (or both are empty/unknown) and titles are very similar
+      const authorsMatch = bookAuthor === existingAuthor || 
+                          (!bookAuthor && !existingAuthor) ||
+                          (bookAuthor && existingAuthor && (
+                            bookAuthor === existingAuthor ||
+                            bookAuthor.includes(existingAuthor) ||
+                            existingAuthor.includes(bookAuthor)
+                          ));
+      
+      if (authorsMatch && bookTitle.length > 3 && existingTitle.length > 3) {
+        // Check if titles are very similar (one contains the other, or they're almost identical)
+        const titleSimilarity = bookTitle.includes(existingTitle) || 
+                               existingTitle.includes(bookTitle) ||
+                               // Check if they're the same after removing common words
+                               bookTitle.replace(/\b(the|a|an|of|in|on|at|to|for)\b/g, '') === 
+                               existingTitle.replace(/\b(the|a|an|of|in|on|at|to|for)\b/g, '');
+        
+        if (titleSimilarity) {
+          isDuplicate = true;
+          // Keep the one with higher confidence or more complete author
+          if (book.confidence === 'high' && existing.confidence !== 'high') {
+            // Replace existing with this one
+            const index = final.indexOf(existing);
+            if (index !== -1) {
+              final[index] = book;
+            }
           }
+          break;
         }
       }
     }
@@ -560,9 +606,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
+    const totalBeforeDedup = openaiCount + geminiCount;
     const merged = dedupeBooks([...(openai || []), ...(gemini || [])]);
     
-    console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
+    console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Total=${totalBeforeDedup}, Merged=${merged.length} unique (removed ${totalBeforeDedup - merged.length} duplicates)`);
     
     // Return API status for debugging
     const apiResults = {
@@ -640,10 +687,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return !isInvalid;
     });
     
-    console.log(`[API] Filtered ${validatedBooks.length - validBooks.length} invalid books, returning ${validBooks.length} valid books`);
+    console.log(`[API] Filtered ${validatedBooks.length - validBooks.length} invalid books, ${validBooks.length} valid books before deduplication`);
+    
+    // Deduplicate again AFTER validation (validation might have normalized titles/authors differently)
+    const finalBooks = dedupeBooks(validBooks);
+    
+    console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
     return res.status(200).json({ 
-      books: validBooks, // Only return valid books
+      books: finalBooks, // Only return deduplicated valid books
       apiResults // Include API status for debugging (already defined above with error info)
     });
   } catch (e: any) {
