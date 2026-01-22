@@ -228,13 +228,16 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
           {
             parts: [
               {
-                text: `Scan book spines and return only JSON array: [{"title":"...","author":"...","confidence":"high|medium|low"}] no explanations.`,
+                text: `Scan book spines in this image and return ONLY a JSON array. No explanations, no reasoning, no markdown. Just the raw JSON array: [{"title":"...","author":"...","confidence":"high|medium|low"}]. Be concise and direct.`,
               },
               { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
             ],
           },
         ],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 6000 },
+        generationConfig: { 
+          temperature: 0.1, 
+          maxOutputTokens: 8000, // Increased to ensure we get output even if some tokens used for reasoning
+        },
       }),
     }
   );
@@ -271,6 +274,20 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     content = data.text;
   }
   
+  // Check if content object exists but is empty (Gemini used all tokens for reasoning)
+  if (!content && data.candidates?.[0]?.content) {
+    const contentObj = data.candidates[0].content;
+    // Try to extract from nested structures
+    if (contentObj.parts && Array.isArray(contentObj.parts)) {
+      for (const part of contentObj.parts) {
+        if (part.text) {
+          content = part.text;
+          break;
+        }
+      }
+    }
+  }
+  
   content = content.trim();
   
   console.log(`[API] Gemini raw response length: ${content.length} chars`);
@@ -279,6 +296,13 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   }
   
   if (!content) {
+    // Check if Gemini used all tokens for reasoning (thoughtsTokenCount > 0 but no output)
+    const usageMetadata = data.usageMetadata;
+    if (usageMetadata?.thoughtsTokenCount && usageMetadata.thoughtsTokenCount > 0) {
+      console.error(`[API] Gemini used ${usageMetadata.thoughtsTokenCount} tokens for reasoning but produced no output`);
+      console.error(`[API] Total tokens: ${usageMetadata.totalTokenCount}, Output tokens: ${usageMetadata.totalTokenCount - usageMetadata.thoughtsTokenCount}`);
+      console.error(`[API] This suggests the model needs more maxOutputTokens or a more direct prompt`);
+    }
     console.error(`[API] Gemini returned empty content. Full response keys:`, Object.keys(data));
     console.error(`[API] Full response:`, JSON.stringify(data, null, 2).substring(0, 1000));
     return [];
