@@ -425,7 +425,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeoutMs = 20000; // 20 seconds per book - give it more time
+  const timeoutMs = 35000; // 35 seconds per book - increased to reduce timeouts
   const timeout = setTimeout(() => {
     console.log(`[API] AbortController timeout triggered for "${book.title}" after ${timeoutMs}ms`);
     controller.abort();
@@ -449,34 +449,48 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
 
 DETECTED BOOK:
 Title: "${book.title}"
-Author: "${book.author}"
+Author: "${book.author || '(no author)'}"
 Confidence: ${book.confidence}
 
-TASK: Analyze this book and determine if it's a real book. If it is, correct any OCR errors and return the proper title and author.
+TASK: Determine if this is a real book. Be LENIENT - only mark as invalid if it's clearly junk (random words, obvious OCR garbage, not a real book title). If it's a real book (even with partial info), keep it and correct any obvious errors.
 
-RULES:
-1. If the title and author are swapped, fix them
-2. Fix obvious OCR errors (e.g., "owmen" → "women")
-3. Clean up titles (remove publisher prefixes, series numbers)
-4. Validate that the author looks like a real person's name
-5. If it's not a real book, mark it as invalid
+IMPORTANT RULES - BE LENIENT:
+1. Books WITHOUT authors are VALID if the title is distinctive (e.g., "Fallingwater", "The Revolution", "Villareal")
+2. Partial titles are VALID (e.g., "The Revolution" might be "Hamilton: The Revolution" - that's fine, keep it)
+3. Only mark as INVALID if it's clearly not a real book (random words, obvious garbage, nonsensical titles)
+4. If title and author are swapped, fix them
+5. Fix obvious OCR errors (e.g., "owmen" → "women")
+6. Clean up titles (remove publisher prefixes, series numbers) but keep the core title
 
 CRITICAL: You MUST respond with ONLY valid JSON. No explanations, no markdown, no code blocks. Just the raw JSON object.
 
 RETURN FORMAT (JSON ONLY, NO OTHER TEXT):
-{"isValid": true, "title": "Corrected Title", "author": "Corrected Author Name", "confidence": "high", "reason": "Brief explanation"}
+{"isValid": true, "title": "Corrected Title", "author": "Corrected Author Name or null", "confidence": "high", "reason": "Brief explanation"}
 
-EXAMPLES:
+EXAMPLES OF VALID BOOKS (KEEP THESE):
+Input: Title="The Revolution", Author="Hamilton"
+Output: {"isValid": true, "title": "Hamilton: The Revolution", "author": "Lin-Manuel Miranda", "confidence": "high", "reason": "Real book, expanded title"}
+
+Input: Title="Fallingwater", Author=""
+Output: {"isValid": true, "title": "Fallingwater", "author": null, "confidence": "high", "reason": "Real book about famous building, author not required"}
+
+Input: Title="Villareal", Author=""
+Output: {"isValid": true, "title": "Villareal", "author": null, "confidence": "medium", "reason": "Could be real book, keep it"}
+
 Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
 Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
 
+EXAMPLES OF INVALID BOOKS (REJECT THESE):
 Input: Title="controlling owmen", Author="Unknown"
-Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book"}
+Output: {"isValid": false, "title": "controlling owmen", "author": "Unknown", "confidence": "low", "reason": "Not a real book, random words"}
 
-Input: Title="The Great Gatsby", Author="F. Scott Fitzgerald"
-Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "confidence": "high", "reason": "Already correct"}
+Input: Title="Kaufmann's", Author=""
+Output: {"isValid": false, "title": "Kaufmann's", "author": "", "confidence": "low", "reason": "Not a book title, appears to be store name"}
 
-Remember: Respond with ONLY the JSON object, nothing else.`,
+Input: Title="Friendship", Author=""
+Output: {"isValid": false, "title": "Friendship", "author": "", "confidence": "low", "reason": "Too generic, not a distinctive book title"}
+
+Remember: When in doubt, KEEP IT. Only reject if clearly not a real book. Respond with ONLY the JSON object, nothing else.`,
           },
         ],
         max_tokens: 500,
@@ -513,19 +527,21 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
 
     if (analysis.isValid) {
       // Valid book - return corrected version
+      // Preserve null/empty authors if validation returns null
+      const correctedAuthor = analysis.author === null || analysis.author === '' ? null : (analysis.author || book.author);
       return {
         ...book,
-        title: analysis.title,
-        author: analysis.author,
-        confidence: analysis.confidence,
+        title: analysis.title || book.title,
+        author: correctedAuthor,
+        confidence: analysis.confidence || book.confidence,
       };
     } else {
       // Invalid book - mark as invalid so it can be filtered out
-      console.log(`[API] Validation marked book as INVALID: "${book.title}" by ${book.author} - Reason: ${analysis.reason}`);
+      console.log(`[API] Validation marked book as INVALID: "${book.title}" by ${book.author || 'no author'} - Reason: ${analysis.reason}`);
       return {
         ...book,
-        title: analysis.title,
-        author: analysis.author,
+        title: analysis.title || book.title,
+        author: analysis.author || book.author,
         confidence: 'invalid', // Mark as invalid
         isValid: false,
         chatgptReason: analysis.reason,
@@ -637,7 +653,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
     
     const VALIDATION_BATCH_SIZE = 5; // Larger batches since using faster model
-    const VALIDATION_TIMEOUT_PER_BOOK = 25000; // 25 seconds per book - increased to reduce timeouts
+    const VALIDATION_TIMEOUT_PER_BOOK = 40000; // 40 seconds per book - increased to reduce timeouts (matches AbortController + buffer)
     const validatedBooks: any[] = [];
     
     for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {
@@ -654,7 +670,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             validateBookWithChatGPT(book),
             new Promise((resolve) => {
               setTimeout(() => {
-                console.warn(`[API] Validation timeout for "${book.title}", using original (Promise.race timeout)`);
+                console.warn(`[API] Validation timeout for "${book.title}", using original (validation took >${VALIDATION_TIMEOUT_PER_BOOK/1000}s)`);
                 resolve(book);
               }, VALIDATION_TIMEOUT_PER_BOOK);
             })
