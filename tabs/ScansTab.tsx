@@ -164,14 +164,14 @@ export const ScansTab: React.FC = () => {
       if (!canScan) {
         // Limit reached, show upgrade modal (only if subscription UI is not hidden)
         if (!isSubscriptionUIHidden()) {
-          Alert.alert(
-            'Scan Limit Reached',
-            'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
-            ]
-          );
+        Alert.alert(
+          'Scan Limit Reached',
+          'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
+          ]
+        );
         }
         return;
       }
@@ -1356,11 +1356,20 @@ export const ScansTab: React.FC = () => {
               )
             );
             
-            // Save to Supabase immediately if description or stats were fetched
-            if (user && (updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
-              saveBookToSupabase(user.uid, { ...book, ...updatedBook }, book.status || 'approved')
+            // Save to Supabase immediately if cover, description, or stats were fetched
+            if (user && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
+              const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
+              console.log(`💾 Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
+              saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
+                .then(success => {
+                  if (success) {
+                    console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
+                  } else {
+                    console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
+                  }
+                })
                 .catch(error => {
-                  console.error(`Error saving book data to Supabase for ${book.title}:`, error);
+                  console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
                 });
             }
           }
@@ -1615,13 +1624,13 @@ export const ScansTab: React.FC = () => {
             if (errorData.error === 'scan_limit_reached') {
               // 🎛️ FEATURE FLAG: Only show upgrade prompt if subscription UI is not hidden
               if (!isSubscriptionUIHidden()) {
-                Alert.alert(
-                  'Scan Limit Reached',
-                  errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
-                  [
-                    { text: 'OK', onPress: () => setShowUpgradeModal(true) }
-                  ]
-                );
+              Alert.alert(
+                'Scan Limit Reached',
+                errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
+                [
+                  { text: 'OK', onPress: () => setShowUpgradeModal(true) }
+                ]
+              );
               }
               // Refresh scan usage
               if (user) {
@@ -3304,7 +3313,7 @@ export const ScansTab: React.FC = () => {
                 if (!canScanNow) {
                   // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
                   if (!isSubscriptionUIHidden()) {
-                    setShowUpgradeModal(true);
+                  setShowUpgradeModal(true);
                   }
                   loadScanUsage();
                   return;
@@ -3317,7 +3326,7 @@ export const ScansTab: React.FC = () => {
               if (!canScanNow) {
                 // 🎛️ FEATURE FLAG: Only show upgrade modal if subscription UI is not hidden
                 if (!isSubscriptionUIHidden()) {
-                  setShowUpgradeModal(true);
+                setShowUpgradeModal(true);
                 }
                 loadScanUsage();
                 return;
@@ -3348,7 +3357,7 @@ export const ScansTab: React.FC = () => {
                 if (!canScanNow) {
                   // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
                   if (!isSubscriptionUIHidden()) {
-                    setShowUpgradeModal(true);
+                  setShowUpgradeModal(true);
                   }
                   loadScanUsage();
                   return;

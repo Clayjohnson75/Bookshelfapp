@@ -583,7 +583,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                   console.error('⚠️ API returned non-JSON response:', text.substring(0, 200));
                   throw new Error('Server returned invalid response. Please try again.');
                 }
-                console.log('API response data:', data);
+                  console.log('API response data:', data);
                 if (data.email) {
                   email = data.email;
                   // Cache the mapping for future use
@@ -597,9 +597,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                   const errorText = await response.text();
                   let errorData;
                   if (isJson) {
-                    try {
-                      errorData = JSON.parse(errorText);
-                    } catch {
+                  try {
+                    errorData = JSON.parse(errorText);
+                  } catch {
                       errorData = { message: 'Username not found' };
                     }
                   } else {
@@ -615,10 +615,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                   console.error('API error response:', errorText.substring(0, 200));
                   let errorData;
                   if (isJson) {
-                    try {
-                      errorData = JSON.parse(errorText);
-                    } catch {
-                      errorData = { message: errorText || 'API call failed' };
+                  try {
+                    errorData = JSON.parse(errorText);
+                  } catch {
+                    errorData = { message: errorText || 'API call failed' };
                     }
                   } else {
                     // HTML error page or other non-JSON response

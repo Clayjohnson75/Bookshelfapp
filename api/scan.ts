@@ -79,7 +79,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
+  const timeout = setTimeout(() => controller.abort(), 120000); // Increased to 120 seconds for gpt-5 reasoning
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -325,7 +325,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 15000); // Reduced to 15s per book since we're batching
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -504,10 +504,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     
     // Validate all detected books with ChatGPT (server-side)
+    // Batch validation to avoid Vercel function timeout (max 10s for hobby, 60s for pro)
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
-    const validatedBooks = await Promise.all(
-      merged.map(book => validateBookWithChatGPT(book))
-    );
+    const BATCH_SIZE = 5; // Process 5 books at a time
+    const validatedBooks: any[] = [];
+    
+    for (let i = 0; i < merged.length; i += BATCH_SIZE) {
+      const batch = merged.slice(i, i + BATCH_SIZE);
+      console.log(`[API] Validating batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(merged.length / BATCH_SIZE)} (${batch.length} books)...`);
+      
+      const batchResults = await Promise.all(
+        batch.map(book => validateBookWithChatGPT(book).catch(err => {
+          console.warn(`[API] Validation failed for "${book.title}", using original:`, err?.message || err);
+          return book; // Return original book if validation fails
+        }))
+      );
+      
+      validatedBooks.push(...batchResults);
+      
+      // Small delay between batches to avoid rate limits
+      if (i + BATCH_SIZE < merged.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
     
     console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
     
