@@ -51,5 +51,19 @@ export const supabase = SUPABASE_URL && SUPABASE_ANON
         persistSession: true,
         detectSessionInUrl: false,
       },
+      // Add timeout for network requests (especially important in Expo Go)
+      global: {
+        fetch: (url, options = {}) => {
+          return fetch(url, {
+            ...options,
+            // Increase timeout for slow networks (Expo Go)
+            signal: options.signal || (() => {
+              const controller = new AbortController();
+              setTimeout(() => controller.abort(), 15000); // 15 second timeout
+              return controller.signal;
+            })(),
+          });
+        },
+      },
     })
   : null as any; // Will be handled by auth code checking for null

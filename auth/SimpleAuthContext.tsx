@@ -261,10 +261,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
         
         try {
-          // Add timeout to getSession call
+          // Add timeout to getSession call - longer timeout for Expo Go (network can be slow)
+          const isExpoGo = Constants.appOwnership === 'expo';
+          const timeoutDuration = isExpoGo ? 10000 : 3000; // 10 seconds for Expo Go, 3 for builds
+          
           const sessionPromise = supabase.auth.getSession();
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Session timeout')), 3000)
+            setTimeout(() => reject(new Error('Session timeout')), timeoutDuration)
           );
           
           const { data, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
@@ -567,9 +570,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 
                 console.log('API response status:', response.status, response.statusText);
               
+              // Check content type before parsing
+              const contentType = response.headers.get('content-type') || '';
+              const isJson = contentType.includes('application/json');
+              
               if (response.ok) {
-                const data = await response.json();
-                  console.log('API response data:', data);
+                let data;
+                if (isJson) {
+                  data = await response.json();
+                } else {
+                  const text = await response.text();
+                  console.error('⚠️ API returned non-JSON response:', text.substring(0, 200));
+                  throw new Error('Server returned invalid response. Please try again.');
+                }
+                console.log('API response data:', data);
                 if (data.email) {
                   email = data.email;
                   // Cache the mapping for future use
@@ -582,10 +596,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                   // Username doesn't exist - this is a valid response, not a connection error
                   const errorText = await response.text();
                   let errorData;
-                  try {
-                    errorData = JSON.parse(errorText);
-                  } catch {
-                    errorData = { message: errorText || 'Username not found' };
+                  if (isJson) {
+                    try {
+                      errorData = JSON.parse(errorText);
+                    } catch {
+                      errorData = { message: 'Username not found' };
+                    }
+                  } else {
+                    errorData = { message: 'Username not found' };
                   }
                   // Show user-friendly error and return false (don't try cached email for non-existent username)
                   setLoading(false);
@@ -594,12 +612,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
               } else {
                   // Other errors (500, etc.) - treat as connection/server error
                   const errorText = await response.text();
-                  console.error('API error response:', errorText);
+                  console.error('API error response:', errorText.substring(0, 200));
                   let errorData;
-                  try {
-                    errorData = JSON.parse(errorText);
-                  } catch {
-                    errorData = { message: errorText || 'API call failed' };
+                  if (isJson) {
+                    try {
+                      errorData = JSON.parse(errorText);
+                    } catch {
+                      errorData = { message: errorText || 'API call failed' };
+                    }
+                  } else {
+                    // HTML error page or other non-JSON response
+                    errorData = { message: `Server error (${response.status}). Please try again later.` };
                   }
                   throw new Error(errorData.message || errorData.error || `API returned ${response.status}`);
               }

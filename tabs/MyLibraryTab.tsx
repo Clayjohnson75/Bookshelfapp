@@ -3300,7 +3300,7 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     marginBottom: 12,
   },
   bookCard: {
-    width: (screenWidth - 94) / 4, // 4 columns with padding and gaps (8px gap between each)
+    width: (screenWidth - 96) / 4, // 4 columns with padding and gaps (8px gap between each) - reduced by 2px to fix tiny cutoff
     alignItems: 'center',
     marginBottom: 12,
     marginHorizontal: 4,
