@@ -325,7 +325,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000); // 10 seconds per book
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15 seconds per book - gpt-4o-mini can be slow sometimes
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -374,7 +374,8 @@ Output: {"isValid": true, "title": "The Great Gatsby", "author": "F. Scott Fitzg
 Remember: Respond with ONLY the JSON object, nothing else.`,
           },
         ],
-        max_completion_tokens: 500,
+        max_tokens: 500,
+        temperature: 0.1, // Lower temperature = more consistent
       }),
     });
 
@@ -402,6 +403,7 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
     }
 
     if (analysis.isValid) {
+      // Valid book - return corrected version
       return {
         ...book,
         title: analysis.title,
@@ -409,11 +411,14 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
         confidence: analysis.confidence,
       };
     } else {
+      // Invalid book - mark as invalid so it can be filtered out
+      console.log(`[API] Validation marked book as INVALID: "${book.title}" by ${book.author} - Reason: ${analysis.reason}`);
       return {
         ...book,
         title: analysis.title,
         author: analysis.author,
-        confidence: 'low',
+        confidence: 'invalid', // Mark as invalid
+        isValid: false,
         chatgptReason: analysis.reason,
       };
     }
@@ -517,7 +522,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
     
     const VALIDATION_BATCH_SIZE = 5; // Larger batches since using faster model
-    const VALIDATION_TIMEOUT_PER_BOOK = 10000; // 10 seconds per book
+    const VALIDATION_TIMEOUT_PER_BOOK = 15000; // 15 seconds per book - match the function timeout
     const validatedBooks: any[] = [];
     
     for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {
@@ -554,8 +559,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
     
+    // Filter out invalid books (marked as invalid by validation)
+    const validBooks = validatedBooks.filter(book => {
+      const isInvalid = book.confidence === 'invalid' || book.isValid === false;
+      if (isInvalid) {
+        console.log(`[API] Filtering out invalid book: "${book.title}" by ${book.author}`);
+      }
+      return !isInvalid;
+    });
+    
+    console.log(`[API] Filtered ${validatedBooks.length - validBooks.length} invalid books, returning ${validBooks.length} valid books`);
+    
     return res.status(200).json({ 
-      books: validatedBooks,
+      books: validBooks, // Only return valid books
       apiResults // Include API status for debugging (already defined above with error info)
     });
   } catch (e: any) {
