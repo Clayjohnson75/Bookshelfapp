@@ -1804,10 +1804,13 @@ export const ScansTab: React.FC = () => {
       
       if (detectedBooks.length === 0) {
         console.error('❌ WARNING: No books detected from scan!');
+        console.error('   Scan result:', JSON.stringify(scanResult, null, 2));
         console.error('   Possible causes:');
         console.error('   1. API keys not configured (check logs above)');
         console.error('   2. Image quality too low or no books visible');
         console.error('   3. API errors (check network/status)');
+        console.error('   4. Validation filtered out all books as invalid');
+        console.error('   5. Both OpenAI and Gemini returned 0 books');
       }
       
       updateProgress({ currentStep: 4, totalScans: totalScans });

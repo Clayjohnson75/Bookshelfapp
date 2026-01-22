@@ -142,8 +142,15 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
             content: [
               {
                 type: 'text',
-                text: `Scan this image and return ALL visible book spines as JSON.
-Return only an array of objects: [{"title":"...","author":"...","confidence":"high|medium|low"}] with no extra text.`,
+                text: `Scan this image and return ALL visible book spines as JSON array.
+
+CRITICAL RULES:
+- TITLE is the book name (usually larger text, on the spine)
+- AUTHOR is the person's name who wrote it (usually smaller text, below or above title)
+- DO NOT swap title and author - titles are book names, authors are people's names
+- If you see "John Smith" and "The Great Novel", "John Smith" is the AUTHOR, "The Great Novel" is the TITLE
+
+Return ONLY a JSON array: [{"title":"Book Title Here","author":"Author Name Here","confidence":"high|medium|low"}] with no extra text, no markdown, no explanations.`,
               },
               { type: 'image_url', image_url: { url: imageDataURL } },
             ],
@@ -274,7 +281,15 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
           {
             parts: [
               {
-                text: `Scan book spines in this image and return ONLY a JSON array. No explanations, no reasoning, no markdown. Just the raw JSON array: [{"title":"...","author":"...","confidence":"high|medium|low"}]. Be concise and direct.`,
+                text: `Scan book spines in this image and return ONLY a JSON array.
+
+CRITICAL RULES:
+- TITLE is the book name (usually larger text on spine)
+- AUTHOR is the person's name who wrote it (usually smaller text)
+- DO NOT swap title and author - titles are book names, authors are people's names
+- If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE
+
+Return ONLY raw JSON array: [{"title":"Book Title","author":"Author Name","confidence":"high|medium|low"}]. No explanations, no markdown, no extra text.`,
               },
               { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
             ],
@@ -458,7 +473,9 @@ IMPORTANT RULES - BE LENIENT:
 1. Books WITHOUT authors are VALID if the title is distinctive (e.g., "Fallingwater", "The Revolution", "Villareal")
 2. Partial titles are VALID (e.g., "The Revolution" might be "Hamilton: The Revolution" - that's fine, keep it)
 3. Only mark as INVALID if it's clearly not a real book (random words, obvious garbage, nonsensical titles)
-4. If title and author are swapped, fix them
+4. CRITICAL: If title and author are swapped, ALWAYS fix them. Titles are book names, authors are people's names.
+   - If "title" looks like a person's name (e.g., "John Smith", "Diana Gabaldon") and "author" looks like a book title, SWAP THEM
+   - If "author" is clearly a book title (e.g., "The Great Gatsby", "Dragonfly in Amber") and "title" is a person's name, SWAP THEM
 5. Fix obvious OCR errors (e.g., "owmen" → "women")
 6. Clean up titles (remove publisher prefixes, series numbers) but keep the core title
 
@@ -478,7 +495,10 @@ Input: Title="Villareal", Author=""
 Output: {"isValid": true, "title": "Villareal", "author": null, "confidence": "medium", "reason": "Could be real book, keep it"}
 
 Input: Title="Diana Gabaldon", Author="Dragonfly in Amber"
-Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author"}
+Output: {"isValid": true, "title": "Dragonfly in Amber", "author": "Diana Gabaldon", "confidence": "high", "reason": "Swapped title and author - Diana Gabaldon is author, Dragonfly in Amber is title"}
+
+Input: Title="John Smith", Author="The Great Novel"
+Output: {"isValid": true, "title": "The Great Novel", "author": "John Smith", "confidence": "high", "reason": "Swapped title and author - John Smith is author, The Great Novel is title"}
 
 EXAMPLES OF INVALID BOOKS (REJECT THESE):
 Input: Title="controlling owmen", Author="Unknown"
@@ -623,7 +643,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
     const totalBeforeDedup = openaiCount + geminiCount;
-    const merged = dedupeBooks([...(openai || []), ...(gemini || [])]);
+    
+    // Fix title/author swaps before deduplication
+    const fixSwappedBooks = (books: any[]) => {
+      return books.map(book => {
+        const title = book.title?.trim() || '';
+        const author = book.author?.trim() || '';
+        
+        // Heuristic: If title looks like a person's name and author looks like a book title, swap them
+        // Person names typically: 2-3 words, capitalized, may have initials
+        // Book titles typically: longer, may have "The", "A", "An", etc.
+        const titleLooksLikeName = title && (
+          /^[A-Z][a-z]+ [A-Z][a-z]+/.test(title) || // "John Smith" format
+          /^[A-Z]\. [A-Z][a-z]+/.test(title) || // "J. Smith" format
+          /^[A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+/.test(title) // "John A. Smith" format
+        ) && title.split(' ').length <= 4; // Names are usually 2-4 words
+        
+        const authorLooksLikeTitle = author && (
+          author.toLowerCase().startsWith('the ') ||
+          author.toLowerCase().startsWith('a ') ||
+          author.toLowerCase().startsWith('an ') ||
+          author.length > 20 || // Titles are usually longer
+          author.split(' ').length > 4 // Titles usually have more words
+        );
+        
+        if (titleLooksLikeName && authorLooksLikeTitle) {
+          console.log(`🔄 Auto-fixing swapped title/author: "${title}" (title) ↔ "${author}" (author)`);
+          return {
+            ...book,
+            title: author,
+            author: title,
+          };
+        }
+        
+        return book;
+      });
+    };
+    
+    const fixedOpenAI = fixSwappedBooks(openai || []);
+    const fixedGemini = fixSwappedBooks(gemini || []);
+    const merged = dedupeBooks([...fixedOpenAI, ...fixedGemini]);
     
     console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Total=${totalBeforeDedup}, Merged=${merged.length} unique (removed ${totalBeforeDedup - merged.length} duplicates)`);
     

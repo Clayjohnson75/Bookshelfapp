@@ -682,21 +682,27 @@ export async function saveBookToSupabase(
         const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
                             (updateError as any)?.name === 'AbortError' || 
                             (updateError as any)?.constructor?.name === 'AbortError';
-        const isHtmlError = typeof errorMessage === 'string' && errorMessage.trim().startsWith('<!DOCTYPE');
+        // Check for HTML error pages (Supabase service issues)
+        const isHtmlError = typeof errorMessage === 'string' && (
+          errorMessage.trim().startsWith('<!DOCTYPE') ||
+          errorMessage.trim().startsWith('<html') ||
+          errorMessage.includes('Cloudflare') ||
+          errorMessage.includes('502 Bad Gateway') ||
+          errorMessage.includes('503 Service Unavailable') ||
+          errorMessage.includes('504 Gateway Timeout')
+        );
         const isDateRangeError = typeof errorMessage === 'string' && errorMessage.includes('date/time field value out of range');
         
         if (isAbortError) {
           console.warn('⚠️ Book update aborted (likely timeout or network issue):', book.title);
           console.warn('   This is usually temporary - the book may sync on next attempt');
-          // Don't return false immediately - this might be a transient network issue
-          // The book will be retried on next sync
           return false;
         } else if (isHtmlError) {
-          console.error('❌ Error updating book in Supabase: Received HTML error page (likely Cloudflare 500 error)');
-          console.error('   This usually indicates a database schema mismatch or server issue');
-          console.error('   Error code:', updateError?.code);
-          console.error('   Book title:', book.title);
-          console.error('   scanned_at value type:', typeof bookData.scanned_at, 'value:', bookData.scanned_at);
+          console.warn('⚠️ Supabase service error (HTML response):', book.title);
+          console.warn('   This is usually a temporary Supabase/Cloudflare issue');
+          console.warn('   The book will be retried on next sync attempt');
+          // Don't log full error details for HTML errors to reduce noise
+          return false;
         } else if (isDateRangeError) {
           console.error('❌ Error updating book in Supabase: Date/time field value out of range');
           console.error('   This indicates scanned_at column is TIMESTAMPTZ but we sent BIGINT');

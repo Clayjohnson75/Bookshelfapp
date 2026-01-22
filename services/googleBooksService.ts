@@ -45,6 +45,59 @@ async function waitForRateLimit(): Promise<void> {
 }
 
 /**
+ * Validate that a cover URL is actually a book cover (not a placeholder or old paper image)
+ */
+function isValidBookCover(coverUrl: string): boolean {
+  if (!coverUrl) return false;
+  
+  // Must be from Google Books API
+  if (!coverUrl.includes('books.google.com') && !coverUrl.includes('googleapis.com')) {
+    return false;
+  }
+  
+  const urlLower = coverUrl.toLowerCase();
+  
+  // Reject common placeholder patterns
+  const invalidPatterns = [
+    'nocover',           // No cover placeholder
+    'nophoto',           // No photo placeholder
+    'no-image',          // No image placeholder
+    'placeholder',       // Generic placeholder
+    'default',           // Default image
+    'blank',             // Blank image
+    'missing',           // Missing image
+    'not-available',     // Not available
+    'unavailable',       // Unavailable
+  ];
+  
+  for (const pattern of invalidPatterns) {
+    if (urlLower.includes(pattern)) {
+      return false;
+    }
+  }
+  
+  // CRITICAL: Reject URLs that show book content pages (old paper) instead of covers
+  // These have "content=bks" parameter and show actual book pages, not covers
+  if (urlLower.includes('content=bks')) {
+    // Only allow if it explicitly says it's a front cover
+    if (!urlLower.includes('printsec=frontcover') && !urlLower.includes('img=1')) {
+      return false; // This is a content page, not a cover
+    }
+  }
+  
+  // Must contain image format indicators or be a valid Google Books image URL
+  const hasImageFormat = urlLower.includes('jpg') || urlLower.includes('jpeg') || 
+                        urlLower.includes('png') || urlLower.includes('webp') ||
+                        urlLower.includes('books/content'); // Google Books content URLs
+  
+  if (!hasImageFormat) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
  * Fetch book data by Google Books ID (most efficient)
  */
 async function fetchByGoogleBooksId(
@@ -125,10 +178,18 @@ async function fetchByGoogleBooksId(
         description: volumeInfo.description,
       };
 
-      // Extract cover URL
+      // Extract cover URL - only use if it's a valid book cover (not placeholder)
       if (volumeInfo.imageLinks) {
         const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
-        result.coverUrl = rawCoverUrl?.replace('http:', 'https:');
+        if (rawCoverUrl) {
+          const coverUrl = rawCoverUrl.replace('http:', 'https:');
+          // Validate that it's a real book cover (not placeholder/default image)
+          if (isValidBookCover(coverUrl)) {
+            result.coverUrl = coverUrl;
+          } else {
+            console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+          }
+        }
       }
 
       // Cache the result
@@ -248,10 +309,18 @@ async function searchBook(
           description: volumeInfo.description,
         };
 
-        // Extract cover URL
+        // Extract cover URL - only use if it's a valid book cover (not placeholder)
         if (volumeInfo.imageLinks) {
           const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
-          result.coverUrl = rawCoverUrl?.replace('http:', 'https:');
+          if (rawCoverUrl) {
+            const coverUrl = rawCoverUrl.replace('http:', 'https:');
+            // Validate that it's a real book cover (not placeholder/default image)
+            if (isValidBookCover(coverUrl)) {
+              result.coverUrl = coverUrl;
+            } else {
+              console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+            }
+          }
         }
 
         // Cache the result
@@ -393,10 +462,18 @@ export async function searchMultipleBooks(
             description: volumeInfo.description,
           };
 
-          // Extract cover URL
+          // Extract cover URL - only use if it's a valid book cover (not placeholder)
           if (volumeInfo.imageLinks) {
             const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
-            result.coverUrl = rawCoverUrl?.replace('http:', 'https:');
+            if (rawCoverUrl) {
+              const coverUrl = rawCoverUrl.replace('http:', 'https:');
+              // Validate that it's a real book cover (not placeholder/default image)
+              if (isValidBookCover(coverUrl)) {
+                result.coverUrl = coverUrl;
+              } else {
+                console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+              }
+            }
           }
 
           return result;
@@ -500,9 +577,11 @@ export async function searchBooksByQuery(
             googleBooksId: book.id,
             title: volumeInfo.title || 'Unknown Title',
             author: volumeInfo.authors?.[0] || undefined,
-            coverUrl: volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || 
-                     volumeInfo.imageLinks?.smallThumbnail?.replace('http:', 'https:') || 
-                     undefined,
+            coverUrl: (() => {
+              const rawUrl = volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || 
+                           volumeInfo.imageLinks?.smallThumbnail?.replace('http:', 'https:');
+              return rawUrl && isValidBookCover(rawUrl) ? rawUrl : undefined;
+            })(),
             subtitle: volumeInfo.subtitle,
             publishedDate: volumeInfo.publishedDate,
           };
