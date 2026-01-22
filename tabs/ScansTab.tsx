@@ -754,6 +754,9 @@ export const ScansTab: React.FC = () => {
       }
       
       // Now load from Supabase with timeout and merge
+      let supabaseBooks: any = null;
+      let supabasePhotos: any = null;
+      
       try {
         const supabasePromise = Promise.all([
           loadBooksFromSupabase(user.uid),
@@ -764,10 +767,20 @@ export const ScansTab: React.FC = () => {
           setTimeout(() => reject(new Error('Supabase load timeout')), 5000)
         );
         
-        const [supabaseBooks, supabasePhotos] = await Promise.race([
+        const result = await Promise.race([
           supabasePromise,
           timeoutPromise,
-        ]) as [any, any];
+        ]);
+        
+        // Check if result is an array (success) or error (timeout)
+        if (Array.isArray(result)) {
+          [supabaseBooks, supabasePhotos] = result;
+        } else {
+          // Timeout occurred, use null values
+          console.warn('⚠️ Supabase load timed out, using local data only');
+          supabaseBooks = null;
+          supabasePhotos = null;
+        }
       
         
         // Merge Supabase data with AsyncStorage data
@@ -1176,8 +1189,14 @@ export const ScansTab: React.FC = () => {
     }
   };
 
-  // Helper to get cover URI - checks local cache first, then remote URL
+  // Helper to get cover URI - prefer remote URL (works in production), fall back to local
   const getBookCoverUri = (book: Book): string | undefined => {
+    // In production builds, always prefer remote URL (more reliable)
+    if (book.coverUrl) {
+      return book.coverUrl;
+    }
+    
+    // Fall back to local path only if no remote URL
     if (book.localCoverPath && FileSystem.documentDirectory) {
       try {
         const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
@@ -1186,7 +1205,7 @@ export const ScansTab: React.FC = () => {
         console.warn('Error getting local cover path:', error);
       }
     }
-    return book.coverUrl;
+    return undefined;
   };
 
   // Download and cache cover image to local storage
@@ -1565,6 +1584,12 @@ export const ScansTab: React.FC = () => {
           if (data.apiResults) {
             const { openai, gemini } = data.apiResults;
           console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
+          if (openai.error) {
+            console.error(`❌ OpenAI error: ${openai.error}`);
+          }
+          if (gemini.error) {
+            console.error(`❌ Gemini error: ${gemini.error}`);
+          }
           } else {
           console.log(`✅ Server API returned ${serverBooks.length} books`);
           }

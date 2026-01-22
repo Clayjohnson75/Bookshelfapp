@@ -94,6 +94,11 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
   };
 
   const getBookCoverUri = (book: Book): string | undefined => {
+    // In production builds, prefer remote URL (more reliable)
+    if (book.coverUrl) {
+      return book.coverUrl;
+    }
+    // Fall back to local path only if no remote URL
     if (book.localCoverPath && FileSystem.documentDirectory) {
       try {
         const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
@@ -102,7 +107,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
         console.warn('Error getting local cover path:', error);
       }
     }
-    return book.coverUrl;
+    return undefined;
   };
 
   const renderBook = ({ item }: { item: Book }) => (

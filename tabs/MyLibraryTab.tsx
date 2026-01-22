@@ -435,10 +435,26 @@ export const MyLibraryTab: React.FC = () => {
         }
         
         console.log(`📚 Final merged count: ${mergedBooks.length} books (started with ${localBooks.length} local + ${supabaseBooks.approved.length} Supabase)`);
+        
+        // Debug: Check how many books have covers
+        const booksWithCovers = mergedBooks.filter(b => getBookCoverUri(b));
+        console.log(`🖼️ Books with covers: ${booksWithCovers.length} / ${mergedBooks.length}`);
+        if (booksWithCovers.length < mergedBooks.length) {
+          const booksWithoutCovers = mergedBooks.filter(b => !getBookCoverUri(b));
+          console.log(`⚠️ Books WITHOUT covers (first 5):`, booksWithoutCovers.slice(0, 5).map(b => ({
+            title: b.title?.substring(0, 30),
+            hasCoverUrl: !!b.coverUrl,
+            hasLocalPath: !!b.localCoverPath
+          })));
+        }
       } else {
         // Fallback to local books if Supabase has none
         mergedBooks = localBooks;
         console.log(`📚 Using ${mergedBooks.length} local books (no Supabase data)`);
+        
+        // Debug: Check covers in local-only books
+        const booksWithCovers = mergedBooks.filter(b => getBookCoverUri(b));
+        console.log(`🖼️ Local books with covers: ${booksWithCovers.length} / ${mergedBooks.length}`);
       }
       
       // CRITICAL: Log if we lost any books and identify which ones
@@ -504,11 +520,20 @@ export const MyLibraryTab: React.FC = () => {
       const booksNeedingCovers = mergedBooks.filter(book => !getBookCoverUri(book));
       if (booksNeedingCovers.length > 0) {
         console.log(`🖼️ Fetching covers for ${booksNeedingCovers.length} books without covers in library...`);
+        console.log(`🖼️ First 3 books needing covers:`, booksNeedingCovers.slice(0, 3).map(b => ({
+          title: b.title?.substring(0, 30),
+          author: b.author,
+          hasGoogleBooksId: !!b.googleBooksId,
+          hasCoverUrl: !!b.coverUrl,
+          hasLocalPath: !!b.localCoverPath
+        })));
         setTimeout(() => {
           fetchCoversForBooks(booksNeedingCovers).catch(error => {
-            console.error('Error fetching covers for library books:', error);
+            console.error('❌ Error fetching covers for library books:', error);
           });
         }, 500);
+      } else {
+        console.log('✅ All books already have covers!');
       }
       
       // Helper to normalize strings for comparison (local to this function)
@@ -580,15 +605,32 @@ export const MyLibraryTab: React.FC = () => {
 
   // Helper to get cover URI - checks local cache first, then remote URL
   const getBookCoverUri = (book: Book): string | undefined => {
+    // In production builds, local file paths may not work reliably
+    // Always prefer remote coverUrl if available, fall back to local only if remote doesn't exist
+    if (book.coverUrl) {
+      // If we have a remote URL, use it (works in both Expo Go and production)
+      return book.coverUrl;
+    }
+    
+    // Fall back to local path only if no remote URL exists
     if (book.localCoverPath && FileSystem.documentDirectory) {
       try {
         const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+        // In production, verify file exists before using local path
+        FileSystem.getInfoAsync(localPath).then(fileInfo => {
+          if (!fileInfo.exists) {
+            console.warn(`⚠️ Local cover file doesn't exist: ${localPath}`);
+          }
+        }).catch(() => {
+          // Ignore errors in async check
+        });
         return localPath;
       } catch (error) {
         console.warn('Error getting local cover path:', error);
       }
     }
-    return book.coverUrl;
+    
+    return undefined;
   };
 
   // Download and cache cover image
@@ -686,9 +728,25 @@ export const MyLibraryTab: React.FC = () => {
     
     // Apply all updates at once
     if (bookUpdates.size > 0) {
+      console.log(`✅ Successfully fetched covers for ${bookUpdates.size} books`);
+      
+      // Save to Supabase immediately so covers persist
+      const { saveBookToSupabase } = await import('../services/supabaseSync');
+      for (const [_, updatedBook] of bookUpdates) {
+        if (user && updatedBook.coverUrl) {
+          saveBookToSupabase(user.uid, updatedBook, updatedBook.status || 'approved')
+            .catch(error => {
+              console.error(`Error saving book cover to Supabase for ${updatedBook.title}:`, error);
+            });
+        }
+      }
+      
       setBooks(prev => {
         const updated = prev.map(b => {
           const update = bookUpdates.get(b.id || `${b.title}_${b.author}`);
+          if (update) {
+            console.log(`✅ Updated book with cover: "${update.title?.substring(0, 30)}" - coverUrl: ${update.coverUrl ? 'YES' : 'NO'}`);
+          }
           return update || b;
         });
         
@@ -1099,6 +1157,12 @@ export const MyLibraryTab: React.FC = () => {
               isSelectionMode && isSelected && styles.selectedBookCover
             ]}
             resizeMode="cover"
+            onError={(error) => {
+              console.error('❌ Image load error for:', item.title, 'URI:', getBookCoverUri(item)?.substring(0, 100), error);
+            }}
+            onLoad={() => {
+              console.log('✅ Image loaded for:', item.title);
+            }}
           />
         ) : (
           <View style={[styles.bookCover, styles.placeholderCover]}>

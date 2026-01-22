@@ -111,16 +111,57 @@ Return only an array of objects: [{"title":"...","author":"...","confidence":"hi
       console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
       return [];
     }
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    let content = data.choices?.[0]?.message?.content?.trim() || '';
+    const data = await res.json() as any;
     
-    console.log(`[API] OpenAI raw response length: ${content.length} chars`);
+    // Log full response structure for debugging
+    console.log(`[API] OpenAI response structure:`, JSON.stringify({
+      hasChoices: !!data.choices,
+      choicesLength: data.choices?.length || 0,
+      firstChoice: data.choices?.[0] ? {
+        hasMessage: !!data.choices[0].message,
+        hasContent: !!data.choices[0].message?.content,
+        finishReason: data.choices[0].finish_reason,
+        contentLength: data.choices[0].message?.content?.length || 0
+      } : null,
+      error: data.error,
+      model: data.model
+    }, null, 2));
+    
+    // Check for API errors
+    if (data.error) {
+      console.error(`[API] OpenAI API error:`, data.error);
+      return [];
+    }
+    
+    // Try multiple ways to extract content
+    let content = '';
+    const finishReason = data.choices?.[0]?.finish_reason;
+    
+    // Method 1: Standard path
+    content = data.choices?.[0]?.message?.content?.trim() || '';
+    
+    // Method 2: Try alternative paths if standard is empty
+    if (!content && data.choices?.[0]) {
+      const choice = data.choices[0];
+      // Try different possible structures
+      content = choice.content?.trim() || 
+                choice.text?.trim() || 
+                choice.message?.text?.trim() || 
+                '';
+    }
+    
+    console.log(`[API] OpenAI raw response length: ${content.length} chars, finish_reason: ${finishReason}`);
     if (content.length > 0) {
       console.log(`[API] OpenAI response preview: ${content.slice(0, 200)}...`);
     }
     
     if (!content) {
-      console.error(`[API] OpenAI returned empty content`);
+      console.error(`[API] OpenAI returned empty content. Full response keys:`, Object.keys(data));
+      console.error(`[API] Full response:`, JSON.stringify(data, null, 2).substring(0, 1000));
+      // If finish_reason is 'length', the response was truncated - this is still an error for our use case
+      if (finishReason === 'length') {
+        console.error(`[API] Response was truncated due to token limit`);
+      }
       return [];
     }
     
@@ -194,18 +235,35 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
     console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
     return [];
   }
-  const data = await res.json() as { 
-    candidates?: Array<{ 
-      content?: { parts?: Array<{ text?: string }> }; 
-      text?: string 
-    }> 
-  };
+  const data = await res.json() as any;
+  
+  // Log full response structure for debugging
+  console.log(`[API] Gemini response structure:`, JSON.stringify({
+    hasCandidates: !!data.candidates,
+    candidatesLength: data.candidates?.length || 0,
+    firstCandidate: data.candidates?.[0] ? {
+      hasContent: !!data.candidates[0].content,
+      hasParts: !!data.candidates[0].content?.parts,
+      partsLength: data.candidates[0].content?.parts?.length || 0,
+      hasText: !!data.candidates[0].text,
+      firstPartText: data.candidates[0].content?.parts?.[0]?.text?.substring(0, 50) || null
+    } : null,
+    error: data.error
+  }, null, 2));
+  
   let content = '';
+  // Try multiple extraction methods
   if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
     content = data.candidates[0].content.parts[0].text;
   } else if (data.candidates?.[0]?.text) {
     content = data.candidates[0].text;
+  } else if (data.candidates?.[0]?.content?.text) {
+    content = data.candidates[0].content.text;
+  } else if (data.text) {
+    content = data.text;
   }
+  
+  content = content.trim();
   
   console.log(`[API] Gemini raw response length: ${content.length} chars`);
   if (content.length > 0) {
@@ -213,7 +271,8 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
   }
   
   if (!content) {
-    console.error(`[API] Gemini returned empty content`);
+    console.error(`[API] Gemini returned empty content. Full response keys:`, Object.keys(data));
+    console.error(`[API] Full response:`, JSON.stringify(data, null, 2).substring(0, 1000));
     return [];
   }
   
@@ -359,6 +418,17 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Add CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/json');
+
+  // Handle OPTIONS preflight request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -368,15 +438,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'imageDataURL required' });
     }
 
+    // Check if API keys are configured
+    const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+    const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+    
+    if (!hasOpenAIKey && !hasGeminiKey) {
+      console.error('[API] ERROR: No API keys configured! OPENAI_API_KEY and GEMINI_API_KEY are both missing.');
+      return res.status(500).json({ 
+        error: 'API keys not configured',
+        message: 'Server is missing required API keys for scanning'
+      });
+    }
+    
+    console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
+    
+    // Run scans and capture detailed error info
+    let openaiError: any = null;
+    let geminiError: any = null;
+    
     const [openai, gemini] = await Promise.all([
-      withRetries(() => scanWithOpenAI(imageDataURL), 2, 1200).catch(() => []),
-      withRetries(() => scanWithGemini(imageDataURL), 2, 1200).catch(() => []),
+      withRetries(() => scanWithOpenAI(imageDataURL), 2, 1200).catch((err) => {
+        openaiError = err;
+        console.error('[API] OpenAI scan failed after retries:', err?.message || err);
+        return [];
+      }),
+      withRetries(() => scanWithGemini(imageDataURL), 2, 1200).catch((err) => {
+        geminiError = err;
+        console.error('[API] Gemini scan failed after retries:', err?.message || err);
+        return [];
+      }),
     ]);
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
     const merged = dedupeBooks([...(openai || []), ...(gemini || [])]);
     
     console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Merged=${merged.length} unique`);
+    
+    // Return API status for debugging
+    const apiResults = {
+      openai: {
+        working: hasOpenAIKey && openaiCount > 0,
+        count: openaiCount,
+        hasKey: hasOpenAIKey,
+        error: openaiError ? (openaiError?.message || String(openaiError)) : null
+      },
+      gemini: {
+        working: hasGeminiKey && geminiCount > 0,
+        count: geminiCount,
+        hasKey: hasGeminiKey,
+        error: geminiError ? (geminiError?.message || String(geminiError)) : null
+      }
+    };
+    
+    // Log detailed status if both failed
+    if (openaiCount === 0 && geminiCount === 0) {
+      console.error('[API] Both APIs returned 0 books. OpenAI error:', openaiError, 'Gemini error:', geminiError);
+    }
     
     // Validate all detected books with ChatGPT (server-side)
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
@@ -388,10 +505,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     return res.status(200).json({ 
       books: validatedBooks,
-      apiResults: {
-        openai: { count: openaiCount, working: openaiCount > 0 },
-        gemini: { count: geminiCount, working: geminiCount > 0 }
-      }
+      apiResults // Include API status for debugging (already defined above with error info)
     });
   } catch (e: any) {
     return res.status(500).json({ error: 'scan_failed', detail: e?.message || String(e) });
