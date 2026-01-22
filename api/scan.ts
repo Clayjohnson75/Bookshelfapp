@@ -355,8 +355,13 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
   if (!key) return book; // Return original if no key
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15 seconds per book - gpt-4o-mini can be slow sometimes
+  const timeoutMs = 20000; // 20 seconds per book - give it more time
+  const timeout = setTimeout(() => {
+    console.log(`[API] AbortController timeout triggered for "${book.title}" after ${timeoutMs}ms`);
+    controller.abort();
+  }, timeoutMs);
 
+  const startTime = Date.now();
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -409,8 +414,12 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
       }),
     });
 
+    const elapsed = Date.now() - startTime;
+    console.log(`[API] Validation API call completed for "${book.title}" in ${elapsed}ms`);
+
     if (!res.ok) {
       console.error(`[API] Validation failed for "${book.title}": ${res.status}`);
+      clearTimeout(timeout);
       return book;
     }
 
@@ -452,8 +461,13 @@ Remember: Respond with ONLY the JSON object, nothing else.`,
         chatgptReason: analysis.reason,
       };
     }
-  } catch (e) {
-    console.error(`[API] Validation error for "${book.title}":`, e);
+  } catch (e: any) {
+    const elapsed = Date.now() - startTime;
+    if (e?.name === 'AbortError' || e?.message?.includes('aborted')) {
+      console.warn(`[API] Validation aborted for "${book.title}" after ${elapsed}ms (timeout or network issue)`);
+    } else {
+      console.error(`[API] Validation error for "${book.title}" after ${elapsed}ms:`, e?.message || e);
+    }
     return book;
   } finally {
     clearTimeout(timeout);
@@ -552,7 +566,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
     
     const VALIDATION_BATCH_SIZE = 5; // Larger batches since using faster model
-    const VALIDATION_TIMEOUT_PER_BOOK = 15000; // 15 seconds per book - match the function timeout
+    const VALIDATION_TIMEOUT_PER_BOOK = 25000; // 25 seconds per book - increased to reduce timeouts
     const validatedBooks: any[] = [];
     
     for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {
@@ -561,6 +575,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const totalBatches = Math.ceil(merged.length / VALIDATION_BATCH_SIZE);
       
       console.log(`[API] Validating batch ${batchNum}/${totalBatches} (${batch.length} books)...`);
+      const batchStartTime = Date.now();
       
       const batchResults = await Promise.all(
         batch.map(book => {
@@ -568,7 +583,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             validateBookWithChatGPT(book),
             new Promise((resolve) => {
               setTimeout(() => {
-                console.warn(`[API] Validation timeout for "${book.title}", using original`);
+                console.warn(`[API] Validation timeout for "${book.title}", using original (Promise.race timeout)`);
                 resolve(book);
               }, VALIDATION_TIMEOUT_PER_BOOK);
             })
@@ -578,6 +593,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         })
       );
+      
+      const batchElapsed = Date.now() - batchStartTime;
+      console.log(`[API] Batch ${batchNum} completed in ${batchElapsed}ms`);
       
       validatedBooks.push(...batchResults);
       

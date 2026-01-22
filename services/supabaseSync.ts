@@ -656,7 +656,17 @@ export async function saveBookToSupabase(
 
     if (findError && findError.code !== 'PGRST116') {
       // PGRST116 is "not found" which is fine
-      console.warn('Error finding book in Supabase:', findError);
+      const errorMessage = findError?.message || findError?.code || JSON.stringify(findError) || String(findError);
+      const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
+                          (findError as any)?.name === 'AbortError' || 
+                          (findError as any)?.constructor?.name === 'AbortError';
+      
+      if (isAbortError) {
+        console.warn('⚠️ Book lookup aborted (likely timeout):', book.title);
+        // Don't log full error for abort errors to reduce noise
+      } else {
+        console.warn('Error finding book in Supabase:', findError);
+      }
     }
 
     if (existingBook) {
@@ -667,12 +677,21 @@ export async function saveBookToSupabase(
         .eq('id', existingBook.id);
 
       if (updateError) {
-        // Check if error message is HTML (Cloudflare error page)
+        // Check if error is an AbortError (request was cancelled/timed out)
         const errorMessage = updateError?.message || updateError?.code || JSON.stringify(updateError) || String(updateError);
+        const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
+                            (updateError as any)?.name === 'AbortError' || 
+                            (updateError as any)?.constructor?.name === 'AbortError';
         const isHtmlError = typeof errorMessage === 'string' && errorMessage.trim().startsWith('<!DOCTYPE');
         const isDateRangeError = typeof errorMessage === 'string' && errorMessage.includes('date/time field value out of range');
         
-        if (isHtmlError) {
+        if (isAbortError) {
+          console.warn('⚠️ Book update aborted (likely timeout or network issue):', book.title);
+          console.warn('   This is usually temporary - the book may sync on next attempt');
+          // Don't return false immediately - this might be a transient network issue
+          // The book will be retried on next sync
+          return false;
+        } else if (isHtmlError) {
           console.error('❌ Error updating book in Supabase: Received HTML error page (likely Cloudflare 500 error)');
           console.error('   This usually indicates a database schema mismatch or server issue');
           console.error('   Error code:', updateError?.code);
@@ -714,7 +733,15 @@ export async function saveBookToSupabase(
 
           if (findErrorRetry && findErrorRetry.code !== 'PGRST116') {
             const errorMessage = findErrorRetry?.message || findErrorRetry?.code || JSON.stringify(findErrorRetry) || String(findErrorRetry);
-            console.error('Error finding existing book after duplicate key error:', errorMessage);
+            const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
+                                (findErrorRetry as any)?.name === 'AbortError' || 
+                                (findErrorRetry as any)?.constructor?.name === 'AbortError';
+            
+            if (isAbortError) {
+              console.warn('⚠️ Book lookup aborted after duplicate key error (likely timeout):', book.title);
+            } else {
+              console.error('Error finding existing book after duplicate key error:', errorMessage);
+            }
             return false;
           }
 
@@ -727,8 +754,17 @@ export async function saveBookToSupabase(
 
             if (updateErrorRetry) {
               const errorMessage = updateErrorRetry?.message || updateErrorRetry?.code || JSON.stringify(updateErrorRetry) || String(updateErrorRetry);
-              console.error('Error updating book after duplicate key error:', errorMessage);
-              console.error('Book data:', JSON.stringify(bookData, null, 2));
+              const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
+                                  (updateErrorRetry as any)?.name === 'AbortError' || 
+                                  (updateErrorRetry as any)?.constructor?.name === 'AbortError';
+              
+              if (isAbortError) {
+                console.warn('⚠️ Book update aborted after duplicate key retry (likely timeout):', book.title);
+                console.warn('   This is usually temporary - the book may sync on next attempt');
+              } else {
+                console.error('Error updating book after duplicate key error:', errorMessage);
+                console.error('Book data:', JSON.stringify(bookData, null, 2));
+              }
               return false;
             }
             return true;
