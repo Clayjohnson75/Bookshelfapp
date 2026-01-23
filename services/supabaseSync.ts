@@ -665,7 +665,7 @@ export async function saveBookToSupabase(
         console.warn('⚠️ Book lookup aborted (likely timeout):', book.title);
         // Don't log full error for abort errors to reduce noise
       } else {
-        console.warn('Error finding book in Supabase:', findError);
+      console.warn('Error finding book in Supabase:', findError);
       }
     }
 
@@ -746,7 +746,7 @@ export async function saveBookToSupabase(
             if (isAbortError) {
               console.warn('⚠️ Book lookup aborted after duplicate key error (likely timeout):', book.title);
             } else {
-              console.error('Error finding existing book after duplicate key error:', errorMessage);
+            console.error('Error finding existing book after duplicate key error:', errorMessage);
             }
             return false;
           }
@@ -768,8 +768,8 @@ export async function saveBookToSupabase(
                 console.warn('⚠️ Book update aborted after duplicate key retry (likely timeout):', book.title);
                 console.warn('   This is usually temporary - the book may sync on next attempt');
               } else {
-                console.error('Error updating book after duplicate key error:', errorMessage);
-                console.error('Book data:', JSON.stringify(bookData, null, 2));
+              console.error('Error updating book after duplicate key error:', errorMessage);
+              console.error('Book data:', JSON.stringify(bookData, null, 2));
               }
               return false;
             }

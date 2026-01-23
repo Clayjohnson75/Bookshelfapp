@@ -170,13 +170,13 @@ export async function initializeIAP(): Promise<IAPProduct[]> {
     } else {
       // Fallback to other methods if getSubscriptions doesn't exist
       const methodNames = ['getProducts', 'getProductsAsync', 'getAvailablePurchases', 'getInAppProducts'];
-      for (const methodName of methodNames) {
-        if (typeof iap[methodName] === 'function') {
+    for (const methodName of methodNames) {
+      if (typeof iap[methodName] === 'function') {
           getSubscriptionsMethod = iap[methodName];
           console.log(`⚠️ Using fallback ${methodName} method (should use getSubscriptions for subscriptions)`);
-          break;
-        }
+        break;
       }
+    }
     }
     
     if (!getSubscriptionsMethod) {
@@ -403,7 +403,7 @@ export async function purchaseProSubscription(): Promise<void> {
               console.log(`⚠️ Using fallback ${methodName} method (should use getSubscriptions for subscriptions)`);
             break;
           }
-          }
+        }
         }
         
         if (!getSubscriptionsMethod) {

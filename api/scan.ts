@@ -3,12 +3,36 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Enhanced normalization: trim, collapse spaces, normalize quotes/dashes, strip punctuation
+ */
 function normalize(s?: string) {
   if (!s) return '';
   return s.trim()
     .toLowerCase()
+    .replace(/[""]/g, '"') // Normalize quotes
+    .replace(/['']/g, "'") // Normalize apostrophes
+    .replace(/[–—]/g, '-') // Normalize dashes
     .replace(/[.,;:!?]/g, '') // Remove punctuation
-    .replace(/\s+/g, ' '); // Normalize whitespace
+    .replace(/\s+/g, ' ') // Collapse multiple spaces
+    .trim();
+}
+
+/**
+ * Enhanced normalization with OCR artifact removal
+ */
+function normalizeWithOCR(s?: string): string {
+  if (!s) return '';
+  let normalized = normalize(s);
+  // Remove common OCR artifacts
+  normalized = normalized
+    .replace(/\|/g, '') // Remove pipe characters (common OCR error)
+    .replace(/^VOL\s+/i, '') // Remove leading "VOL" (volume indicators)
+    .replace(/\s+VOL\s*$/i, '') // Remove trailing "VOL"
+    .replace(/^[0-9]+\s*$/, '') // Remove pure numbers
+    .replace(/^[%@#$&*]+\s*$/, '') // Remove pure symbols
+    .trim();
+  return normalized;
 }
 
 function normalizeTitle(title?: string) {
@@ -34,40 +58,67 @@ function normalizeAuthor(author?: string) {
   return cleaned.replace(/\s+/g, ' ').trim();
 }
 
-function dedupeBooks(books: any[]) {
+/**
+ * Build canonical key for deterministic deduplication
+ * Format: normalized_title::normalized_author_last
+ */
+function buildCanonicalKey(book: any): string {
+  const title = normalizeTitle(book.title || '');
+  const author = normalizeAuthor(book.author || '');
+  // Extract last name from author (first word after "and" or last word)
+  const authorLast = author.split(' & ').pop()?.split(' ').pop() || '';
+  return `${title}::${authorLast}`;
+}
+
+/**
+ * Improved merge/dedupe with canonical keys + fuzzy matching
+ */
+function dedupeBooks(books: any[]): any[] {
   if (!books || books.length === 0) return [];
   
-  const map: Record<string, any> = {};
+  // First pass: exact match by canonical key
+  const canonicalMap: Record<string, any> = {};
   for (const b of books) {
     if (!b || !b.title) continue;
-    const k = `${normalizeTitle(b.title)}|${normalizeAuthor(b.author)}`;
-    // Keep the first one we see, or one with higher confidence
-    if (!map[k] || (b.confidence === 'high' && map[k].confidence !== 'high')) {
-      map[k] = b;
+    const key = buildCanonicalKey(b);
+    // Keep the one with higher confidence, or one with both title+author
+    if (!canonicalMap[key]) {
+      canonicalMap[key] = b;
+    } else {
+      const existing = canonicalMap[key];
+      const hasBoth = b.title && b.author;
+      const existingHasBoth = existing.title && existing.author;
+      if ((hasBoth && !existingHasBoth) || 
+          (b.confidence === 'high' && existing.confidence !== 'high')) {
+        canonicalMap[key] = b;
+      }
     }
   }
-  const deduped = Object.values(map);
   
-  // Additional pass: check for near-duplicates (similar titles with same author)
+  const deduped = Object.values(canonicalMap);
+  
+  // Second pass: fuzzy match titles within same spine_index neighborhood
   const final: any[] = [];
   for (const book of deduped) {
     const bookTitle = normalizeTitle(book.title);
     const bookAuthor = normalizeAuthor(book.author);
+    const bookSpineIndex = book.spine_index ?? 999; // Default to end if missing
     
-    if (!bookTitle || bookTitle.length < 2) continue; // Skip invalid books
+    if (!bookTitle || bookTitle.length < 2) continue;
     
     let isDuplicate = false;
     for (const existing of final) {
       const existingTitle = normalizeTitle(existing.title);
       const existingAuthor = normalizeAuthor(existing.author);
+      const existingSpineIndex = existing.spine_index ?? 999;
       
-      // Exact match on normalized title and author
+      // Exact match
       if (bookTitle === existingTitle && bookAuthor === existingAuthor) {
         isDuplicate = true;
         break;
       }
       
-      // If authors match (or both are empty/unknown) and titles are very similar
+      // Fuzzy match: similar titles, same author, nearby spine positions
       const authorsMatch = bookAuthor === existingAuthor || 
                           (!bookAuthor && !existingAuthor) ||
                           (bookAuthor && existingAuthor && (
@@ -76,19 +127,24 @@ function dedupeBooks(books: any[]) {
                             existingAuthor.includes(bookAuthor)
                           ));
       
-      if (authorsMatch && bookTitle.length > 3 && existingTitle.length > 3) {
-        // Check if titles are very similar (one contains the other, or they're almost identical)
-        const titleSimilarity = bookTitle.includes(existingTitle) || 
-                               existingTitle.includes(bookTitle) ||
-                               // Check if they're the same after removing common words
-                               bookTitle.replace(/\b(the|a|an|of|in|on|at|to|for)\b/g, '') === 
-                               existingTitle.replace(/\b(the|a|an|of|in|on|at|to|for)\b/g, '');
+      const spineNearby = Math.abs(bookSpineIndex - existingSpineIndex) <= 2;
+      
+      if (authorsMatch && spineNearby && bookTitle.length > 3 && existingTitle.length > 3) {
+        // Token-set similarity: check if titles share significant words
+        const bookWords = new Set(bookTitle.split(/\s+/).filter(w => w.length > 2));
+        const existingWords = new Set(existingTitle.split(/\s+/).filter(w => w.length > 2));
+        const intersection = new Set([...bookWords].filter(w => existingWords.has(w)));
+        const union = new Set([...bookWords, ...existingWords]);
+        const similarity = intersection.size / union.size;
         
-        if (titleSimilarity) {
+        // Also check if one contains the other
+        const containsMatch = bookTitle.includes(existingTitle) || 
+                              existingTitle.includes(bookTitle);
+        
+        if (similarity > 0.5 || containsMatch) {
           isDuplicate = true;
-          // Keep the one with higher confidence or more complete author
+          // Prefer higher confidence or more complete data
           if (book.confidence === 'high' && existing.confidence !== 'high') {
-            // Replace existing with this one
             const index = final.indexOf(existing);
             if (index !== -1) {
               final[index] = book;
@@ -120,6 +176,91 @@ async function withRetries<T>(fn: () => Promise<T>, tries = 2, backoffMs = 800):
   throw last;
 }
 
+/**
+ * Cheap validator: filter obvious junk before LLM validation
+ * Returns { isValid: boolean, normalizedBook: any }
+ */
+function cheapValidate(book: any): { isValid: boolean; normalizedBook: any } {
+  const spineText = normalizeWithOCR(book.spine_text || book.title || '');
+  const title = normalizeWithOCR(book.title || '');
+  const author = normalizeWithOCR(book.author || '');
+  
+  // Filter: spine_text too short AND no title/author
+  if (spineText.length < 3 && !title && !author) {
+    return { isValid: false, normalizedBook: { ...book, cheapFilterReason: 'spine_text_too_short' } };
+  }
+  
+  // Filter: title is only digits/punctuation
+  if (title && /^[0-9\s.,;:!?]+$/.test(title)) {
+    return { isValid: false, normalizedBook: { ...book, cheapFilterReason: 'title_is_digits_only' } };
+  }
+  
+  // Filter: obvious nonsense patterns
+  if (title && /^(IIII|@@@@|%%%%|####|\|\|\|\|)$/.test(title)) {
+    return { isValid: false, normalizedBook: { ...book, cheapFilterReason: 'nonsense_pattern' } };
+  }
+  
+  // Filter: single generic word with no author and low confidence
+  if (title && !author && book.confidence === 'low') {
+    const words = title.split(/\s+/);
+    if (words.length === 1 && ['the', 'a', 'an', 'book', 'volume', 'vol'].includes(words[0])) {
+      return { isValid: false, normalizedBook: { ...book, cheapFilterReason: 'generic_word_no_author' } };
+    }
+  }
+  
+  // Normalize the book
+  const normalizedBook = {
+    ...book,
+    title: book.title?.trim() || null,
+    author: book.author?.trim() || null,
+    spine_text: book.spine_text?.trim() || spineText,
+    language: book.language || 'en',
+    spine_index: book.spine_index ?? 0,
+  };
+  
+  return { isValid: true, normalizedBook };
+}
+
+/**
+ * JSON repair: attempt to fix invalid JSON using LLM
+ */
+async function repairJSON(invalidJSON: string, schema: string): Promise<any> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return null;
+  
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'user',
+          content: `Fix this invalid JSON to match the schema: ${schema}\n\nInvalid JSON:\n${invalidJSON}\n\nReturn ONLY valid JSON, no explanations.`,
+        }],
+        max_tokens: 2000,
+        temperature: 0,
+      }),
+    });
+    
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) return null;
+    
+    // Remove markdown if present
+    const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
 async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return [];
@@ -142,15 +283,27 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
             content: [
               {
                 type: 'text',
-                text: `Scan this image and return ALL visible book spines as JSON array.
+                text: `Scan this image and return ALL visible book spines as a strict JSON array.
 
 CRITICAL RULES:
 - TITLE is the book name (usually larger text, on the spine)
 - AUTHOR is the person's name who wrote it (usually smaller text, below or above title)
 - DO NOT swap title and author - titles are book names, authors are people's names
 - If you see "John Smith" and "The Great Novel", "John Smith" is the AUTHOR, "The Great Novel" is the TITLE
+- Number books left-to-right: spine_index 0, 1, 2, etc.
+- Capture raw spine_text exactly as you see it (even if messy)
+- Detect language: "en", "es", "fr", or "unknown"
 
-Return ONLY a JSON array: [{"title":"Book Title Here","author":"Author Name Here","confidence":"high|medium|low"}] with no extra text, no markdown, no explanations.`,
+Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
+[{
+  "title": "Book Title Here or null",
+  "author": "Author Name Here or null",
+  "confidence": "high|medium|low",
+  "spine_text": "raw text from spine",
+  "language": "en|es|fr|unknown",
+  "reason": "brief reason for confidence",
+  "spine_index": 0
+}]`,
               },
               { type: 'image_url', image_url: { url: imageDataURL } },
             ],
@@ -164,31 +317,41 @@ Return ONLY a JSON array: [{"title":"Book Title Here","author":"Author Name Here
       console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
       return [];
     }
-    const data = await res.json() as any;
-    
-    // Log full response structure for debugging
-    console.log(`[API] OpenAI response structure:`, JSON.stringify({
-      hasChoices: !!data.choices,
-      choicesLength: data.choices?.length || 0,
-      firstChoice: data.choices?.[0] ? {
-        hasMessage: !!data.choices[0].message,
-        hasContent: !!data.choices[0].message?.content,
-        finishReason: data.choices[0].finish_reason,
-        contentLength: data.choices[0].message?.content?.length || 0
-      } : null,
-      error: data.error,
-      model: data.model
-    }, null, 2));
-    
-    // Check for API errors
-    if (data.error) {
-      console.error(`[API] OpenAI API error:`, data.error);
-      return [];
-    }
-    
-    // Try multiple ways to extract content
-    let content = '';
-    const finishReason = data.choices?.[0]?.finish_reason;
+      const data = await res.json() as {
+        choices?: Array<{ 
+          message?: { content?: string; text?: string }; 
+          content?: string;
+          text?: string;
+          finish_reason?: string 
+        }>;
+        error?: any;
+        model?: string;
+        usage?: { completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } };
+      };
+      
+      // Log full response structure for debugging
+      console.log(`[API] OpenAI response structure:`, JSON.stringify({
+        hasChoices: !!data.choices,
+        choicesLength: data.choices?.length || 0,
+        firstChoice: data.choices?.[0] ? {
+          hasMessage: !!data.choices[0].message,
+          hasContent: !!data.choices[0].message?.content,
+          finishReason: data.choices[0].finish_reason,
+          contentLength: data.choices[0].message?.content?.length || 0
+        } : null,
+        error: data.error,
+        model: data.model
+      }, null, 2));
+      
+      // Check for API errors
+      if (data.error) {
+        console.error(`[API] OpenAI API error:`, data.error);
+        return [];
+      }
+      
+      // Try multiple ways to extract content
+      let content = '';
+      const finishReason = data.choices?.[0]?.finish_reason;
     
     // Method 1: Standard path
     content = data.choices?.[0]?.message?.content?.trim() || '';
@@ -253,8 +416,23 @@ Return ONLY a JSON array: [{"title":"Book Title Here","author":"Author Name Here
           return parsed;
         }
       } catch (e) {
-        console.error(`[API] OpenAI failed to parse extracted JSON:`, e);
+        // Try JSON repair
+        console.warn(`[API] OpenAI JSON parse failed, attempting repair...`);
+        const repaired = await repairJSON(arrayMatch[0], 'array of book objects with title, author, confidence, spine_text, language, reason, spine_index');
+        if (repaired && Array.isArray(repaired)) {
+          console.log(`[API] OpenAI parsed ${repaired.length} books (repaired JSON)`);
+          return repaired;
+        }
+        console.error(`[API] OpenAI failed to parse/extract JSON:`, e);
       }
+    }
+    
+    // Final attempt: try repairing the entire content
+    console.warn(`[API] OpenAI attempting final JSON repair...`);
+    const finalRepaired = await repairJSON(content, 'array of book objects');
+    if (finalRepaired && Array.isArray(finalRepaired)) {
+      console.log(`[API] OpenAI parsed ${finalRepaired.length} books (final repair)`);
+      return finalRepaired;
     }
     
     console.error(`[API] OpenAI response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
@@ -281,15 +459,27 @@ async function scanWithGemini(imageDataURL: string): Promise<any[]> {
           {
             parts: [
               {
-                text: `Scan book spines in this image and return ONLY a JSON array.
+                text: `Scan book spines in this image and return ONLY a strict JSON array.
 
 CRITICAL RULES:
 - TITLE is the book name (usually larger text on spine)
 - AUTHOR is the person's name who wrote it (usually smaller text)
 - DO NOT swap title and author - titles are book names, authors are people's names
 - If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE
+- Number books left-to-right: spine_index 0, 1, 2, etc.
+- Capture raw spine_text exactly as you see it (even if messy)
+- Detect language: "en", "es", "fr", or "unknown"
 
-Return ONLY raw JSON array: [{"title":"Book Title","author":"Author Name","confidence":"high|medium|low"}]. No explanations, no markdown, no extra text.`,
+Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
+[{
+  "title": "Book Title Here or null",
+  "author": "Author Name Here or null",
+  "confidence": "high|medium|low",
+  "spine_text": "raw text from spine",
+  "language": "en|es|fr|unknown",
+  "reason": "brief reason for confidence",
+  "spine_index": 0
+}]`,
               },
               { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
             ],
@@ -426,13 +616,212 @@ Return ONLY raw JSON array: [{"title":"Book Title","author":"Author Name","confi
           return parsed;
         }
       } catch (e) {
+        // Try JSON repair
+        console.warn(`[API] Gemini reconstruction failed, attempting repair...`);
+        const reconstructedForRepair = '[' + objectMatches.join(',') + ']';
+        const repaired = await repairJSON(reconstructedForRepair, 'array of book objects with title, author, confidence, spine_text, language, reason, spine_index');
+        if (repaired && Array.isArray(repaired)) {
+          console.log(`[API] Gemini parsed ${repaired.length} books (repaired JSON)`);
+          return repaired;
+        }
         console.log(`[API] Gemini reconstruction failed:`, e);
       }
     }
   }
   
+  // Final attempt: try repairing the entire content
+  console.warn(`[API] Gemini attempting final JSON repair...`);
+  const repaired = await repairJSON(content, 'array of book objects');
+  if (repaired && Array.isArray(repaired)) {
+    console.log(`[API] Gemini parsed ${repaired.length} books (final repair)`);
+    return repaired;
+  }
+  
   console.error(`[API] Gemini response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
   return [];
+}
+
+/**
+ * Early external lookup for ambiguous items (before batch validation)
+ * Returns book with external_match data if found
+ */
+async function earlyLookup(book: any): Promise<any> {
+  // Only lookup if ambiguous: low/medium confidence OR missing author OR very short title
+  const isAmbiguous = 
+    book.confidence === 'low' || 
+    book.confidence === 'medium' ||
+    !book.author ||
+    (book.title && book.title.length < 5);
+  
+  if (!isAmbiguous) return book;
+  
+  try {
+    // Dynamic import to avoid circular dependencies
+    const { fetchBookData } = await import('../services/googleBooksService');
+    
+    const query = book.title || book.spine_text || '';
+    if (!query || query.length < 2) return book;
+    
+    const result = await fetchBookData(query, book.author || undefined);
+    
+    // GoogleBooksData doesn't have title/author directly, but fetchBookData returns data with googleBooksId
+    // We'll use the original book data but mark that we found a match
+    if (result && result.googleBooksId) {
+      // Strong match found - attach external data
+      // Note: We'll use the book's original title/author but mark it as externally validated
+      return {
+        ...book,
+        external_match: {
+          googleBooksId: result.googleBooksId,
+          confidence: 'high', // External match is high confidence
+        },
+        // Keep original title/author but mark as externally validated
+        googleBooksId: result.googleBooksId,
+      };
+    }
+  } catch (error) {
+    // Silently fail - we'll validate with LLM anyway
+    console.log(`[API] Early lookup failed for "${book.title}":`, error?.message || error);
+  }
+  
+  return book;
+}
+
+/**
+ * Batch validation: validate multiple books in one LLM call
+ */
+async function batchValidateBooks(books: any[]): Promise<any[]> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key || books.length === 0) return books;
+  
+  // Chunk into batches of 20 to avoid token limits
+  const BATCH_SIZE = 20;
+  const results: any[] = [];
+  
+  for (let i = 0; i < books.length; i += BATCH_SIZE) {
+    const batch = books.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(books.length / BATCH_SIZE);
+    
+    console.log(`[API] Batch validating ${batchNum}/${totalBatches} (${batch.length} books)...`);
+    
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000); // 60s per batch
+      
+      const batchInput = batch.map((b, idx) => ({
+        canonical_key: buildCanonicalKey(b),
+        title: b.title || null,
+        author: b.author || null,
+        spine_text: b.spine_text || b.title || '',
+        confidence: b.confidence || 'medium',
+        external_match: b.external_match || null,
+      }));
+      
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{
+            role: 'user',
+            content: `You are a book expert validating detected books from a bookshelf scan.
+
+DETECTED BOOKS (JSON array):
+${JSON.stringify(batchInput, null, 2)}
+
+TASK: For each book, determine if it's valid and correct any errors. Be LENIENT - only mark as invalid if clearly junk.
+
+RULES:
+1. Books WITHOUT authors are VALID if title is distinctive
+2. Partial titles are VALID
+3. Only mark INVALID if clearly not a real book (random words, OCR garbage)
+4. If title/author are swapped, fix them
+5. Fix OCR errors
+6. Prefer external_match data if provided (from Google Books lookup)
+
+Return ONLY valid JSON array (no markdown, no code blocks):
+[{
+  "canonical_key": "same as input",
+  "is_valid": true,
+  "final_title": "corrected title or null",
+  "final_author": "corrected author or null",
+  "final_confidence": "high|medium|low",
+  "fixes": ["title_author_swap", "ocr_cleanup", "filled_author", "none"],
+  "notes": "brief explanation"
+}]`,
+          }],
+          max_tokens: 2000,
+          temperature: 0.1,
+        }),
+      });
+      
+      clearTimeout(timeout);
+      
+      if (!res.ok) {
+        console.error(`[API] Batch validation failed: ${res.status}`);
+        results.push(...batch); // Return originals on failure
+        continue;
+      }
+      
+      const data = await res.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      let content = data.choices?.[0]?.message?.content?.trim() || '';
+      
+      // Remove markdown
+      content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      
+      let validated: any[];
+      try {
+        validated = JSON.parse(content);
+      } catch {
+        // Try repair
+        const repaired = await repairJSON(content, 'array of validation results');
+        validated = repaired || [];
+      }
+      
+      // Map validation results back to books
+      const validatedMap = new Map(validated.map((v: any) => [v.canonical_key, v]));
+      
+      for (const book of batch) {
+        const key = buildCanonicalKey(book);
+        const validation = validatedMap.get(key);
+        
+        if (validation && validation.is_valid) {
+          results.push({
+            ...book,
+            title: validation.final_title || book.title,
+            author: validation.final_author || book.author,
+            confidence: validation.final_confidence || book.confidence,
+            validationFixes: validation.fixes || [],
+            validationNotes: validation.notes,
+          });
+        } else {
+          // Invalid book - mark for filtering
+          console.log(`[API] Batch validation marked as INVALID: "${book.title}" by ${book.author || 'no author'}`);
+          results.push({
+            ...book,
+            isValid: false,
+            confidence: 'invalid',
+          });
+        }
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        console.warn(`[API] Batch validation timeout for batch ${batchNum}`);
+      } else {
+        console.error(`[API] Batch validation error:`, error?.message || error);
+      }
+      results.push(...batch); // Return originals on error
+    }
+  }
+  
+  return results;
 }
 
 async function validateBookWithChatGPT(book: any): Promise<any> {
@@ -707,62 +1096,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('[API] Both APIs returned 0 books. OpenAI error:', openaiError, 'Gemini error:', geminiError);
     }
     
-    // Validate all detected books with ChatGPT (server-side)
-    // Process in small batches to avoid Vercel 300s timeout
-    console.log(`[API] Validating ${merged.length} books with ChatGPT...`);
-    
-    const VALIDATION_BATCH_SIZE = 5; // Larger batches since using faster model
-    const VALIDATION_TIMEOUT_PER_BOOK = 40000; // 40 seconds per book - increased to reduce timeouts (matches AbortController + buffer)
-    const validatedBooks: any[] = [];
-    
-    for (let i = 0; i < merged.length; i += VALIDATION_BATCH_SIZE) {
-      const batch = merged.slice(i, i + VALIDATION_BATCH_SIZE);
-      const batchNum = Math.floor(i / VALIDATION_BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(merged.length / VALIDATION_BATCH_SIZE);
-      
-      console.log(`[API] Validating batch ${batchNum}/${totalBatches} (${batch.length} books)...`);
-      const batchStartTime = Date.now();
-      
-      const batchResults = await Promise.all(
-        batch.map(book => {
-          return Promise.race([
-            validateBookWithChatGPT(book),
-            new Promise((resolve) => {
-              setTimeout(() => {
-                console.warn(`[API] Validation timeout for "${book.title}", using original (validation took >${VALIDATION_TIMEOUT_PER_BOOK/1000}s)`);
-                resolve(book);
-              }, VALIDATION_TIMEOUT_PER_BOOK);
-            })
-          ]).catch(err => {
-            console.warn(`[API] Validation failed for "${book.title}", using original:`, err?.message || err);
-            return book;
-          });
-        })
-      );
-      
-      const batchElapsed = Date.now() - batchStartTime;
-      console.log(`[API] Batch ${batchNum} completed in ${batchElapsed}ms`);
-      
-      validatedBooks.push(...batchResults);
-      
-      // Small delay between batches
-      if (i + VALIDATION_BATCH_SIZE < merged.length) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+    // NEW PIPELINE: Step 1 - Cheap validator (filter obvious junk)
+    console.log(`[API] Applying cheap validator to ${merged.length} books...`);
+    const cheapValidated = merged.map(book => {
+      const result = cheapValidate(book);
+      return result.normalizedBook;
+    });
+    const cheapFiltered = cheapValidated.filter(book => {
+      const isValid = !book.cheapFilterReason;
+      if (!isValid) {
+        console.log(`[API] Cheap filter rejected: "${book.title}" - ${book.cheapFilterReason}`);
       }
-    }
+      return isValid;
+    });
+    console.log(`[API] Cheap validator: ${cheapFiltered.length} passed, ${cheapValidated.length - cheapFiltered.length} filtered`);
     
-    console.log(`[API] Validation complete: ${validatedBooks.length} books validated`);
+    // NEW PIPELINE: Step 2 - Early external lookup for ambiguous items
+    console.log(`[API] Early lookup for ambiguous items...`);
+    const withLookups = await Promise.all(
+      cheapFiltered.map(book => earlyLookup(book))
+    );
+    const lookupCount = withLookups.filter(b => b.external_match).length;
+    console.log(`[API] Early lookup: ${lookupCount} books found in Google Books`);
     
-    // Filter out invalid books (marked as invalid by validation)
+    // NEW PIPELINE: Step 3 - Batch validation (replaces per-book validation)
+    console.log(`[API] Batch validating ${withLookups.length} books...`);
+    const validatedBooks = await batchValidateBooks(withLookups);
+    
+    // Filter out invalid books
     const validBooks = validatedBooks.filter(book => {
       const isInvalid = book.confidence === 'invalid' || book.isValid === false;
       if (isInvalid) {
-        console.log(`[API] Filtering out invalid book: "${book.title}" by ${book.author}`);
+        console.log(`[API] Filtering out invalid book: "${book.title}" by ${book.author || 'no author'}`);
       }
       return !isInvalid;
     });
     
-    console.log(`[API] Filtered ${validatedBooks.length - validBooks.length} invalid books, ${validBooks.length} valid books before deduplication`);
+    console.log(`[API] Validation complete: ${validatedBooks.length} validated, ${validatedBooks.length - validBooks.length} invalid, ${validBooks.length} valid`);
     
     // Deduplicate again AFTER validation (validation might have normalized titles/authors differently)
     const finalBooks = dedupeBooks(validBooks);

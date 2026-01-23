@@ -90,17 +90,25 @@ export const ScansTab: React.FC = () => {
   }, []);
 
   // Hide/show tab bar based on camera state
-  useEffect(() => {
-    if (isCameraActive) {
-      navigation.setOptions({
-        tabBarStyle: { display: 'none' }
-      });
-    } else {
-      navigation.setOptions({
-        tabBarStyle: undefined // Reset to default
-      });
-    }
-  }, [isCameraActive, navigation]);
+  useFocusEffect(
+    useCallback(() => {
+      if (isCameraActive) {
+        navigation.getParent()?.setOptions({
+          tabBarStyle: { display: 'none' }
+        });
+      } else {
+        navigation.getParent()?.setOptions({
+          tabBarStyle: undefined // Reset to default
+        });
+      }
+      return () => {
+        // Cleanup: restore tab bar when leaving screen
+        navigation.getParent()?.setOptions({
+          tabBarStyle: undefined
+        });
+      };
+    }, [isCameraActive, navigation])
+  );
   
   const screenWidth = dimensions.width || 375; // Fallback to default width
   const screenHeight = dimensions.height || 667; // Fallback to default height
@@ -3043,12 +3051,12 @@ export const ScansTab: React.FC = () => {
         // Close camera automatically after taking photo
         setIsCameraActive(false);
         
-        // Reset caption modal state
-        setShowCaptionModal(false);
-        setCaptionText('');
+          // Reset caption modal state
+          setShowCaptionModal(false);
+          setCaptionText('');
         
         // Start scanning immediately
-        handleImageSelected(photoUri);
+          handleImageSelected(photoUri);
       } else {
         console.error('Photo captured but no URI returned');
         Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');

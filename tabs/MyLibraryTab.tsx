@@ -307,7 +307,7 @@ export const MyLibraryTab: React.FC = () => {
         console.log('📥 Loading from Supabase (in background)...');
         const supabasePromise = loadBooksFromSupabase(user.uid);
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Supabase load timeout after 10 seconds')), 10000)
+          setTimeout(() => reject(new Error('Supabase load timeout after 20 seconds')), 20000)
         );
         
         supabaseBooks = await Promise.race([supabasePromise, timeoutPromise]) as any;
