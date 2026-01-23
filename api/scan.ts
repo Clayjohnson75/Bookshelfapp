@@ -35,6 +35,40 @@ function normalizeWithOCR(s?: string): string {
   return normalized;
 }
 
+/**
+ * Format author name: capitalize first letter of first and last name, use full name
+ * Examples:
+ * - "JOHN SMITH" -> "John Smith"
+ * - "jane doe" -> "Jane Doe"
+ * - "MARY J. JONES" -> "Mary J. Jones"
+ * - "smith, john" -> "John Smith" (handle comma-separated)
+ */
+function formatAuthorName(author?: string | null): string | null {
+  if (!author) return null;
+  
+  // Handle comma-separated names (e.g., "Smith, John" -> "John Smith")
+  let name = author.trim();
+  if (name.includes(',')) {
+    const parts = name.split(',').map(p => p.trim());
+    if (parts.length === 2) {
+      name = `${parts[1]} ${parts[0]}`; // Swap last, first to first last
+    }
+  }
+  
+  // Split into words and capitalize each word properly
+  const words = name.split(/\s+/).filter(w => w.length > 0);
+  const formatted = words.map(word => {
+    // Handle initials (e.g., "J." stays as "J.")
+    if (word.length === 1 || (word.length === 2 && word.endsWith('.'))) {
+      return word.toUpperCase();
+    }
+    // Capitalize first letter, lowercase the rest
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  }).join(' ');
+  
+  return formatted;
+}
+
 function normalizeTitle(title?: string) {
   if (!title) return '';
   const normalized = normalize(title);
@@ -212,7 +246,7 @@ function cheapValidate(book: any): { isValid: boolean; normalizedBook: any } {
   const normalizedBook = {
     ...book,
     title: book.title?.trim() || null,
-    author: book.author?.trim() || null,
+    author: formatAuthorName(book.author), // Format author name properly
     spine_text: book.spine_text?.trim() || spineText,
     language: book.language || 'en',
     spine_index: book.spine_index ?? 0,
@@ -266,7 +300,7 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000); // 45 seconds - gpt-4o is faster than gpt-5
+  const timeout = setTimeout(() => controller.abort(), 60000); // 60 seconds - increased for structured output
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -290,6 +324,7 @@ CRITICAL RULES:
 - AUTHOR is the person's name who wrote it (usually smaller text, below or above title)
 - DO NOT swap title and author - titles are book names, authors are people's names
 - If you see "John Smith" and "The Great Novel", "John Smith" is the AUTHOR, "The Great Novel" is the TITLE
+- Format author names: capitalize first letter of first and last name, use full name (e.g., "John Smith" not "JOHN SMITH" or "john smith")
 - Number books left-to-right: spine_index 0, 1, 2, etc.
 - Capture raw spine_text exactly as you see it (even if messy)
 - Detect language: "en", "es", "fr", or "unknown"
@@ -309,7 +344,7 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
             ],
           },
         ],
-        max_tokens: 2000, // gpt-4o doesn't use reasoning tokens, so 2000 is plenty
+        max_tokens: 4000, // Increased for structured output with spine_text, spine_index, etc.
       }),
     });
     if (!res.ok) {
@@ -796,7 +831,7 @@ Return ONLY valid JSON array (no markdown, no code blocks):
           results.push({
             ...book,
             title: validation.final_title || book.title,
-            author: validation.final_author || book.author,
+            author: formatAuthorName(validation.final_author || book.author), // Format author name
             confidence: validation.final_confidence || book.confidence,
             validationFixes: validation.fixes || [],
             validationNotes: validation.notes,
@@ -941,7 +976,7 @@ Remember: When in doubt, KEEP IT. Only reject if clearly not a real book. Respon
       return {
         ...book,
         title: analysis.title || book.title,
-        author: correctedAuthor,
+        author: formatAuthorName(correctedAuthor), // Format author name
         confidence: analysis.confidence || book.confidence,
       };
     } else {
@@ -1061,7 +1096,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return {
             ...book,
             title: author,
-            author: title,
+            author: formatAuthorName(title), // Format author name after swap
           };
         }
         

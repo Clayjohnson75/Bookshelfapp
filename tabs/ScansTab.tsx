@@ -90,25 +90,27 @@ export const ScansTab: React.FC = () => {
   }, []);
 
   // Hide/show tab bar based on camera state
-  useFocusEffect(
-    useCallback(() => {
-      if (isCameraActive) {
-        navigation.getParent()?.setOptions({
-          tabBarStyle: { display: 'none' }
-        });
-      } else {
-        navigation.getParent()?.setOptions({
-          tabBarStyle: undefined // Reset to default
-        });
-      }
-      return () => {
-        // Cleanup: restore tab bar when leaving screen
-        navigation.getParent()?.setOptions({
-          tabBarStyle: undefined
-        });
-      };
-    }, [isCameraActive, navigation])
-  );
+  useEffect(() => {
+    const parent = navigation.getParent();
+    if (!parent) return;
+    
+    if (isCameraActive) {
+      parent.setOptions({
+        tabBarStyle: { display: 'none' }
+      });
+    } else {
+      parent.setOptions({
+        tabBarStyle: undefined // Reset to default
+      });
+    }
+    
+    // Cleanup: restore tab bar when component unmounts or camera closes
+    return () => {
+      parent.setOptions({
+        tabBarStyle: undefined
+      });
+    };
+  }, [isCameraActive, navigation]);
   
   const screenWidth = dimensions.width || 375; // Fallback to default width
   const screenHeight = dimensions.height || 667; // Fallback to default height
