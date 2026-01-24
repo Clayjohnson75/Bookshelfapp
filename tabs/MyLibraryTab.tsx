@@ -22,9 +22,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import Constants from 'expo-constants';
 import { Book, Photo, UserProfile, Folder } from '../types/BookTypes';
-import { useAuth } from '../auth/SimpleAuthContext';
+import { useAuth, isGuestUser } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
+import { LoginScreen } from '../auth/AuthScreens';
 import { LibraryView } from '../screens/LibraryView';
 import { loadBooksFromSupabase, deletePhotoFromSupabase } from '../services/supabaseSync';
 
@@ -171,7 +172,8 @@ export const MyLibraryTab: React.FC = () => {
 
   // Load data immediately when component mounts or user changes
   useEffect(() => {
-    if (user) {
+    // Only load data if user is authenticated (not guest, not null)
+    if (user && !isGuestUser(user)) {
       // Load data immediately on mount/user change
       console.log('🔄 User changed in MyLibraryTab, loading data immediately...');
       // Add a small delay to ensure component is fully mounted
@@ -182,9 +184,9 @@ export const MyLibraryTab: React.FC = () => {
       }, 100);
       return () => clearTimeout(timeoutId);
     } else {
-      // Clear data when user signs out
-      console.log('🔄 User signed out, clearing data...');
-      setApprovedBooks([]);
+      // Clear data when user signs out or is a guest
+      console.log('🔄 User signed out or is guest, clearing data...');
+      setBooks([]);
       setUserProfile(null);
     }
   }, [user]);
@@ -264,13 +266,17 @@ export const MyLibraryTab: React.FC = () => {
   // Reload data when tab is focused
   useFocusEffect(
     React.useCallback(() => {
-      loadUserData();
-    }, [user])
+      // Only load data if user is authenticated (not guest, not null)
+      if (user && !isGuestUser(user)) {
+        loadUserData();
+      }
+    }, [user, navigation])
   );
 
   const loadUserData = async () => {
-    if (!user) {
-      console.log('⚠️ loadUserData called but user is null');
+    // Don't load data for null users or guest users
+    if (!user || isGuestUser(user)) {
+      console.log('⚠️ loadUserData called but user is null or guest');
       return;
     }
     
@@ -1549,6 +1555,22 @@ export const MyLibraryTab: React.FC = () => {
     
     return positions;
   }, [collageBooks, collageLayout, screenWidth, insets.top]);
+
+  // If user is signed out or is a guest, show login screen directly (not as a modal)
+  if (!user || isGuestUser(user)) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
+        <LoginScreen onAuthSuccess={() => {
+          // After successful login, navigate back to Scans tab
+          // This will trigger checkAndCompletePendingActions in ScansTab
+          // to complete any pending approval actions
+          setTimeout(() => {
+            navigation.navigate('Scans' as never);
+          }, 100);
+        }} />
+      </View>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeContainer} edges={['left','right']}>

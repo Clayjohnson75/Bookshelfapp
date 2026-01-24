@@ -2,7 +2,7 @@ import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'rea
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../auth/SimpleAuthContext';
-import { getUserScanUsage, formatResetDate, ScanUsage } from '../services/subscriptionService';
+import { getUserScanUsage, formatResetDate, ScanUsage, isSubscriptionUIHidden } from '../services/subscriptionService';
 
 interface ScanLimitBannerProps {
   onUpgradePress: () => void;
@@ -52,6 +52,11 @@ export const ScanLimitBanner = forwardRef<ScanLimitBannerRef, ScanLimitBannerPro
     );
 
     if (loading || !usage) {
+      return null;
+    }
+
+    // 🎛️ FEATURE FLAG: Hide banner completely when pro is enabled for everyone
+    if (isSubscriptionUIHidden()) {
       return null;
     }
 

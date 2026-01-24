@@ -2,22 +2,34 @@ import React from 'react';
 import { View, StyleSheet, Image } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useNavigation } from '@react-navigation/native';
 import { ScansTab } from './tabs/ScansTab';
 import { ExploreTab } from './tabs/ExploreTab';
 import { MyLibraryTab } from './tabs/MyLibraryTab';
 import { ScanningNotification } from './components/ScanningNotification';
+import { useAuth, isGuestUser } from './auth/SimpleAuthContext';
+import { useCamera } from './contexts/CameraContext';
 
 const Tab = createBottomTabNavigator();
 
 export const TabNavigator = () => {
+  const { user } = useAuth();
+  const navigation = useNavigation();
+  const { isCameraActive } = useCamera();
+  
   return (
     <GestureHandlerRootView style={styles.container}>
       <Tab.Navigator
+        initialRouteName="Scans" // Always start on Scans tab (especially for guests)
         screenOptions={{
           tabBarActiveTintColor: '#2c3e50',
           tabBarInactiveTintColor: '#bdc3c7',
           headerShown: false,
-          tabBarStyle: {
+          tabBarStyle: isCameraActive ? {
+            display: 'none',
+            height: 0,
+            opacity: 0,
+          } : {
             backgroundColor: '#ffffff',
             borderTopWidth: 0.5,
             borderTopColor: '#e2e8f0',
@@ -58,6 +70,14 @@ export const TabNavigator = () => {
                 resizeMode="contain"
               />
             ),
+          }}
+          listeners={{
+            tabPress: (e) => {
+              // If user is signed out (null) or is a guest, navigate and show login
+              if (!user || isGuestUser(user)) {
+                // Don't prevent navigation - let it navigate, then MyLibraryTab will auto-show login
+              }
+            },
           }}
         />
       </Tab.Navigator>

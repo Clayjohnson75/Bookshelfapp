@@ -13,7 +13,8 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../auth/SimpleAuthContext';
+import { useAuth, isGuestUser } from '../auth/SimpleAuthContext';
+import { LoginScreen } from '../auth/AuthScreens';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabaseClient';
 import * as BiometricAuth from '../services/biometricAuth';
@@ -467,7 +468,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
         </View>
 
         <ScrollView style={styles.content}>
-          {/* Account Section */}
+          {/* Guest Sign In Section */}
+          {user && isGuestUser(user) && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Sign In</Text>
+              <Text style={styles.settingDescription}>
+                Sign in to save your books, sync across devices, and access all features!
+              </Text>
+              <View style={{ marginTop: 20 }}>
+                <LoginScreen onAuthSuccess={() => {
+                  onClose();
+                  // User will be automatically updated in auth context
+                }} />
+              </View>
+            </View>
+          )}
+
+          {/* Account Section - Only show for authenticated users */}
+          {user && !isGuestUser(user) && (
+            <>
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Account</Text>
 
@@ -532,35 +551,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
           </View>
 
           {/* Subscription Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Subscription</Text>
-            
-            <View style={styles.infoRow}>
-              <View style={styles.infoContent}>
-                <Text style={styles.infoLabel}>Current Plan</Text>
-                <Text style={[styles.infoValue, subscriptionTier === 'pro' && { color: '#27ae60', fontWeight: '700' }]}>
-                  {subscriptionTier === 'pro' ? 'Pro' : 'Free'}
-                </Text>
+          {/* 🎛️ FEATURE FLAG: Hide entire subscription section when pro is enabled for everyone */}
+          {!isSubscriptionUIHidden() && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Subscription</Text>
+              
+              <View style={styles.infoRow}>
+                <View style={styles.infoContent}>
+                  <Text style={styles.infoLabel}>Current Plan</Text>
+                  <Text style={[styles.infoValue, subscriptionTier === 'pro' && { color: '#27ae60', fontWeight: '700' }]}>
+                    {subscriptionTier === 'pro' ? 'Pro' : 'Free'}
+                  </Text>
+                </View>
               </View>
+
+              {subscriptionTier === 'free' && (
+                <TouchableOpacity
+                  style={styles.upgradeButton}
+                  onPress={() => setShowUpgradeModal(true)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.upgradeButtonText}>Upgrade to Pro</Text>
+                </TouchableOpacity>
+              )}
+
+              {subscriptionTier === 'pro' && (
+                <View style={styles.proBadge}>
+                  <Text style={styles.proBadgeText}>✓ Unlimited Scans</Text>
+                </View>
+              )}
             </View>
-
-            {/* 🎛️ FEATURE FLAG: Hide upgrade button when pro is enabled for everyone */}
-            {subscriptionTier === 'free' && !isSubscriptionUIHidden() && (
-              <TouchableOpacity
-                style={styles.upgradeButton}
-                onPress={() => setShowUpgradeModal(true)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.upgradeButtonText}>Upgrade to Pro</Text>
-              </TouchableOpacity>
-            )}
-
-            {subscriptionTier === 'pro' && (
-              <View style={styles.proBadge}>
-                <Text style={styles.proBadgeText}>✓ Unlimited Scans</Text>
-              </View>
-            )}
-          </View>
+          )}
 
           {/* Additional Settings Section */}
           <View style={styles.section}>
@@ -679,36 +700,40 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
             </TouchableOpacity>
           </View>
 
-          {/* Delete Account Section - At the very bottom */}
-          <View style={[styles.section, styles.bottomSection]}>
-            <TouchableOpacity
-              style={styles.deleteAccountButton}
-              onPress={async () => {
-                Alert.alert(
-                  'Delete Account',
-                  'Are you sure you want to delete your account? This will permanently delete your account and all your data. This action cannot be undone.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Delete',
-                      style: 'destructive',
-                      onPress: async () => {
-                        try {
-                          await deleteAccount();
-                          onClose();
-                        } catch (error) {
-                          console.error('Error deleting account:', error);
-                          Alert.alert('Error', 'Failed to delete account. Please try again.');
-                        }
+          {/* Delete Account Section - At the very bottom - Only for authenticated users */}
+          {user && !isGuestUser(user) && (
+            <View style={[styles.section, styles.bottomSection]}>
+              <TouchableOpacity
+                style={styles.deleteAccountButton}
+                onPress={async () => {
+                  Alert.alert(
+                    'Delete Account',
+                    'Are you sure you want to delete your account? This will permanently delete your account and all your data. This action cannot be undone.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: async () => {
+                          try {
+                            await deleteAccount();
+                            onClose();
+                          } catch (error) {
+                            console.error('Error deleting account:', error);
+                            Alert.alert('Error', 'Failed to delete account. Please try again.');
+                          }
+                        },
                       },
-                    },
-                  ]
-                );
-              }}
-            >
-              <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
-            </TouchableOpacity>
-          </View>
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          </>
+          )}
         </ScrollView>
 
         {/* Upgrade Modal */}

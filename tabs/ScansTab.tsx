@@ -28,8 +28,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../auth/SimpleAuthContext';
+import { useAuth, isGuestUser, GUEST_USER_ID } from '../auth/SimpleAuthContext';
 import { useScanning } from '../contexts/ScanningContext';
+import { useCamera } from '../contexts/CameraContext';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import {
   loadBooksFromSupabase,
@@ -89,28 +90,6 @@ export const ScansTab: React.FC = () => {
     return () => subscription?.remove();
   }, []);
 
-  // Hide/show tab bar based on camera state
-  useEffect(() => {
-    const parent = navigation.getParent();
-    if (!parent) return;
-    
-    if (isCameraActive) {
-      parent.setOptions({
-        tabBarStyle: { display: 'none' }
-      });
-    } else {
-      parent.setOptions({
-        tabBarStyle: undefined // Reset to default
-      });
-    }
-    
-    // Cleanup: restore tab bar when component unmounts or camera closes
-    return () => {
-      parent.setOptions({
-        tabBarStyle: undefined
-      });
-    };
-  }, [isCameraActive, navigation]);
   
   const screenWidth = dimensions.width || 375; // Fallback to default width
   const screenHeight = dimensions.height || 667; // Fallback to default height
@@ -120,9 +99,9 @@ export const ScansTab: React.FC = () => {
   const { scanProgress, setScanProgress, updateProgress } = useScanning();
   
   // Camera states
+  const { isCameraActive, setIsCameraActive } = useCamera();
   const [permission, requestPermission] = useCameraPermissions();
   const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
-  const [isCameraActive, setIsCameraActive] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0); // Zoom level (0 = no zoom, 1 = max zoom)
   const lastZoomRef = useRef(0); // Track last zoom for pinch gesture
@@ -183,19 +162,49 @@ export const ScansTab: React.FC = () => {
     console.log('🖼️ Image selected, checking scan limit...', uri);
     
     // Check if user can scan
-    if (user) {
+    // If user is null, treat as guest (shouldn't happen, but safety check)
+    if (!user || isGuestUser(user)) {
+      // Guest users (or null user): check if they've used their one free scan
+      const guestScanKey = 'guest_scan_used';
+      const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+      if (hasUsedScan === 'true') {
+        Alert.alert(
+          'Sign In Required',
+          'You\'ve used your free scan. Sign in to continue scanning and save your books to your profile!',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Sign In', 
+              onPress: () => {
+                // Navigate to settings to sign in
+                navigation.navigate('MyLibrary' as never);
+                // Settings modal will be shown from there
+              }
+            }
+          ]
+        );
+        return;
+      }
+      console.log('📱 Guest user: Allowing first free scan (local only)');
+      // Mark scan as used after successful scan (will be done after scan completes)
+    } else if (user) {
+      // Authenticated users: check scan limit
       const canScan = await canUserScan(user.uid);
       if (!canScan) {
         // Limit reached, show upgrade modal (only if subscription UI is not hidden)
         if (!isSubscriptionUIHidden()) {
-        Alert.alert(
-          'Scan Limit Reached',
-          'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Upgrade', onPress: () => setShowUpgradeModal(true) },
-          ]
-        );
+          Alert.alert(
+            'Scan Limit Reached',
+            'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Upgrade', onPress: () => {
+                if (!isSubscriptionUIHidden()) {
+                  setShowUpgradeModal(true);
+                }
+              }},
+            ]
+          );
         }
         return;
       }
@@ -276,6 +285,9 @@ export const ScansTab: React.FC = () => {
   
   // Folder management state
   const [folders, setFolders] = useState<Folder[]>([]);
+  
+  // Guest scan status
+  const [guestHasUsedScan, setGuestHasUsedScan] = useState<boolean>(false);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -516,6 +528,24 @@ export const ScansTab: React.FC = () => {
   const loadScanUsage = async () => {
     if (!user) {
       setCanScan(true); // Allow scanning if no user (shouldn't happen, but safe fallback)
+      return;
+    }
+    
+    // Guest users: 1 free scan per device
+    if (isGuestUser(user)) {
+      const guestScanKey = 'guest_scan_used';
+      const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+      const scansUsed = hasUsedScan === 'true' ? 1 : 0;
+      const scansRemaining = hasUsedScan === 'true' ? 0 : 1;
+      
+      setCanScan(scansRemaining > 0);
+      setScanUsage({
+        subscriptionTier: 'free',
+        scansUsed: scansUsed,
+        monthlyLimit: 1, // One free scan for guests
+        scansRemaining: scansRemaining,
+        resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      });
       return;
     }
     
@@ -781,11 +811,17 @@ export const ScansTab: React.FC = () => {
       let supabaseBooks: any = null;
       let supabasePhotos: any = null;
       
-      try {
-        const supabasePromise = Promise.all([
-          loadBooksFromSupabase(user.uid),
-          loadPhotosFromSupabase(user.uid),
-        ]);
+      // Skip Supabase for guest users (they only use local storage)
+      if (isGuestUser(user)) {
+        console.log('📱 Guest user: Skipping Supabase load, using local data only');
+        supabaseBooks = null;
+        supabasePhotos = null;
+      } else {
+        try {
+          const supabasePromise = Promise.all([
+            loadBooksFromSupabase(user.uid),
+            loadPhotosFromSupabase(user.uid),
+          ]);
         
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Supabase load timeout')), 5000)
@@ -996,6 +1032,7 @@ export const ScansTab: React.FC = () => {
       if (supabasePhotos) {
         await AsyncStorage.setItem(userPhotosKey, JSON.stringify(supabasePhotos));
       }
+      } // Close else block
       
     } catch (error) {
       console.error('Error loading user data from Supabase, falling back to AsyncStorage:', error);
@@ -1080,6 +1117,23 @@ export const ScansTab: React.FC = () => {
     }
   };
   
+
+  // Check guest scan status
+  useEffect(() => {
+    const checkGuestScanStatus = async () => {
+      if (!user || !isGuestUser(user)) {
+        setGuestHasUsedScan(false);
+        return;
+      }
+      
+      const guestScanKey = 'guest_scan_used';
+      const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+      setGuestHasUsedScan(hasUsedScan === 'true');
+    };
+    
+    checkGuestScanStatus();
+  }, [user, pendingBooks]); // Re-check when pendingBooks changes (after scan completes)
+
   // Reload data when tab is focused (user navigates back to this tab)
   // Must be after loadUserData and loadScanUsage are defined
   useFocusEffect(
@@ -1093,15 +1147,54 @@ export const ScansTab: React.FC = () => {
         loadScanUsage().catch(error => {
           console.error('❌ Error reloading scan usage on focus:', error);
         });
+        
+        // Check for pending approval actions (from guest user trying to add books)
+        checkAndCompletePendingActions();
+        
+        // Check guest scan status
+        if (isGuestUser(user)) {
+          AsyncStorage.getItem('guest_scan_used').then(hasUsedScan => {
+            setGuestHasUsedScan(hasUsedScan === 'true');
+          });
+        }
+      } else {
+        // If no user, check if guest scan was used
+        AsyncStorage.getItem('guest_scan_used').then(hasUsedScan => {
+          setGuestHasUsedScan(hasUsedScan === 'true');
+        });
       }
-    }, [user])
+    }, [user, checkAndCompletePendingActions])
   );
+
+  // Helper to show login prompt for guest users
+  const showLoginPrompt = (message: string, onLogin?: () => void) => {
+    Alert.alert(
+      'Sign In Required',
+      message,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Sign In', 
+          onPress: () => {
+            // Navigate to login - we'll need to add a way to show login screen
+            // For now, just show an alert with instructions
+            Alert.alert(
+              'Sign In',
+              'Please go to Settings and sign in to access this feature.',
+              [{ text: 'OK' }]
+            );
+            if (onLogin) onLogin();
+          }
+        }
+      ]
+    );
+  };
 
   const saveUserData = async (newPending: Book[], newApproved: Book[], newRejected: Book[], newPhotos: Photo[]) => {
     if (!user) return;
     
     try {
-      // Save to AsyncStorage for offline access (fast, local)
+      // Save to AsyncStorage for offline access (fast, local) - works for guests
       const userPendingKey = `pending_books_${user.uid}`;
       const userApprovedKey = `approved_books_${user.uid}`;
       const userRejectedKey = `rejected_books_${user.uid}`;
@@ -1114,7 +1207,15 @@ export const ScansTab: React.FC = () => {
         AsyncStorage.setItem(userPhotosKey, JSON.stringify(newPhotos)),
       ]);
       
-      // Save to Supabase for permanent cloud storage (async, don't block)
+      // Save to Supabase for permanent cloud storage - only for authenticated users
+      if (isGuestUser(user)) {
+        // Guest users: data is saved locally only
+        // If they want cloud sync, they'll be prompted to sign in when they try to access cloud features
+        console.log('📱 Guest user: Data saved locally. Sign in to sync across devices.');
+        return;
+      }
+      
+      // Authenticated users: save to cloud
       Promise.all([
         // Save all books to Supabase
         ...newPending.map(book => saveBookToSupabase(user.uid, book, 'pending')),
@@ -1381,7 +1482,8 @@ export const ScansTab: React.FC = () => {
             );
             
             // Save to Supabase immediately if cover, description, or stats were fetched
-            if (user && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
+            // Skip Supabase for guest users
+            if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
               const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
               console.log(`💾 Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
               saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
@@ -1630,8 +1732,8 @@ export const ScansTab: React.FC = () => {
           console.log(`✅ Server API returned ${serverBooks.length} books`);
           }
           
-          // If API didn't track the scan, do it client-side as fallback
-          if (user && (!data.scanTracked)) {
+          // If API didn't track the scan, do it client-side as fallback (skip for guest users)
+          if (user && (!data.scanTracked) && !isGuestUser(user)) {
             console.warn('⚠️ API did not track scan, attempting client-side fallback...');
             incrementScanCount(user.uid).catch(err => {
               console.error('❌ Client-side scan tracking also failed:', err);
@@ -1655,7 +1757,11 @@ export const ScansTab: React.FC = () => {
                 'Scan Limit Reached',
                 errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
                 [
-                  { text: 'OK', onPress: () => setShowUpgradeModal(true) }
+                  { text: 'OK', onPress: () => {
+                    if (!isSubscriptionUIHidden()) {
+                      setShowUpgradeModal(true);
+                    }
+                  }}
                 ]
               );
               }
@@ -1950,6 +2056,13 @@ export const ScansTab: React.FC = () => {
         return;
       }
       
+      // Mark guest scan as used if this is a successful scan
+      // If user is null, treat as guest (shouldn't happen, but safety check)
+      if ((!user || isGuestUser(user)) && allBooks.length > 0) {
+        await AsyncStorage.setItem('guest_scan_used', 'true');
+        console.log('📱 Guest scan marked as used');
+      }
+      
       // Separate complete and incomplete books
       const newPendingBooks = allBooks.filter(book => !isIncompleteBook(book));
       const newIncompleteBooks: Book[] = allBooks.filter(book => isIncompleteBook(book)).map(book => ({
@@ -2242,6 +2355,15 @@ export const ScansTab: React.FC = () => {
   };
 
   const approveBook = async (bookId: string) => {
+    // Guest users: navigate to My Library (login screen) and store pending action
+    if (user && isGuestUser(user)) {
+      // Store the book ID to approve after login
+      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_book', bookId }));
+      // Navigate to My Library tab which shows login screen
+      navigation.navigate('MyLibrary' as never);
+      return;
+    }
+    
     const bookToApprove = pendingBooks.find(book => book.id === bookId);
     if (!bookToApprove) return;
 
@@ -2385,6 +2507,15 @@ export const ScansTab: React.FC = () => {
   }, [pendingBooks]);
 
   const addAllBooks = async () => {
+    // Guest users: navigate to My Library (login screen) and store pending action
+    if (user && isGuestUser(user)) {
+      // Store action to approve all books after login
+      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_all' }));
+      // Navigate to My Library tab which shows login screen
+      navigation.navigate('MyLibrary' as never);
+      return;
+    }
+    
     // Approve all pending books except incomplete ones
     const booksToApprove = pendingBooks.filter(book => book.status !== 'incomplete');
     
@@ -2538,6 +2669,16 @@ export const ScansTab: React.FC = () => {
   };
 
   const approveSelectedBooks = useCallback(async () => {
+    // Guest users: navigate to My Library (login screen) and store pending action
+    if (user && isGuestUser(user)) {
+      // Store the selected book IDs to approve after login
+      const bookIds = Array.from(selectedBooks);
+      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_selected', bookIds }));
+      // Navigate to My Library tab which shows login screen
+      navigation.navigate('MyLibrary' as never);
+      return;
+    }
+    
     const currentSelected = selectedBooks;
     const selectedBookObjs = pendingBooks.filter(book => currentSelected.has(book.id));
     const remainingBooks = pendingBooks.filter(book => !currentSelected.has(book.id));
@@ -2561,7 +2702,91 @@ export const ScansTab: React.FC = () => {
         console.error('Error fetching covers for selected books:', error);
       });
     }
-  }, [pendingBooks, approvedBooks, rejectedBooks, photos, selectedBooks]);
+  }, [pendingBooks, approvedBooks, rejectedBooks, photos, selectedBooks, user, navigation]);
+
+  // Check for pending actions after login and complete them
+  const checkAndCompletePendingActions = useCallback(async () => {
+    try {
+      const pendingActionData = await AsyncStorage.getItem('pending_approve_action');
+      if (!pendingActionData) return;
+      
+      const pendingAction = JSON.parse(pendingActionData);
+      
+      // Only complete if user is now authenticated (not guest)
+      if (!user || isGuestUser(user)) return;
+      
+      console.log('✅ User logged in, completing pending action:', pendingAction.type);
+      
+      if (pendingAction.type === 'approve_book') {
+        // Find and approve the book
+        const bookToApprove = pendingBooks.find(book => book.id === pendingAction.bookId);
+        if (bookToApprove) {
+          const approvedBook: Book = {
+            ...bookToApprove,
+            status: 'approved' as const
+          };
+          const updatedPending = pendingBooks.filter(book => book.id !== pendingAction.bookId);
+          const updatedApproved = deduplicateBooks(approvedBooks, [approvedBook]);
+          setPendingBooks(updatedPending);
+          setApprovedBooks(updatedApproved);
+          await saveUserData(updatedPending, updatedApproved, rejectedBooks, photos);
+          
+          // Fetch cover if not already loaded
+          if (!approvedBook.coverUrl && !approvedBook.localCoverPath) {
+            fetchCoversForBooks([approvedBook]).catch(error => {
+              console.error('Error fetching cover for approved book:', error);
+            });
+          }
+        }
+      } else if (pendingAction.type === 'approve_selected') {
+        // Approve selected books
+        const selectedBookObjs = pendingBooks.filter(book => pendingAction.bookIds.includes(book.id));
+        const remainingBooks = pendingBooks.filter(book => !pendingAction.bookIds.includes(book.id));
+        const newApprovedBooks = selectedBookObjs.map(book => ({ ...book, status: 'approved' as const }));
+        const updatedApproved = deduplicateBooks(approvedBooks, newApprovedBooks);
+        setPendingBooks(remainingBooks);
+        setApprovedBooks(updatedApproved);
+        setSelectedBooks(new Set());
+        await saveUserData(remainingBooks, updatedApproved, rejectedBooks, photos);
+        
+        // Fetch covers for all selected books that don't have covers yet
+        const booksNeedingCovers = newApprovedBooks.filter(book => !book.coverUrl && !book.localCoverPath);
+        if (booksNeedingCovers.length > 0) {
+          fetchCoversForBooks(booksNeedingCovers).catch(error => {
+            console.error('Error fetching covers for selected books:', error);
+          });
+        }
+      } else if (pendingAction.type === 'approve_all') {
+        // Approve all pending books except incomplete ones
+        const booksToApprove = pendingBooks.filter(book => book.status !== 'incomplete');
+        if (booksToApprove.length > 0) {
+          const approvedBooksData = booksToApprove.map(book => ({ ...book, status: 'approved' as const }));
+          const updatedApproved = deduplicateBooks(approvedBooks, approvedBooksData);
+          const remainingPending = pendingBooks.filter(book => book.status === 'incomplete');
+          setApprovedBooks(updatedApproved);
+          setPendingBooks(remainingPending);
+          setSelectedBooks(new Set());
+          await saveUserData(remainingPending, updatedApproved, rejectedBooks, photos);
+          
+          // Fetch covers for all approved books that don't have covers yet
+          const booksNeedingCovers = approvedBooksData.filter(book => !book.coverUrl && !book.localCoverPath);
+          if (booksNeedingCovers.length > 0) {
+            fetchCoversForBooks(booksNeedingCovers).catch(error => {
+              console.error('Error fetching covers for approved books:', error);
+            });
+          }
+        }
+      }
+      
+      // Clear the pending action
+      await AsyncStorage.removeItem('pending_approve_action');
+      
+      // Navigate back to Scans tab to show the result
+      navigation.navigate('Scans' as never);
+    } catch (error) {
+      console.error('Error completing pending action:', error);
+    }
+  }, [user, pendingBooks, approvedBooks, rejectedBooks, photos, navigation, deduplicateBooks, saveUserData, fetchCoversForBooks]);
 
   // Edit functions for pending books
   const handleRemoveCover = useCallback(async (bookId: string) => {
@@ -2829,6 +3054,9 @@ export const ScansTab: React.FC = () => {
       scanCaptionsRef.current.set(scanId, caption);
     }
     
+    // Clear any lingering selections before a new scan starts (outside of setState to avoid render conflicts)
+    setSelectedBooks(new Set());
+    
     // Check if this URI is already in the queue to prevent duplicates
     setScanQueue(prevQueue => {
       const isAlreadyQueued = prevQueue.some(item => item.uri === uri && item.status === 'pending');
@@ -2842,9 +3070,6 @@ export const ScansTab: React.FC = () => {
         uri,
         status: 'pending'
       };
-      
-      // Clear any lingering selections before a new scan starts
-      setSelectedBooks(new Set());
 
       // Calculate new queue state
       const updatedQueue = [...prevQueue, newScanItem];
@@ -3038,6 +3263,7 @@ export const ScansTab: React.FC = () => {
       // Store the camera ref locally to prevent issues if component unmounts
       const currentCameraRef = cameraRef;
       
+      // Take photo and wait for it to complete before closing camera
       const photo = await currentCameraRef.takePictureAsync({
           quality: 0.8,
           base64: false,
@@ -3047,33 +3273,52 @@ export const ScansTab: React.FC = () => {
         if (photo?.uri) {
           console.log('📷 Photo taken:', photo.uri);
         
-        // Store photo URI first before any state changes
-        const photoUri = photo.uri;
-        
-        // Close camera automatically after taking photo
-        setIsCameraActive(false);
-        
+          // Store photo URI first before any state changes
+          const photoUri = photo.uri;
+          
+          // Close camera AFTER photo is successfully taken
+          // Use setTimeout to ensure photo processing is complete
+          setTimeout(() => {
+            setIsCameraActive(false);
+          }, 100);
+          
           // Reset caption modal state
           setShowCaptionModal(false);
           setCaptionText('');
         
-        // Start scanning immediately
+          // Start scanning immediately
           handleImageSelected(photoUri);
-      } else {
-        console.error('Photo captured but no URI returned');
-        Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
+        } else {
+          console.error('Photo captured but no URI returned');
+          Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
         }
     } catch (error: any) {
         console.error('Error taking picture:', error);
       
       // Only show alert if camera is still active (not unmounted)
-      if (isCameraActive) {
+      // Don't close camera on error - let user try again
+      if (isCameraActive && error?.message?.includes('unmounted')) {
+        // Camera was unmounted - this is expected if user closed it manually
+        console.log('Camera was unmounted during photo capture (expected if closed manually)');
+      } else if (isCameraActive) {
         Alert.alert('Camera Error', 'Failed to take picture. Please try again.');
       }
     }
   };
 
   const pickImage = async () => {
+    // Check guest scan limit before opening image picker
+    // If user is null, treat as guest (shouldn't happen, but safety check)
+    if (!user || isGuestUser(user)) {
+      const guestScanKey = 'guest_scan_used';
+      const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+      if (hasUsedScan === 'true') {
+        // Navigate to My Library tab which shows login screen
+        navigation.navigate('MyLibrary' as never);
+        return;
+      }
+    }
+    
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
@@ -3204,6 +3449,18 @@ export const ScansTab: React.FC = () => {
   };
 
   const handleStartCamera = async () => {
+    // Check guest scan limit before opening camera
+    // If user is null, treat as guest (shouldn't happen, but safety check)
+    if (!user || isGuestUser(user)) {
+      const guestScanKey = 'guest_scan_used';
+      const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+      if (hasUsedScan === 'true') {
+        // Navigate to My Library tab which shows login screen
+        navigation.navigate('MyLibrary' as never);
+        return;
+      }
+    }
+    
     if (!permission?.granted) {
       const response = await requestPermission();
       if (!response.granted) {
@@ -3424,6 +3681,17 @@ export const ScansTab: React.FC = () => {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Guest Scan Notification Bar - Only show for guest users, not signed-in users */}
+      {user && isGuestUser(user) && (
+        <View style={styles.guestScanNotification}>
+          <Text style={styles.guestScanNotificationText}>
+            {guestHasUsedScan 
+              ? '0 free scans remaining. Sign in to continue scanning!'
+              : 'You have 1 free scan before signing in'}
+          </Text>
+        </View>
+      )}
 
       {/* Pending Books - Need Approval */}
       {pendingBooks.length > 0 && (
@@ -4595,6 +4863,29 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
   scanButtonTextDisabled: {
     color: '#6b7280', // Darker gray text when disabled for better visibility
     textDecorationLine: 'line-through',
+  },
+  guestScanNotification: {
+    backgroundColor: '#fef3c7', // Light yellow/amber background
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    marginHorizontal: 20,
+    marginTop: -10,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fbbf24', // Amber border
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  guestScanNotificationText: {
+    color: '#92400e', // Dark amber text
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
+    letterSpacing: 0.2,
   },
   cameraContainer: {
     flex: 1,

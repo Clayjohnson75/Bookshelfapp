@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import { supabase } from '../lib/supabaseClient';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import * as BiometricAuth from '../services/biometricAuth';
+import { saveBookToSupabase, savePhotoToSupabase } from '../services/supabaseSync';
 
 // Helper to read env vars
 const getEnvVar = (key: string): string => {
@@ -20,7 +21,16 @@ interface User {
   username: string;
   displayName?: string;
   photoURL?: string;
+  isGuest?: boolean; // Flag to identify guest users
 }
+
+// Guest user ID constant for local storage
+export const GUEST_USER_ID = 'guest_user';
+
+// Helper function to check if a user is a guest
+export const isGuestUser = (user: User | null): boolean => {
+  return user?.uid === GUEST_USER_ID || user?.isGuest === true;
+};
 
 interface AuthContextType {
   user: User | null;
@@ -210,6 +220,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
     setUser(demoUser);
     await saveUserToStorageFn(demoUser);
+    
+    // Transfer guest data to the demo account
+    await transferGuestDataToUser(DEMO_UID);
   };
 
   const fetchUserProfile = async (userId: string): Promise<{ username: string; displayName?: string; photoURL?: string }> => {
@@ -387,6 +400,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             };
             setUser(userData);
             await saveUserToStorage(userData);
+            // Transfer guest data if user just signed in
+            await transferGuestDataToUser(sUser.id);
           } catch (error) {
             console.error('Error fetching user profile:', error);
             // If profile fetch fails, still set basic user data
@@ -397,6 +412,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             };
             setUser(userData);
             await saveUserToStorage(userData);
+            // Transfer guest data if user just signed in
+            await transferGuestDataToUser(sUser.id);
           }
         } else {
           setUser(null);
@@ -425,10 +442,40 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       const userData = await AsyncStorage.getItem('user');
       if (userData) {
-        setUser(JSON.parse(userData));
+        const parsed = JSON.parse(userData);
+        // Only load if it's not a guest user (guest users don't persist)
+        if (parsed.uid !== GUEST_USER_ID) {
+          setUser(parsed);
+        } else {
+          // If guest was saved, clear it and use fresh guest
+          setUser({
+            uid: GUEST_USER_ID,
+            email: '',
+            username: 'guest',
+            displayName: 'Guest',
+            isGuest: true,
+          });
+        }
+      } else {
+        // No user in storage - use guest mode
+        setUser({
+          uid: GUEST_USER_ID,
+          email: '',
+          username: 'guest',
+          displayName: 'Guest',
+          isGuest: true,
+        });
       }
     } catch (error) {
       console.error('Error loading user:', error);
+      // On error, default to guest mode
+      setUser({
+        uid: GUEST_USER_ID,
+        email: '',
+        username: 'guest',
+        displayName: 'Guest',
+        isGuest: true,
+      });
     } finally {
       setLoading(false);
     }
@@ -439,6 +486,124 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       await AsyncStorage.setItem('user', JSON.stringify(userData));
     } catch (error) {
       console.error('Error saving user:', error);
+    }
+  };
+
+  /**
+   * Transfer guest data (pending books, photos, etc.) to the signed-in user account
+   * This ensures that when a guest signs in, their scanned books and photos are preserved
+   */
+  const transferGuestDataToUser = async (userId: string): Promise<void> => {
+    try {
+      console.log('🔄 Checking for guest data to transfer...');
+      
+      // Load guest data from AsyncStorage
+      const guestPendingKey = `pending_books_${GUEST_USER_ID}`;
+      const guestApprovedKey = `approved_books_${GUEST_USER_ID}`;
+      const guestRejectedKey = `rejected_books_${GUEST_USER_ID}`;
+      const guestPhotosKey = `photos_${GUEST_USER_ID}`;
+      
+      const [guestPendingData, guestApprovedData, guestRejectedData, guestPhotosData] = await Promise.all([
+        AsyncStorage.getItem(guestPendingKey),
+        AsyncStorage.getItem(guestApprovedKey),
+        AsyncStorage.getItem(guestRejectedKey),
+        AsyncStorage.getItem(guestPhotosKey),
+      ]);
+      
+      // Parse guest data
+      const guestPending: Book[] = guestPendingData ? JSON.parse(guestPendingData) : [];
+      const guestApproved: Book[] = guestApprovedData ? JSON.parse(guestApprovedData) : [];
+      const guestRejected: Book[] = guestRejectedData ? JSON.parse(guestRejectedData) : [];
+      const guestPhotos: Photo[] = guestPhotosData ? JSON.parse(guestPhotosData) : [];
+      
+      // Check if there's any guest data to transfer
+      if (guestPending.length === 0 && guestApproved.length === 0 && guestRejected.length === 0 && guestPhotos.length === 0) {
+        console.log('✅ No guest data to transfer');
+        return;
+      }
+      
+      console.log(`📦 Transferring guest data: ${guestPending.length} pending, ${guestApproved.length} approved, ${guestRejected.length} rejected, ${guestPhotos.length} photos`);
+      
+      // Load existing user data (if any)
+      const userPendingKey = `pending_books_${userId}`;
+      const userApprovedKey = `approved_books_${userId}`;
+      const userRejectedKey = `rejected_books_${userId}`;
+      const userPhotosKey = `photos_${userId}`;
+      
+      const [userPendingData, userApprovedData, userRejectedData, userPhotosData] = await Promise.all([
+        AsyncStorage.getItem(userPendingKey),
+        AsyncStorage.getItem(userApprovedKey),
+        AsyncStorage.getItem(userRejectedKey),
+        AsyncStorage.getItem(userPhotosKey),
+      ]);
+      
+      const userPending: Book[] = userPendingData ? JSON.parse(userPendingData) : [];
+      const userApproved: Book[] = userApprovedData ? JSON.parse(userApprovedData) : [];
+      const userRejected: Book[] = userRejectedData ? JSON.parse(userRejectedData) : [];
+      const userPhotos: Photo[] = userPhotosData ? JSON.parse(userPhotosData) : [];
+      
+      // Helper function to deduplicate books by title + author
+      const deduplicateBooks = (existing: Book[], newBooks: Book[]): Book[] => {
+        const existingKeys = new Set(
+          existing.map(book => `${book.title?.toLowerCase().trim()}_${book.author?.toLowerCase().trim() || 'noauthor'}`)
+        );
+        
+        const uniqueNewBooks = newBooks.filter(book => {
+          const key = `${book.title?.toLowerCase().trim()}_${book.author?.toLowerCase().trim() || 'noauthor'}`;
+          return !existingKeys.has(key);
+        });
+        
+        return [...existing, ...uniqueNewBooks];
+      };
+      
+      // Merge guest data with user data (deduplicate)
+      const mergedPending = deduplicateBooks(userPending, guestPending);
+      const mergedApproved = deduplicateBooks(userApproved, guestApproved);
+      const mergedRejected = deduplicateBooks(userRejected, guestRejected);
+      
+      // Merge photos (deduplicate by ID)
+      const existingPhotoIds = new Set(userPhotos.map(photo => photo.id));
+      const uniqueGuestPhotos = guestPhotos.filter(photo => !existingPhotoIds.has(photo.id));
+      const mergedPhotos = [...userPhotos, ...uniqueGuestPhotos];
+      
+      // Save merged data to user's AsyncStorage
+      await Promise.all([
+        AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedPending)),
+        AsyncStorage.setItem(userApprovedKey, JSON.stringify(mergedApproved)),
+        AsyncStorage.setItem(userRejectedKey, JSON.stringify(mergedRejected)),
+        AsyncStorage.setItem(userPhotosKey, JSON.stringify(mergedPhotos)),
+      ]);
+      
+      console.log(`✅ Saved merged data to user account: ${mergedPending.length} pending, ${mergedApproved.length} approved, ${mergedRejected.length} rejected, ${mergedPhotos.length} photos`);
+      
+      // Save to Supabase (non-blocking - don't wait for it)
+      Promise.all([
+        // Save all books to Supabase
+        ...guestPending.map(book => saveBookToSupabase(userId, book, 'pending')),
+        ...guestApproved.map(book => saveBookToSupabase(userId, book, 'approved')),
+        ...guestRejected.map(book => saveBookToSupabase(userId, book, 'rejected')),
+        // Save all photos to Supabase
+        ...guestPhotos
+          .filter(photo => photo.uri && typeof photo.uri === 'string' && photo.uri.trim().length > 0)
+          .map(photo => savePhotoToSupabase(userId, photo)),
+      ]).then(() => {
+        console.log('✅ Guest data synced to Supabase');
+      }).catch(error => {
+        console.error('⚠️ Error syncing guest data to Supabase (non-blocking):', error);
+      });
+      
+      // Clear guest data after successful transfer
+      await Promise.all([
+        AsyncStorage.removeItem(guestPendingKey),
+        AsyncStorage.removeItem(guestApprovedKey),
+        AsyncStorage.removeItem(guestRejectedKey),
+        AsyncStorage.removeItem(guestPhotosKey),
+      ]);
+      
+      console.log('✅ Guest data cleared from AsyncStorage');
+    } catch (error) {
+      console.error('❌ Error transferring guest data:', error);
+      // Don't throw - this is non-critical, user can still use the app
     }
   };
 
@@ -763,6 +928,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (requestedUsername && userData.email) {
           await AsyncStorage.setItem('usernameToEmail:' + requestedUsername, userData.email);
         }
+        
+        // Transfer guest data to the signed-in account
+        await transferGuestDataToUser(userData.uid);
         
         setLoading(false);
         return true;
@@ -1124,6 +1292,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         };
         setUser(userData);
         await saveUserToStorage(userData);
+        
+        // Transfer guest data to the new account
+        await transferGuestDataToUser(uid);
+        
         setLoading(false);
         Alert.alert('Success', 'Account created successfully! You can now start using the app.');
         return true;

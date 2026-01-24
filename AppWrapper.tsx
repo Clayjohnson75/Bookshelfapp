@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { ScanningProvider } from './contexts/ScanningContext';
+import { CameraProvider } from './contexts/CameraContext';
 import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { NavigationContainer } from '@react-navigation/native';
 import { TabNavigator } from './TabNavigator';
@@ -86,9 +87,25 @@ const AppContent: React.FC = () => {
     return <PasswordResetScreen onAuthSuccess={() => setResetToken(null)} accessToken={resetToken} />;
   }
 
-  if (!user) {
-    return <LoginScreen onAuthSuccess={() => {}} />;
+  // Guest mode: Allow app access without login
+  // Show login screen only for password reset or email confirmation
+  // Otherwise, allow guest access to the app
+  if (!user && !resetToken && !confirmingEmail) {
+    // Show app in guest mode - user can use it without signing up
+    return (
+      <NavigationContainer>
+        <TabNavigator />
+      </NavigationContainer>
+    );
   }
+
+  // Show login screen only for password reset
+  if (!user && resetToken) {
+    return <PasswordResetScreen onAuthSuccess={() => setResetToken(null)} accessToken={resetToken} />;
+  }
+
+  // Show login screen if user explicitly wants to sign in (from settings or prompts)
+  // For now, allow guest mode by default - login prompts will appear when needed
 
   return (
     <NavigationContainer>
@@ -107,7 +124,9 @@ export default function App() {
       />
       <AuthProvider>
         <ScanningProvider>
-          <AppContent />
+          <CameraProvider>
+            <AppContent />
+          </CameraProvider>
         </ScanningProvider>
       </AuthProvider>
     </SafeAreaProvider>

@@ -387,6 +387,11 @@ export async function savePhotoToSupabase(
     return false;
   }
 
+  // Skip Supabase for guest users
+  if (userId === 'guest_user') {
+    return false; // Silently skip - guest users save locally only
+  }
+
   try {
     // Validate photo.uri
     if (!photo.uri || typeof photo.uri !== 'string') {
@@ -590,6 +595,11 @@ export async function saveBookToSupabase(
   if (!supabase) {
     console.warn('Supabase not available, skipping book save');
     return false;
+  }
+
+  // Skip Supabase for guest users
+  if (userId === 'guest_user') {
+    return false; // Silently skip - guest users save locally only
   }
 
   try {
