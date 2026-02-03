@@ -299,7 +299,7 @@ Return only a JSON array like:
             generationConfig: { 
               responseMimeType: "application/json", // Force JSON-only output at API level
               temperature: 0, // Minimize randomness and formatting drift
-              maxOutputTokens: 8000,
+              maxOutputTokens: 16000, // Increased significantly for shelf scans (was 8000, now 16000)
               // Note: responseJsonSchema is not supported for this endpoint/model
               // responseMimeType: "application/json" forces JSON format and prevents markdown/prose
             },
@@ -498,6 +498,138 @@ Return only a JSON array like:
     }
     return { books: [], usedRepair: false, rawLength: 0 };
   }
+}
+
+/**
+ * Continuation strategy: if Gemini response was truncated/incomplete, make a follow-up call
+ */
+async function continueGeminiScan(
+    imageDataURL: string,
+    previousBooks: any[],
+    scanId?: string
+  ): Promise<GeminiScanResult> {
+    const logPrefix = scanId ? `[SCAN ${scanId}]` : '[API]';
+    const lastSpineIndex = previousBooks.length > 0 
+      ? Math.max(...previousBooks.map(b => b.spine_index ?? -1)) + 1
+      : 0;
+    
+    console.log(`${logPrefix} 🔄 Gemini continuation: requesting books starting from spine_index ${lastSpineIndex}`);
+    
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) return { books: [], usedRepair: false, rawLength: 0 };
+    
+    const model = 'gemini-3-flash-preview';
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
+    
+    try {
+      const res = await fetch(
+        `${endpoint}?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `Continue scanning book spines in this image. You already found ${previousBooks.length} books (spine_index 0 through ${lastSpineIndex - 1}).
+
+Return ONLY the remaining books starting from spine_index ${lastSpineIndex} as a JSON array. No markdown. No explanations. Pure JSON only.
+
+CRITICAL RULES:
+- Continue numbering from spine_index ${lastSpineIndex} (left-to-right)
+- TITLE is the book name (usually larger text on spine)
+- AUTHOR is the person's name who wrote it (usually smaller text)
+- DO NOT swap title and author
+- Capture raw spine_text exactly as you see it
+- Detect language: "en", "es", "fr", or "unknown"
+
+Return only a JSON array like:
+[{"title":"Book Title","author":"Author Name","confidence":"high","spine_text":"raw text","language":"en","reason":"brief reason","spine_index":${lastSpineIndex}}]`,
+                  },
+                  { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
+                ],
+              },
+            ],
+            generationConfig: { 
+              responseMimeType: "application/json",
+              temperature: 0,
+              maxOutputTokens: 16000,
+            },
+          }),
+        }
+      );
+      
+      if (!res.ok) {
+        console.warn(`${logPrefix} Gemini continuation failed: ${res.status}`);
+        return { books: [], usedRepair: false, rawLength: 0 };
+      }
+      
+      const data = await res.json() as any;
+      const rawGeminiText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
+      if (!rawGeminiText) {
+        console.warn(`${logPrefix} Gemini continuation returned empty content`);
+        return { books: [], usedRepair: false, rawLength: 0 };
+      }
+      
+      // Parse continuation response (same logic as main scan)
+      let cleaned = rawGeminiText;
+      if (cleaned.includes('```')) {
+        cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      }
+      
+      // Try parsing directly
+      try {
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed)) {
+          console.log(`${logPrefix} ✅ Gemini continuation parsed ${parsed.length} books (direct JSON)`);
+          return { books: parsed, usedRepair: false, rawLength: rawGeminiText.length };
+        }
+      } catch (e) {
+        // Continue to repair
+      }
+      
+      // Try extracting array
+      const arrayMatch = cleaned.match(/\[[\s\S]*?\]/);
+      if (arrayMatch) {
+        try {
+          const parsed = JSON.parse(arrayMatch[0]);
+          if (Array.isArray(parsed)) {
+            console.log(`${logPrefix} ✅ Gemini continuation parsed ${parsed.length} books (extracted array)`);
+            return { books: parsed, usedRepair: false, rawLength: rawGeminiText.length };
+          }
+        } catch (e2) {
+          // Try repair
+          try {
+            const repaired = await repairJSON(arrayMatch[0], 'array of book objects');
+            if (repaired && Array.isArray(repaired)) {
+              console.log(`${logPrefix} ✅ Gemini continuation parsed ${repaired.length} books (repaired)`);
+              return { books: repaired, usedRepair: true, rawLength: rawGeminiText.length };
+            }
+          } catch (repairError) {
+            console.error(`${logPrefix} Gemini continuation repair failed:`, repairError);
+          }
+        }
+      }
+      
+      // Final repair attempt
+      try {
+        const repaired = await repairJSON(cleaned, 'array of book objects');
+        if (repaired && Array.isArray(repaired)) {
+          console.log(`${logPrefix} ✅ Gemini continuation parsed ${repaired.length} books (final repair)`);
+          return { books: repaired, usedRepair: true, rawLength: rawGeminiText.length };
+        }
+      } catch (repairError) {
+        console.error(`${logPrefix} Gemini continuation final repair failed:`, repairError);
+      }
+      
+      return { books: [], usedRepair: false, rawLength: rawGeminiText.length };
+    } catch (error: any) {
+      console.error(`${logPrefix} Gemini continuation error:`, error?.message || error);
+      return { books: [], usedRepair: false, rawLength: 0 };
+    }
 }
 
 /**
@@ -1076,7 +1208,7 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
         generationConfig: { 
           responseMimeType: "application/json", // Force JSON-only output at API level
           temperature: 0, // Minimize randomness and formatting drift (changed from 0.1)
-          maxOutputTokens: 8000, // Increased to ensure we get output even if some tokens used for reasoning
+          maxOutputTokens: 16000, // Increased significantly for shelf scans (was 8000, now 16000)
         },
       }),
     }
@@ -1748,9 +1880,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let openaiTimeout: NodeJS.Timeout | null = null;
     let openaiStartTimeout: NodeJS.Timeout | null = null;
     
+    // Monotonic clock for accurate elapsed time tracking
+    const scanStartTime = Date.now();
+    const getElapsedMs = () => Date.now() - scanStartTime;
+    const getElapsedSeconds = () => Math.round((Date.now() - scanStartTime) / 1000);
+    
     // Track whether OpenAI was actually attempted (not just cancelled/not started)
     let openaiAttempted = false;
     let geminiAttempted = false;
+    
+    // Helper to cancel hedge timer immediately
+    const cancelHedgeTimer = () => {
+      if (openaiStartTimeout) {
+        clearTimeout(openaiStartTimeout);
+        openaiStartTimeout = null;
+      }
+    };
     
     try {
       // Start Gemini if available and not in cooldown/quota exceeded
@@ -1769,24 +1914,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               
               // Quality gate: check if Gemini result is acceptable
               const MIN_EXPECTED_BOOKS_LOCAL = 12; // Minimum expected books for a healthy scan
-              const MIN_RESPONSE_LENGTH_LOCAL = 500; // Minimum response length to consider valid
+              const MIN_RESPONSE_LENGTH_LOCAL = 2000; // Minimum response length to consider complete (increased from 500)
               
               const qualityGateFailed = 
                 result.usedRepair || // JSON repair was required
                 result.books.length < MIN_EXPECTED_BOOKS_LOCAL || // Suspiciously low count
                 result.rawLength < MIN_RESPONSE_LENGTH_LOCAL; // Response too short/malformed
               
+              // Continuation strategy: if response looks truncated, try to get more books
+              if (qualityGateFailed && result.books.length > 0) {
+                console.warn(`[SCAN ${scanId}] ⚠️ Gemini response looks incomplete: usedRepair=${result.usedRepair}, count=${result.books.length}, rawLength=${result.rawLength}`);
+                console.log(`[SCAN ${scanId}] 🔄 Attempting Gemini continuation to get remaining books...`);
+                
+                try {
+                  const continuation = await continueGeminiScan(imageDataURL, result.books, scanId);
+                  if (continuation.books.length > 0) {
+                    // Merge continuation results with original
+                    const merged = [...result.books, ...continuation.books];
+                    const deduped = dedupeBooks(merged);
+                    console.log(`[SCAN ${scanId}] ✅ Gemini continuation: ${result.books.length} + ${continuation.books.length} = ${deduped.length} books (after dedupe)`);
+                    
+                    // Update result with merged books
+                    result.books = deduped;
+                    result.rawLength = result.rawLength + continuation.rawLength;
+                    result.usedRepair = result.usedRepair || continuation.usedRepair;
+                    
+                    // Re-check quality gate after continuation
+                    if (result.books.length >= MIN_EXPECTED_BOOKS_LOCAL && result.rawLength >= MIN_RESPONSE_LENGTH_LOCAL && !result.usedRepair) {
+                      log('info', `[SCAN ${scanId}] Gemini completed with continuation: ${result.books.length} books (quality gate: PASS after continuation)`);
+                      return result;
+                    }
+                  } else {
+                    console.warn(`[SCAN ${scanId}] Gemini continuation returned no additional books`);
+                  }
+                } catch (continuationError: any) {
+                  console.error(`[SCAN ${scanId}] Gemini continuation failed:`, continuationError?.message || continuationError);
+                }
+              }
+              
+              // Cancel hedge timer immediately when Gemini completes (before quality gate check)
+              // This ensures timer is cancelled even if quality gate fails
+              cancelHedgeTimer();
+              
               if (qualityGateFailed) {
-                console.warn(`[SCAN ${scanId}] ⚠️ Gemini quality gate FAILED: usedRepair=${result.usedRepair}, count=${result.books.length}, rawLength=${result.rawLength}`);
+                const elapsedSeconds = getElapsedSeconds();
+                console.warn(`[SCAN ${scanId}] ⚠️ Gemini quality gate FAILED (t=${elapsedSeconds}s): usedRepair=${result.usedRepair}, count=${result.books.length}, rawLength=${result.rawLength}`);
                 console.warn(`[SCAN ${scanId}] Will still run OpenAI to merge results`);
                 // Return result but mark it as needing OpenAI backup
+                // Note: Hedge timer is already cancelled, but OpenAI will start if hedge timer fires before this completes
                 return { ...result, needsOpenAI: true };
               }
               
-              log('info', `[SCAN ${scanId}] Gemini completed: ${result.books.length} books in ${timeBudget.getElapsedTime()}ms (quality gate: PASS)`);
+              const elapsedSeconds = getElapsedSeconds();
+              log('info', `[SCAN ${scanId}] Gemini completed (t=${elapsedSeconds}s): ${result.books.length} books in ${getElapsedMs()}ms (quality gate: PASS)`);
               return result;
             } catch (err: any) {
               if (geminiTimeout) clearTimeout(geminiTimeout);
+              // Cancel hedge timer on error too
+              cancelHedgeTimer();
               if (err?.isQuotaError) {
                 console.log(`[SCAN ${scanId}] Gemini quota exceeded`);
               } else if (err?.name !== 'AbortError') {
@@ -1797,40 +1982,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           })()
         : Promise.resolve({ books: [], usedRepair: false, rawLength: 0, needsOpenAI: false });
       
-      // Start OpenAI after 30s if Gemini hasn't finished (hedged request)
+      // Start OpenAI after 12s if Gemini hasn't finished (hedged request - earlier hedge for better fallback)
       let openaiStarted = false;
       const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
         ? new Promise<any[]>(async (resolve) => {
-            // Wait 30s, then start OpenAI if Gemini is still running
+            // Wait 12s, then start OpenAI if Gemini is still running (reduced from 30s for earlier hedge)
             openaiStartTimeout = setTimeout(async () => {
-              // Check if Gemini already finished
+              // Check if Gemini already finished (race condition check)
+              const elapsedSeconds = getElapsedSeconds();
               const geminiResult = await geminiPromise.catch(() => ({ books: [], needsOpenAI: false }));
+              
               // Always run OpenAI if quality gate failed, even if Gemini finished
               if (geminiResult.books.length > 0 && !geminiResult.needsOpenAI) {
-                console.log(`[SCAN ${scanId}] Gemini finished before 30s with good quality, skipping OpenAI`);
+                console.log(`[SCAN ${scanId}] Gemini finished before hedge timer (t=${elapsedSeconds}s) with good quality, skipping OpenAI`);
                 resolve([]);
                 return;
               }
               // If quality gate failed, we need OpenAI even if Gemini finished
               if (geminiResult.needsOpenAI) {
-                console.log(`[SCAN ${scanId}] Gemini quality gate failed, starting OpenAI for backup/merge`);
+                console.log(`[SCAN ${scanId}] Gemini quality gate failed (t=${elapsedSeconds}s), starting OpenAI for backup/merge`);
               }
               
               if (!geminiController.signal.aborted && !openaiStarted) {
                 openaiStarted = true;
                 openaiAttempted = true;
-                console.log(`[SCAN ${scanId}] t=30s: Gemini still running, starting OpenAI in parallel (hedged request)...`);
+                console.log(`[SCAN ${scanId}] t=${elapsedSeconds}s: Gemini still running, starting OpenAI in parallel (hedged request)...`);
                 
                 try {
-                  // Set timeout for remaining budget
-                  const remainingTime = Math.max(0, timeBudget.totalBudget - timeBudget.getElapsedTime());
+                  // Set timeout for OpenAI request - use at least 60s, or remaining budget if more
+                  const remainingTime = Math.max(0, timeBudget.totalBudget - getElapsedMs());
+                  const openaiRequestTimeout = Math.max(60000, remainingTime); // At least 60s for OpenAI
                   openaiTimeout = setTimeout(() => {
                     openaiController.abort();
-                  }, remainingTime);
+                  }, openaiRequestTimeout);
+                  console.log(`[SCAN ${scanId}] OpenAI timeout set to ${openaiRequestTimeout}ms (remaining budget: ${remainingTime}ms)`);
                   
                   const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
                   if (openaiTimeout) clearTimeout(openaiTimeout);
-                  console.log(`[SCAN ${scanId}] OpenAI completed: ${result.length} books in ${timeBudget.getElapsedTime()}ms`);
+                  console.log(`[SCAN ${scanId}] OpenAI completed: ${result.length} books in ${getElapsedMs()}ms`);
                   resolve(result);
                 } catch (err: any) {
                   if (openaiTimeout) clearTimeout(openaiTimeout);
@@ -1842,21 +2031,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               } else {
                 resolve([]);
               }
-            }, 30000); // 30 second delay
+            }, 12000); // 12 second delay (reduced from 30s for earlier hedge)
             
-            // If Gemini finishes before 30s, cancel OpenAI start (hedge timer) UNLESS quality gate failed
+            // Cancel hedge timer immediately when Gemini finishes (both success and quality-gate-failed paths)
             geminiPromise.then((result) => {
-              if (result.books.length > 0 && !result.needsOpenAI && openaiStartTimeout && !openaiStarted) {
-                clearTimeout(openaiStartTimeout);
-                openaiStartTimeout = null;
-                console.log(`[SCAN ${scanId}] Gemini finished early (${timeBudget.getElapsedTime()}ms) with good quality, cancelling OpenAI hedge timer`);
-                resolve([]);
-              } else if (result.needsOpenAI && openaiStartTimeout && !openaiStarted) {
-                // Quality gate failed - ensure OpenAI runs
-                console.log(`[SCAN ${scanId}] Gemini finished but quality gate failed, keeping OpenAI timer active`);
+              const elapsedSeconds = getElapsedSeconds();
+              cancelHedgeTimer(); // Always cancel timer when Gemini completes
+              
+              if (result.books.length > 0 && !result.needsOpenAI) {
+                console.log(`[SCAN ${scanId}] Gemini finished early (t=${elapsedSeconds}s, ${getElapsedMs()}ms) with good quality, cancelled OpenAI hedge timer`);
+                if (!openaiStarted) {
+                  resolve([]);
+                }
+              } else if (result.needsOpenAI) {
+                // Quality gate failed - OpenAI will start from hedge timer if not already started
+                console.log(`[SCAN ${scanId}] Gemini finished (t=${elapsedSeconds}s) but quality gate failed, OpenAI will start from hedge timer`);
+                // Don't resolve here - let the hedge timer start OpenAI
               }
             }).catch(() => {
-              // Gemini failed, let OpenAI start
+              // Gemini failed, let OpenAI start from hedge timer
+              cancelHedgeTimer(); // Still cancel to avoid duplicate starts
             });
           })
         : Promise.resolve([]);
