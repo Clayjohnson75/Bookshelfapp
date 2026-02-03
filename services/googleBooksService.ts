@@ -47,6 +47,8 @@ interface GoogleBooksVolume {
 }
 
 interface GoogleBooksResponse {
+  kind?: string;
+  totalItems?: number;
   items?: GoogleBooksVolume[];
   volumeInfo?: GoogleBooksVolume['volumeInfo'];
   id?: string;
