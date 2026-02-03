@@ -6,7 +6,34 @@
  * 2. Fetch all data (cover, description, stats) in one call
  * 3. Implement proper rate limiting and caching
  * 4. Use googleBooksId when available instead of searching again
+ * 5. Check server-side Supabase cache before calling Google Books API
  */
+
+// Server-side Supabase client (only available in Node.js/Vercel environment)
+// Uses service role key to bypass RLS and query across all users
+let supabaseClient: any = null;
+if (typeof process !== 'undefined' && process.env && typeof process.env === 'object') {
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    // Prefer service role key for cache queries (bypasses RLS to query across all users)
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (supabaseUrl && supabaseKey) {
+      supabaseClient = createClient(supabaseUrl, supabaseKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      });
+      const hasServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+      log('info', `[GoogleBooks] Server-side Supabase cache ${hasServiceRole ? 'enabled (service role)' : 'enabled (anon key)'}`);
+    }
+  } catch (e) {
+    // Supabase not available (client-side or missing deps) - that's fine
+    log('debug', '[GoogleBooks] Supabase cache not available (client-side or missing deps)');
+  }
+}
 
 export interface GoogleBooksData {
   coverUrl?: string;
@@ -391,6 +418,205 @@ const norm = (s: string): string =>
     .trim();
 
 /**
+ * Check Supabase cache for book data (server-side only)
+ * Queries across all users to find cached cover/metadata
+ */
+async function checkSupabaseCache(
+  title: string,
+  author?: string,
+  googleBooksId?: string
+): Promise<GoogleBooksData | null> {
+  // Only check cache server-side
+  if (!supabaseClient || isClientSide) {
+    return null;
+  }
+
+  try {
+    let query = supabaseClient
+      .from('books')
+      .select('google_books_id, cover_url, description, page_count, categories, publisher, published_date, language, average_rating, ratings_count, subtitle, print_type')
+      .not('google_books_id', 'is', null)
+      .limit(1);
+
+    // First try by google_books_id if available (most accurate)
+    if (googleBooksId) {
+      const { data, error } = await query.eq('google_books_id', googleBooksId).maybeSingle();
+      
+      if (!error && data && data.google_books_id) {
+        log('debug', `[GoogleBooks] ✅ Supabase cache HIT by ID: ${googleBooksId}`);
+        return {
+          googleBooksId: data.google_books_id,
+          coverUrl: data.cover_url || undefined,
+          description: data.description || undefined,
+          pageCount: data.page_count || undefined,
+          categories: data.categories || undefined,
+          publisher: data.publisher || undefined,
+          publishedDate: data.published_date || undefined,
+          language: data.language || undefined,
+          averageRating: data.average_rating ? Number(data.average_rating) : undefined,
+          ratingsCount: data.ratings_count || undefined,
+          subtitle: data.subtitle || undefined,
+          printType: data.print_type || undefined,
+        };
+      }
+    }
+
+    // Fallback: search by normalized title + author
+    const normalizedTitle = norm(title);
+    const normalizedAuthor = author ? norm(author) : '';
+    
+    // Query for books with matching normalized title and author
+    // Use ilike for case-insensitive matching, then filter by normalized comparison
+    const { data, error } = await supabaseClient
+      .from('books')
+      .select('title, author, google_books_id, cover_url, description, page_count, categories, publisher, published_date, language, average_rating, ratings_count, subtitle, print_type')
+      .ilike('title', `%${normalizedTitle}%`)
+      .not('google_books_id', 'is', null)
+      .limit(20); // Get more candidates to find best match
+
+    if (error) {
+      log('debug', `[GoogleBooks] Supabase cache query error: ${error.message}`);
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      return null;
+    }
+
+    // Find best match by comparing normalized title and author
+    let bestMatch: any = null;
+    let bestScore = 0;
+    
+    for (const row of data) {
+      const rowTitleNorm = norm(row.title || '');
+      const rowAuthorNorm = norm(row.author || '');
+      
+      let score = 0;
+      
+      // Title match score (exact match = 2, partial = 1)
+      if (rowTitleNorm === normalizedTitle) {
+        score += 2;
+      } else if (rowTitleNorm.includes(normalizedTitle) || normalizedTitle.includes(rowTitleNorm)) {
+        score += 1;
+      }
+      
+      // Author match score (only if author provided)
+      if (normalizedAuthor) {
+        if (rowAuthorNorm === normalizedAuthor) {
+          score += 2;
+        } else if (rowAuthorNorm.includes(normalizedAuthor) || normalizedAuthor.includes(rowAuthorNorm)) {
+          score += 1;
+        }
+      } else {
+        // No author provided, don't penalize
+        score += 1;
+      }
+      
+      // Prefer matches with more metadata
+      if (row.cover_url) score += 0.5;
+      if (row.description) score += 0.5;
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = row;
+      }
+    }
+
+    // Only return if we have a reasonable match (score >= 2 means at least title match)
+    if (bestMatch && bestScore >= 2) {
+      log('debug', `[GoogleBooks] ✅ Supabase cache HIT by title+author: "${title}" by ${author || 'any'} (score: ${bestScore.toFixed(1)})`);
+      return {
+        googleBooksId: bestMatch.google_books_id,
+        coverUrl: bestMatch.cover_url || undefined,
+        description: bestMatch.description || undefined,
+        pageCount: bestMatch.page_count || undefined,
+        categories: bestMatch.categories || undefined,
+        publisher: bestMatch.publisher || undefined,
+        publishedDate: bestMatch.published_date || undefined,
+        language: bestMatch.language || undefined,
+        averageRating: bestMatch.average_rating ? Number(bestMatch.average_rating) : undefined,
+        ratingsCount: bestMatch.ratings_count || undefined,
+        subtitle: bestMatch.subtitle || undefined,
+        printType: bestMatch.print_type || undefined,
+      };
+    }
+
+    return null;
+  } catch (error: any) {
+    log('debug', `[GoogleBooks] Supabase cache check error: ${error?.message || error}`);
+    return null;
+  }
+}
+
+/**
+ * Save book data to Supabase cache (server-side only)
+ * Updates any existing book with the same google_books_id across all users
+ * This ensures the cache is shared - any user's book entry becomes the cache
+ */
+async function saveToSupabaseCache(bookData: GoogleBooksData, title: string, author?: string): Promise<void> {
+  // Only save cache server-side
+  if (!supabaseClient || isClientSide || !bookData.googleBooksId) {
+    return;
+  }
+
+  try {
+    // Find any existing book with this google_books_id (across all users)
+    const { data: existing, error: findError } = await supabaseClient
+      .from('books')
+      .select('id, user_id')
+      .eq('google_books_id', bookData.googleBooksId)
+      .limit(1)
+      .maybeSingle();
+
+    if (findError && findError.code !== 'PGRST116') {
+      log('debug', `[GoogleBooks] Error checking cache: ${findError.message}`);
+      return;
+    }
+
+    if (existing) {
+      // Entry exists - update it with any missing metadata (patch semantics)
+      const updateData: any = {
+        updated_at: new Date().toISOString(),
+      };
+      
+      // Only update fields that are missing or null (don't overwrite existing data)
+      if (bookData.coverUrl && !existing.cover_url) updateData.cover_url = bookData.coverUrl;
+      if (bookData.description && !existing.description) updateData.description = bookData.description;
+      if (bookData.pageCount && !existing.page_count) updateData.page_count = bookData.pageCount;
+      if (bookData.categories && !existing.categories) updateData.categories = bookData.categories;
+      if (bookData.publisher && !existing.publisher) updateData.publisher = bookData.publisher;
+      if (bookData.publishedDate && !existing.published_date) updateData.published_date = bookData.publishedDate;
+      if (bookData.language && !existing.language) updateData.language = bookData.language;
+      if (bookData.averageRating && !existing.average_rating) updateData.average_rating = bookData.averageRating;
+      if (bookData.ratingsCount && !existing.ratings_count) updateData.ratings_count = bookData.ratingsCount;
+      if (bookData.subtitle && !existing.subtitle) updateData.subtitle = bookData.subtitle;
+      if (bookData.printType && !existing.print_type) updateData.print_type = bookData.printType;
+
+      // Only update if we have new data to add
+      if (Object.keys(updateData).length > 1) {
+        const { error: updateError } = await supabaseClient
+          .from('books')
+          .update(updateData)
+          .eq('id', existing.id);
+
+        if (updateError) {
+          log('debug', `[GoogleBooks] Failed to update cache: ${updateError.message}`);
+        } else {
+          log('debug', `[GoogleBooks] ✅ Updated Supabase cache: ${bookData.googleBooksId}`);
+        }
+      }
+    } else {
+      // No existing entry - the cache will be populated naturally as users save books
+      // We don't create cache-only entries to avoid polluting the books table
+      // The cache is built organically from actual user scans
+      log('debug', `[GoogleBooks] Cache entry will be created when user saves book: ${bookData.googleBooksId}`);
+    }
+  } catch (error: any) {
+    log('debug', `[GoogleBooks] Error saving to Supabase cache: ${error?.message || error}`);
+  }
+}
+
+/**
  * Calculate token overlap score between two strings (0..1)
  */
 function tokenOverlapScore(a: string, b: string): number {
@@ -569,7 +795,7 @@ async function fetchByGoogleBooksId(
 ): Promise<GoogleBooksData> {
   const cacheKey = `id:${googleBooksId}`;
   
-  // Check cache first
+  // Step 1: Check in-memory cache first
   if (cache.has(cacheKey)) {
     const cached = cache.get(cacheKey)!;
     // Cache for ID lookup should always be a single object, not array
@@ -578,7 +804,16 @@ async function fetchByGoogleBooksId(
     }
   }
 
-  // Check if there's already a pending request for this ID
+  // Step 2: Check Supabase cache (server-side only)
+  const supabaseCached = await checkSupabaseCache('', undefined, googleBooksId);
+  if (supabaseCached && supabaseCached.googleBooksId) {
+    // Cache in memory for faster subsequent access
+    cache.set(cacheKey, supabaseCached);
+    log('info', `[GoogleBooks] ✅ Supabase cache HIT by ID: ${googleBooksId} - returning immediately`);
+    return supabaseCached;
+  }
+
+  // Step 3: Check if there's already a pending request for this ID
   if (pendingRequests.has(cacheKey)) {
     const pending = await pendingRequests.get(cacheKey)!;
     // Pending request for ID lookup should always be a single object, not array
@@ -706,6 +941,12 @@ async function fetchByGoogleBooksId(
 
       // Cache the result
       cache.set(cacheKey, result);
+      
+      // Save to Supabase cache (server-side only, shared across all users)
+      if (result.googleBooksId) {
+        await saveToSupabaseCache(result, volumeInfo.title || '', volumeInfo.authors?.[0] || undefined);
+      }
+      
       return result;
     } catch (error: any) {
       // Handle network errors more gracefully - don't log as errors, just return empty
@@ -970,6 +1211,12 @@ async function searchBook(
           if (picked.id) {
             cache.set(`id:${picked.id}`, result);
           }
+          
+          // Save to Supabase cache (server-side only, shared across all users)
+          if (result.googleBooksId) {
+            await saveToSupabaseCache(result, title, author);
+          }
+          
           return result;
         }
 
@@ -990,7 +1237,7 @@ async function searchBook(
           }
         }
         
-        return {
+        const fallbackResult = {
           googleBooksId: topBook.id,
           coverUrl,
           pageCount: topVolumeInfo.pageCount,
@@ -1004,6 +1251,13 @@ async function searchBook(
           printType: topVolumeInfo.printType,
           description: topVolumeInfo.description,
         };
+        
+        // Save to Supabase cache (server-side only)
+        if (fallbackResult.googleBooksId) {
+          await saveToSupabaseCache(fallbackResult, title, author);
+        }
+        
+        return fallbackResult;
       }
 
       // No results found - log for debugging
@@ -1060,37 +1314,55 @@ export async function fetchBookData(
     ? `id:${googleBooksId}` 
     : `search:${normalizedTitle}|${normalizedAuthor}`;
   
-  // Check cache first (aggressive caching - huge win, reduces API calls by 80-90%)
+  // Step 1: Check in-memory cache first (fastest)
   if (cache.has(cacheKey)) {
     const cached = cache.get(cacheKey);
     if (!Array.isArray(cached) && cached) {
       if (isDev) {
-        console.log(`[GoogleBooks] ✅ Cache HIT for: "${title}"${author ? ` by ${author}` : ''}`);
+        console.log(`[GoogleBooks] ✅ In-memory cache HIT for: "${title}"${author ? ` by ${author}` : ''}`);
       }
       return cached;
     }
   }
   
+  // Step 2: Check Supabase cache (server-side only, shared across all users)
+  const supabaseCached = await checkSupabaseCache(title, author, googleBooksId);
+  if (supabaseCached && supabaseCached.googleBooksId) {
+    // Cache in memory for faster subsequent access
+    cache.set(cacheKey, supabaseCached);
+    if (supabaseCached.googleBooksId) {
+      cache.set(`id:${supabaseCached.googleBooksId}`, supabaseCached);
+    }
+    log('info', `[GoogleBooks] ✅ Supabase cache HIT for: "${title}"${author ? ` by ${author}` : ''} - returning immediately`);
+    return supabaseCached;
+  }
+  
+  // Step 3: Fetch from Google Books API (cache miss)
+  log('info', `[GoogleBooks] Cache MISS for: "${title}"${author ? ` by ${author}` : ''} - fetching from Google Books API`);
+  
+  let result: GoogleBooksData;
+  
   // If we have googleBooksId, use that directly (no queue needed, already cached if available)
   if (googleBooksId) {
-    const result = await fetchByGoogleBooksId(googleBooksId);
-    // Cache the result
-    if (result && result.googleBooksId) {
-      cache.set(cacheKey, result);
-      cache.set(`id:${result.googleBooksId}`, result);
-    }
-    return result;
+    result = await fetchByGoogleBooksId(googleBooksId);
+  } else {
+    // Queue the search request (single-flight execution, prevents 429 bursts)
+    result = await queueGoogleBooksRequest(title, author, undefined, 0);
   }
-
-  // Queue the search request (single-flight execution, prevents 429 bursts)
-  const result = await queueGoogleBooksRequest(title, author, undefined, 0);
   
-  // Cache the result (aggressive caching)
-  if (result && (result.googleBooksId || result.coverUrl)) {
+  // Step 4: Save to caches if we got results
+  if (result && result.googleBooksId) {
+    // Save to in-memory cache
     cache.set(cacheKey, result);
-    if (result.googleBooksId) {
-      cache.set(`id:${result.googleBooksId}`, result);
-    }
+    cache.set(`id:${result.googleBooksId}`, result);
+    
+    // Save to Supabase cache (server-side only, shared across all users)
+    await saveToSupabaseCache(result, title, author);
+    
+    log('info', `[GoogleBooks] ✅ Fetched and cached: "${title}"${author ? ` by ${author}` : ''} (ID: ${result.googleBooksId})`);
+  } else if (result && result.coverUrl) {
+    // Even without googleBooksId, cache if we have a cover
+    cache.set(cacheKey, result);
   }
   
   return result;
