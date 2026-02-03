@@ -1424,7 +1424,7 @@ export const ScansTab: React.FC = () => {
     const patchById = new Map<string, Partial<Book>>();
     let flushTimer: NodeJS.Timeout | null = null;
     let lastFlushTime = 0;
-    const FLUSH_INTERVAL_MS = 100; // Reduced from 300ms for faster cover appearance
+    const FLUSH_INTERVAL_MS = 300; // Flush every 300ms for responsive UI
 
     const flushUpdates = () => {
       // Don't update state if screen is not active
@@ -1541,118 +1541,191 @@ export const ScansTab: React.FC = () => {
       }
     };
 
-    // Process books sequentially (rate limiting handled by queue)
-    console.log(`🚀 Starting cover fetch for ${booksNeedingCovers.length} books`);
-    for (let i = 0; i < booksNeedingCovers.length; i++) {
-      const book = booksNeedingCovers[i];
-      console.log(`📖 Processing book ${i + 1}/${booksNeedingCovers.length}: "${book.title}"`);
-      // Check if screen is still active - break if not
-      if (!isActiveRef.current) {
-        console.log('🛑 Cover fetch cancelled: screen not active');
-        break;
-      }
-      
-      try {
-        // Skip if already has all data (cover, description, and stats) and local cache
-        if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
+    // Process books in parallel with concurrency limit (5 concurrent requests)
+    console.log(`🚀 Starting parallel cover fetch for ${booksNeedingCovers.length} books (concurrency: 5)`);
+    
+    const CONCURRENCY_LIMIT = 5;
+    const FLUSH_COUNT_THRESHOLD = 5; // Or every 5 results
+    
+    let activeRequests = 0;
+    let completedCount = 0;
+    let pendingIndex = 0;
+    
+    // Concurrency limiter: process up to CONCURRENCY_LIMIT books in parallel
+    const processNextBatch = async () => {
+      while (pendingIndex < booksNeedingCovers.length && activeRequests < CONCURRENCY_LIMIT) {
+        if (!isActiveRef.current) {
+          console.log('🛑 Cover fetch cancelled: screen not active');
+          break;
+        }
+        
+        const book = booksNeedingCovers[pendingIndex++];
+        activeRequests++;
+        completedCount++;
+        
+        // Process this book (don't await - let it run in parallel)
+        (async () => {
           try {
-            const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
-            const fileInfo = await FileSystem.getInfoAsync(fullPath);
-            // Check if we already have cover, description, and key stats
-            if (fileInfo.exists && book.coverUrl && book.description && 
-                (book.pageCount || book.publisher || book.publishedDate)) {
-              continue; // Already has everything, skip
+            // Skip if already has all data (cover, description, and stats) and local cache
+            if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
+              try {
+                const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+                const fileInfo = await FileSystem.getInfoAsync(fullPath);
+                // Check if we already have cover, description, and key stats
+                if (fileInfo.exists && book.coverUrl && book.description && 
+                    (book.pageCount || book.publisher || book.publishedDate)) {
+                  activeRequests--;
+                  processNextBatch(); // Process next book
+                  return; // Already has everything, skip
+                }
+              } catch (error) {
+                // File doesn't exist, continue to fetch
+              }
+            }
+
+            // Use centralized service - it will use googleBooksId if available (much faster!)
+            console.log(`🔍 [${completedCount}/${booksNeedingCovers.length}] Fetching cover for: "${book.title}"${book.author ? ` by ${book.author}` : ''}${book.googleBooksId ? ` (ID: ${book.googleBooksId})` : ''}`);
+            
+            // Retry logic for 429 errors
+            let bookData: any = {};
+            let retryCount = 0;
+            const MAX_RETRIES = 3;
+            const BACKOFF_DELAYS = [500, 1500, 3500]; // ms
+            
+            while (retryCount <= MAX_RETRIES) {
+              try {
+                bookData = await fetchBookData(
+                  book.title,
+                  book.author,
+                  book.googleBooksId // If we already have the ID, use it instead of searching
+                );
+                break; // Success, exit retry loop
+              } catch (error: any) {
+                // Check if it's a 429 error
+                const is429 = error?.status === 429 || 
+                             error?.message?.includes('429') || 
+                             error?.statusCode === 429 ||
+                             (error?.response?.status === 429);
+                
+                if (is429 && retryCount < MAX_RETRIES) {
+                  const retryAfter = error?.retryAfter || error?.response?.headers?.get?.('Retry-After');
+                  const retryAfterSeconds = retryAfter ? parseInt(String(retryAfter), 10) : null;
+                  
+                  let delay: number;
+                  if (retryAfterSeconds) {
+                    delay = retryAfterSeconds * 1000;
+                    console.log(`⏳ [${completedCount}/${booksNeedingCovers.length}] 429 for "${book.title}", retrying after ${retryAfterSeconds}s (Retry-After header)`);
+                  } else {
+                    delay = BACKOFF_DELAYS[retryCount] + (Math.random() * 500); // Add jitter
+                    console.log(`⏳ [${completedCount}/${booksNeedingCovers.length}] 429 for "${book.title}", retrying in ${Math.ceil(delay)}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+                  }
+                  
+                  await new Promise(resolve => setTimeout(resolve, delay));
+                  retryCount++;
+                } else {
+                  // Not a 429 or max retries reached, fail softly
+                  console.warn(`⚠️ [${completedCount}/${booksNeedingCovers.length}] Failed to fetch cover for "${book.title}":`, error?.message || error);
+                  bookData = {}; // Empty result
+                  break;
+                }
+              }
+            }
+            
+            console.log(`📦 [${completedCount}/${booksNeedingCovers.length}] Got book data for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
+            
+            // Check again after async operation
+            if (!isActiveRef.current) {
+              console.log('🛑 Cover fetch cancelled: screen not active (after fetch)');
+              activeRequests--;
+              return;
+            }
+            
+            if (bookData.coverUrl && bookData.googleBooksId) {
+              console.log(`✅ [${completedCount}/${booksNeedingCovers.length}] Found cover for "${book.title}": ${bookData.coverUrl.substring(0, 80)}...`);
+              // Download and cache the cover (non-blocking)
+              const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
+              
+              // Check again after download
+              if (!isActiveRef.current) {
+                console.log('🛑 Cover fetch cancelled: screen not active (after download)');
+                activeRequests--;
+                return;
+              }
+              
+              // Include all stats data from Google Books API
+              const updatedBook = {
+                coverUrl: bookData.coverUrl,
+                googleBooksId: bookData.googleBooksId,
+                ...(localPath && { localCoverPath: localPath }),
+                // Include all stats fields
+                ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
+                ...(bookData.categories && { categories: bookData.categories }),
+                ...(bookData.publisher && { publisher: bookData.publisher }),
+                ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
+                ...(bookData.language && { language: bookData.language }),
+                ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
+                ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
+                ...(bookData.subtitle && { subtitle: bookData.subtitle }),
+                ...(bookData.printType && { printType: bookData.printType }),
+                ...(bookData.description && { description: bookData.description }),
+              };
+
+              // Accumulate update in patch map (don't update state immediately)
+              // Only if screen is still active
+              if (book.id && isActiveRef.current) {
+                console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Queuing state update for "${book.title}" with coverUrl`);
+                patchById.set(book.id, updatedBook);
+                
+                // Flush if we've accumulated enough updates or enough time has passed
+                if (patchById.size >= FLUSH_COUNT_THRESHOLD) {
+                  flushUpdates();
+                } else {
+                  scheduleFlush();
+                }
+              } else {
+                console.warn(`⚠️ Skipping state update for "${book.title}": book.id=${book.id}, isActive=${isActiveRef.current}`);
+              }
+              
+              // Save to Supabase immediately if cover, description, or stats were fetched
+              // Skip Supabase for guest users
+              if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
+                const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
+                console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
+                saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
+                  .then(success => {
+                    if (success) {
+                      console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
+                    } else {
+                      console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
+                    }
+                  })
+                  .catch(error => {
+                    console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
+                  });
+              }
+            } else {
+              console.warn(`⚠️ [${completedCount}/${booksNeedingCovers.length}] No cover found for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
             }
           } catch (error) {
-            // File doesn't exist, continue to fetch
+            // Fail softly - don't throw, just log
+            if (isActiveRef.current) {
+              console.error(`❌ [${completedCount}/${booksNeedingCovers.length}] Error fetching data for "${book.title}":`, error);
+            }
+          } finally {
+            // Decrement active requests and process next batch
+            activeRequests--;
+            processNextBatch();
           }
-        }
-
-        // Use centralized service - it will use googleBooksId if available (much faster!)
-        console.log(`🔍 Fetching cover for: "${book.title}"${book.author ? ` by ${book.author}` : ''}${book.googleBooksId ? ` (ID: ${book.googleBooksId})` : ''}`);
-        const bookData = await fetchBookData(
-          book.title,
-          book.author,
-          book.googleBooksId // If we already have the ID, use it instead of searching
-        );
-        
-        console.log(`📦 Got book data for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
-        
-        // Check again after async operation
-        if (!isActiveRef.current) {
-          console.log('🛑 Cover fetch cancelled: screen not active (after fetch)');
-          break;
-        }
-        
-        if (bookData.coverUrl && bookData.googleBooksId) {
-          console.log(`✅ Found cover for "${book.title}": ${bookData.coverUrl.substring(0, 80)}...`);
-          // Download and cache the cover (non-blocking)
-          const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
-          
-          // Check again after download
-          if (!isActiveRef.current) {
-            console.log('🛑 Cover fetch cancelled: screen not active (after download)');
-            break;
-          }
-          
-          // Include all stats data from Google Books API
-          const updatedBook = {
-            coverUrl: bookData.coverUrl,
-            googleBooksId: bookData.googleBooksId,
-            ...(localPath && { localCoverPath: localPath }),
-            // Include all stats fields
-            ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
-            ...(bookData.categories && { categories: bookData.categories }),
-            ...(bookData.publisher && { publisher: bookData.publisher }),
-            ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
-            ...(bookData.language && { language: bookData.language }),
-            ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
-            ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
-            ...(bookData.subtitle && { subtitle: bookData.subtitle }),
-            ...(bookData.printType && { printType: bookData.printType }),
-            ...(bookData.description && { description: bookData.description }),
-          };
-
-          // Accumulate update in patch map (don't update state immediately)
-          // Only if screen is still active
-          if (book.id && isActiveRef.current) {
-            console.log(`💾 Queuing state update for "${book.title}" with coverUrl`);
-            patchById.set(book.id, updatedBook);
-            scheduleFlush();
-          } else {
-            console.warn(`⚠️ Skipping state update for "${book.title}": book.id=${book.id}, isActive=${isActiveRef.current}`);
-          }
-          
-          // Save to Supabase immediately if cover, description, or stats were fetched
-          // Skip Supabase for guest users
-          if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
-            const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
-            console.log(`💾 Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
-            saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
-              .then(success => {
-                if (success) {
-                  console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
-                } else {
-                  console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
-                }
-              })
-              .catch(error => {
-                console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
-              });
-          }
-        } else {
-          console.warn(`⚠️ No cover found for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
-        }
-      } catch (error) {
-        // Only log if still active
-        if (isActiveRef.current) {
-          console.error(`❌ Error fetching data for "${book.title}":`, error);
-        }
-        // Continue to next book even if this one fails - but break if inactive
-        if (!isActiveRef.current) {
-          break;
-        }
+        })();
       }
+    };
+    
+    // Start processing
+    processNextBatch();
+    
+    // Wait for all requests to complete
+    while (activeRequests > 0 && isActiveRef.current) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     // Final flush of any remaining updates

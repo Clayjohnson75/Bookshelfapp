@@ -12,7 +12,17 @@
 // Server-side Supabase client (only available in Node.js/Vercel environment)
 // Uses service role key to bypass RLS and query across all users
 let supabaseClient: any = null;
-if (typeof process !== 'undefined' && process.env && typeof process.env === 'object') {
+
+// Initialize Supabase client (deferred to avoid module load errors)
+function initSupabaseClient() {
+  if (supabaseClient !== null) {
+    return; // Already initialized
+  }
+  
+  if (typeof process === 'undefined' || !process.env || typeof process.env !== 'object') {
+    return; // Not server-side
+  }
+  
   try {
     const { createClient } = require('@supabase/supabase-js');
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -27,12 +37,29 @@ if (typeof process !== 'undefined' && process.env && typeof process.env === 'obj
         },
       });
       const hasServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
-      log('info', `[GoogleBooks] Server-side Supabase cache ${hasServiceRole ? 'enabled (service role)' : 'enabled (anon key)'}`);
+      // Use console.log during initialization to avoid log() issues
+      if (typeof console !== 'undefined' && console.log) {
+        console.log(`[GoogleBooks] Server-side Supabase cache ${hasServiceRole ? 'enabled (service role)' : 'enabled (anon key)'}`);
+      }
+    } else {
+      supabaseClient = false; // Mark as attempted but failed
     }
   } catch (e) {
     // Supabase not available (client-side or missing deps) - that's fine
-    log('debug', '[GoogleBooks] Supabase cache not available (client-side or missing deps)');
+    supabaseClient = false; // Mark as attempted but failed
+    // Use console.log during initialization to avoid log() issues
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('[GoogleBooks] Supabase cache not available (client-side or missing deps)');
+    }
   }
+}
+
+// Initialize on module load (but safely)
+try {
+  initSupabaseClient();
+} catch (e) {
+  // Silently fail during module initialization
+  supabaseClient = false;
 }
 
 export interface GoogleBooksData {
@@ -426,6 +453,11 @@ async function checkSupabaseCache(
   author?: string,
   googleBooksId?: string
 ): Promise<GoogleBooksData | null> {
+  // Initialize if not already done
+  if (supabaseClient === null) {
+    initSupabaseClient();
+  }
+  
   // Only check cache server-side
   if (!supabaseClient || isClientSide) {
     return null;
@@ -554,6 +586,11 @@ async function checkSupabaseCache(
  * This ensures the cache is shared - any user's book entry becomes the cache
  */
 async function saveToSupabaseCache(bookData: GoogleBooksData, title: string, author?: string): Promise<void> {
+  // Initialize if not already done
+  if (supabaseClient === null) {
+    initSupabaseClient();
+  }
+  
   // Only save cache server-side
   if (!supabaseClient || isClientSide || !bookData.googleBooksId) {
     return;
@@ -1408,10 +1445,9 @@ export async function searchMultipleBooks(
 
       let response: Response;
       try {
-        response = await fetch(
-          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
-          { signal: controller.signal }
-        );
+        // Use buildGoogleBooksUrl to route through proxy on client-side (adds API key server-side)
+        const url = buildGoogleBooksUrl('/volumes', { q: query, maxResults: String(maxResults) });
+        response = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
@@ -1419,6 +1455,14 @@ export async function searchMultipleBooks(
           throw new Error('Request timeout - please check your internet connection');
         }
         throw fetchError;
+      }
+
+      // Handle 429 errors (rate limiting)
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+        log('warn', `[GoogleBooks] Rate limited (429) in searchMultipleBooks${retryAfterSeconds ? `, Retry-After: ${retryAfterSeconds}s` : ''}`);
+        return [];
       }
 
       if (!response.ok) {
