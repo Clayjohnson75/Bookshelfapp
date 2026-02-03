@@ -101,7 +101,7 @@ interface GoogleBooksQueueItem {
 let googleBooksQueue: GoogleBooksQueueItem[] = [];
 let googleBooksProcessing = false;
 let lastGoogleBooksRequestTime = 0;
-const MIN_GOOGLE_BOOKS_INTERVAL_MS = 600; // 600ms minimum between requests (single-flight, more conservative)
+const MIN_GOOGLE_BOOKS_INTERVAL_MS = 1200; // 1.2 seconds minimum between requests (very conservative to prevent 429s)
 const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
 
 // Cache for cover results (7 days for success, 24h for no match)
@@ -162,8 +162,8 @@ async function processGoogleBooksQueue(): Promise<void> {
       const result = await searchBookDirect(item.title, item.author, item.googleBooksId, item.retryCount);
       item.resolve(result);
       
-      // Add spacing after successful request (prevents burst)
-      await new Promise(resolve => setTimeout(resolve, 200));
+      // Add spacing after successful request (prevents burst - increased to 400ms)
+      await new Promise(resolve => setTimeout(resolve, 400));
     } catch (error: any) {
       // Handle 429 errors - re-queue with exponential backoff
       if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
@@ -676,8 +676,10 @@ async function searchBook(
           console.warn(`Network/timeout error searching for book "${title}":`, errorMessage);
         }
       } else {
-        // Only log unexpected errors
-        console.error(`Error searching for book "${title}":`, error);
+        // Only log unexpected errors (but not 429s - those are handled by queue)
+        if (error?.status !== 429 && error?.statusCode !== 429) {
+          log('error', `Error searching for book "${title}":`, error);
+        }
       }
       return {};
     } finally {

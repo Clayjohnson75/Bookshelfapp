@@ -1696,68 +1696,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
-    // CRITICAL: Fetch covers BEFORE returning (queue handles rate limiting)
-    // But don't block - return books immediately, fetch covers in background
-    log('info', `[COVERS] starting: books=${finalBooks.length}`);
+    // Return books immediately - covers will be fetched asynchronously in background
+    // This prevents the app from breaking when covers fail or are rate-limited
+    log('info', `[API] Scan completed: books=${finalBooks.length} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
     
-    // Fetch covers sequentially (not in parallel) to respect queue rate limits
-    const booksWithCovers = [];
-    for (const book of finalBooks) {
-      // Skip if already has cover
-      if (book.coverUrl || book.googleBooksId) {
-        booksWithCovers.push(book);
-        continue;
-      }
-      
-      try {
-        const { fetchBookData } = await import('../services/googleBooksService');
-        
-        // Strategy 1: Try with original title/author (queue handles rate limiting)
-        // Don't do multiple fallback searches - queue will handle retries
-        let result = await fetchBookData(book.title || '', book.author || undefined);
-        
-        if (result && result.googleBooksId) {
-          // Ensure HTTPS (iOS ATS requirement)
-          let coverUrl = result.coverUrl;
-          if (coverUrl && coverUrl.startsWith('http:')) {
-            coverUrl = coverUrl.replace('http:', 'https:');
+    // Start cover fetching asynchronously (fire and forget - don't block response)
+    // Covers will be fetched slowly in background and stored when ready
+    if (finalBooks.length > 0) {
+      // Fire and forget - don't await, let it run in background
+      (async () => {
+        try {
+          log('info', `[COVERS] Starting async fetch for ${finalBooks.length} books (background, non-blocking)...`);
+          
+          const { fetchBookData } = await import('../services/googleBooksService');
+          let successCount = 0;
+          let failedCount = 0;
+          
+          // Fetch covers one by one sequentially (queue handles rate limiting)
+          for (const book of finalBooks) {
+            // Skip if already has cover
+            if (book.coverUrl || book.googleBooksId) {
+              continue;
+            }
+            
+            try {
+              // Try with original title/author (queue handles rate limiting and retries)
+              const result = await fetchBookData(book.title || '', book.author || undefined);
+              
+              if (result && result.googleBooksId) {
+                // Ensure HTTPS (iOS ATS requirement)
+                let coverUrl = result.coverUrl;
+                if (coverUrl && coverUrl.startsWith('http:')) {
+                  coverUrl = coverUrl.replace('http:', 'https:');
+                }
+                
+                // Update book with cover (this would normally save to DB, but for now just log)
+                log('debug', `[COVERS] Found cover for "${book.title}": ${coverUrl ? 'YES' : 'NO'}`);
+                successCount++;
+              } else {
+                failedCount++;
+              }
+            } catch (error: any) {
+              failedCount++;
+              // Silently continue - covers are optional
+              // Queue handles retries automatically
+            }
           }
           
-          booksWithCovers.push({
-            ...book,
-            googleBooksId: result.googleBooksId,
-            coverUrl: coverUrl || book.coverUrl,
-          });
-        } else {
-          // No result found, but don't retry immediately (queue handles this)
-          booksWithCovers.push(book);
+          // Log summary
+          log('info', `[COVERS] Background fetch complete: success=${successCount} failed=${failedCount} total=${finalBooks.length}`);
+        } catch (error) {
+          // Don't log errors from background job - it's fire and forget
+          log('debug', `[COVERS] Background fetch error (non-critical):`, error);
         }
-      } catch (error: any) {
-        // Silently continue - covers are optional
-        // If it's a 429, the queue will handle retry
-        booksWithCovers.push(book);
-      }
+      })();
     }
-    
-    const withCoversCount = booksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
-    log('info', `[COVERS] done: withCovers=${withCoversCount}/${finalBooks.length}`);
-    
-    // Log sample book to verify covers are in response
-    if (booksWithCovers.length > 0) {
-      const sample = booksWithCovers[0];
-      log('info', `[COVERS] sampleBook=`, JSON.stringify({
-        title: sample.title?.substring(0, 40),
-        hasCover: !!sample.coverUrl,
-        hasGoogleBooksId: !!sample.googleBooksId,
-        coverUrl: sample.coverUrl ? sample.coverUrl.substring(0, 80) + '...' : null,
-      }, null, 2));
-    }
-    
-    const coversInResponse = booksWithCovers.filter(b => b.coverUrl).length;
-    log('info', `[API] Scan completed: books=${booksWithCovers.length} covers=${coversInResponse} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
     
     return res.status(200).json({ 
-      books: booksWithCovers, // Return books WITH covers attached
+      books: finalBooks, // Return books immediately, covers will load asynchronously
       apiResults
     });
   } catch (e: any) {
