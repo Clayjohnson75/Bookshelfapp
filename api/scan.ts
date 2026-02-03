@@ -265,6 +265,11 @@ async function scanWithGeminiDirect(imageDataURL: string, scanId?: string): Prom
   
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   
+  // Log image payload being sent to Gemini
+  const imageBytesLengthSentToGemini = base64Data.length;
+  const imageMimeSentToGemini = imageDataURL.match(/^data:([^;]+);base64,/)?.[1] || 'unknown';
+  console.log(`${logPrefix} Sending to Gemini: imageBytes=${imageBytesLengthSentToGemini}, mime=${imageMimeSentToGemini}, scanId=${scanId || 'none'}`);
+  
   // Wrap fetch in retry logic for 503 and 429
   try {
     const result = await retryWithBackoff(async () => {
@@ -521,6 +526,11 @@ async function continueGeminiScan(
     const model = 'gemini-3-flash-preview';
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
+    
+    // Log image payload being sent to Gemini (continuation)
+    const imageBytesLengthSentToGemini = base64Data.length;
+    const imageMimeSentToGemini = imageDataURL.match(/^data:([^;]+);base64,/)?.[1] || 'unknown';
+    console.log(`${logPrefix} Sending continuation to Gemini: imageBytes=${imageBytesLengthSentToGemini}, mime=${imageMimeSentToGemini}, scanId=${scanId || 'none'}`);
     
     try {
       const res = await fetch(
@@ -932,9 +942,16 @@ async function repairJSON(invalidJSON: string, schema: string): Promise<any> {
   }
 }
 
-async function scanWithOpenAI(imageDataURL: string, retryCount = 0, abortController?: AbortController): Promise<any[]> {
+async function scanWithOpenAI(imageDataURL: string, retryCount = 0, abortController?: AbortController, scanId?: string): Promise<any[]> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return [];
+
+  const logPrefix = scanId ? `[SCAN ${scanId}]` : '[API]';
+  
+  // Log image payload being sent to OpenAI
+  const imageBytesLengthSentToOpenAI = imageDataURL.length;
+  const imageMimeSentToOpenAI = imageDataURL.match(/^data:([^;]+);base64,/)?.[1] || 'unknown';
+  console.log(`${logPrefix} Sending to OpenAI: imageBytes=${imageBytesLengthSentToOpenAI}, mime=${imageMimeSentToOpenAI}, scanId=${scanId || 'none'}`);
 
   const startTime = Date.now();
   // Use provided abort controller or create new one
@@ -996,9 +1013,9 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
       // Handle rate limiting (429) or server errors (500-599) with retry
       if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && retryCount < 2 && !controller.signal.aborted) {
         const backoffDelay = Math.pow(2, retryCount) * 3000; // 3s, 6s
-        console.warn(`[API] OpenAI ${res.status} error, retrying in ${backoffDelay/1000}s... (attempt ${retryCount + 1}/2) after ${elapsed}ms`);
+        console.warn(`${logPrefix} OpenAI ${res.status} error, retrying in ${backoffDelay/1000}s... (attempt ${retryCount + 1}/2) after ${elapsed}ms`);
         await delay(backoffDelay);
-        return scanWithOpenAI(imageDataURL, retryCount + 1, controller);
+        return scanWithOpenAI(imageDataURL, retryCount + 1, controller, scanId);
       }
       
       console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)} (after ${elapsed}ms)`);
@@ -1135,20 +1152,20 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
     if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('AbortError')) {
       // Retry on timeout if we haven't retried yet
       if (retryCount < 1) {
-        console.warn(`[API] OpenAI request timeout after ${elapsed}ms, retrying once...`);
+        console.warn(`${logPrefix} OpenAI request timeout after ${elapsed}ms, retrying once...`);
         await delay(5000); // Wait 5s before retry
-        return scanWithOpenAI(imageDataURL, retryCount + 1);
+        return scanWithOpenAI(imageDataURL, retryCount + 1, undefined, scanId);
       }
-      console.error(`[API] OpenAI request was aborted (timeout after 60 seconds, ${elapsed}ms elapsed)`);
+      console.error(`${logPrefix} OpenAI request was aborted (timeout after 60 seconds, ${elapsed}ms elapsed)`);
       return [];
     }
     
     // Retry on network errors
     const errorMessage = e?.message || String(e);
     if ((errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('ECONNRESET')) && retryCount < 1) {
-      console.warn(`[API] OpenAI network error after ${elapsed}ms, retrying once...`);
+      console.warn(`${logPrefix} OpenAI network error after ${elapsed}ms, retrying once...`);
       await delay(3000);
-      return scanWithOpenAI(imageDataURL, retryCount + 1);
+      return scanWithOpenAI(imageDataURL, retryCount + 1, undefined, scanId);
     }
     
     console.error(`[API] OpenAI scan exception after ${elapsed}ms:`, errorMessage);
@@ -1840,7 +1857,7 @@ async function processScanJob(
     const dataUrlMatch = imageDataURL.match(/^data:([^;]+);base64,/);
     scanMetadata.content_type = dataUrlMatch ? dataUrlMatch[1] : 'unknown';
     
-    console.log(`[API] [SCAN ${scanId}] Image received: ${imageBytes} bytes, type: ${scanMetadata.content_type}`);
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Image received: ${imageBytes} bytes, type: ${scanMetadata.content_type}`);
     
     // Validate base64 data
     const base64Data = imageDataURL.split(',')[1];
@@ -2033,7 +2050,7 @@ async function processScanJob(
       const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
       ? (async () => {
           openaiAttempted = true;
-          log('info', `[SCAN ${scanId}] Starting OpenAI scan (parallel, t=0s)...`);
+          log('info', `[SCAN ${scanId}] [JOB ${jobId}] Starting OpenAI scan (parallel, t=0s)...`);
           await updateProgress('openai', 0);
           try {
             const remainingTime = Math.max(0, timeBudget.totalBudget - getElapsedMs());
@@ -2042,7 +2059,7 @@ async function processScanJob(
                     openaiController.abort();
             }, openaiRequestTimeout);
                   
-                  const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
+                  const result = await scanWithOpenAI(imageDataURL, 0, openaiController, scanId);
                   if (openaiTimeout) clearTimeout(openaiTimeout);
             
             if (result.length > 0) {
@@ -2169,8 +2186,8 @@ async function processScanJob(
     }
   };
   
-  // Log final metadata
-  console.log(`[API] [SCAN ${scanId}] Scan completed:`, {
+  // Log final metadata with jobId correlation
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan completed:`, {
     received_image_bytes: scanMetadata.received_image_bytes,
     content_type: scanMetadata.content_type,
     parse_path: scanMetadata.parse_path,
