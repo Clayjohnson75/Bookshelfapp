@@ -23,9 +23,44 @@ export interface GoogleBooksData {
   description?: string;
 }
 
+// Google Books API response types
+interface GoogleBooksVolume {
+  id: string;
+  volumeInfo: {
+    title?: string;
+    authors?: string[];
+    pageCount?: number;
+    categories?: string[];
+    publisher?: string;
+    publishedDate?: string;
+    language?: string;
+    averageRating?: number;
+    ratingsCount?: number;
+    subtitle?: string;
+    printType?: string;
+    description?: string;
+    imageLinks?: {
+      thumbnail?: string;
+      smallThumbnail?: string;
+    };
+  };
+}
+
+interface GoogleBooksResponse {
+  items?: GoogleBooksVolume[];
+  volumeInfo?: GoogleBooksVolume['volumeInfo'];
+  id?: string;
+}
+
+// Define __DEV__ for TypeScript if not available
+declare const __DEV__: boolean;
+
 // In-memory cache to avoid duplicate API calls
-const cache = new Map<string, GoogleBooksData>();
-const pendingRequests = new Map<string, Promise<GoogleBooksData>>();
+const cache = new Map<string, GoogleBooksData | GoogleBooksData[]>();
+const pendingRequests = new Map<string, Promise<GoogleBooksData | GoogleBooksData[]>>();
+
+// Helper to check if we're in dev mode (for __DEV__ replacement)
+const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
 
 // Rate limiting: queue requests with delays
 let lastRequestTime = 0;
@@ -160,12 +195,12 @@ async function fetchByGoogleBooksId(
         return {};
       }
 
-      const data = await response.json();
+      const data = await response.json() as GoogleBooksResponse;
       const volumeInfo = data.volumeInfo || {};
 
       // Extract all data
       const result: GoogleBooksData = {
-        googleBooksId: data.id,
+        googleBooksId: data.id || undefined,
         pageCount: volumeInfo.pageCount,
         categories: volumeInfo.categories,
         publisher: volumeInfo.publisher,
@@ -205,7 +240,7 @@ async function fetchByGoogleBooksId(
           errorMessage.includes('AbortError')) {
         // Silently handle network/timeout errors - they're expected in poor network conditions
         // Only log in development mode
-        if (__DEV__) {
+        if (isDev) {
           console.warn(`Network/timeout error fetching book by ID ${googleBooksId}:`, errorMessage);
         }
       } else {
@@ -288,11 +323,11 @@ async function searchBook(
         return {};
       }
 
-      const data = await response.json();
+      const data = await response.json() as GoogleBooksResponse;
 
       if (data.items && data.items.length > 0) {
         const book = data.items[0];
-        const volumeInfo = book.volumeInfo;
+        const volumeInfo = book.volumeInfo || {};
 
         // Extract all data
         const result: GoogleBooksData = {
@@ -343,7 +378,7 @@ async function searchBook(
           errorMessage.includes('AbortError')) {
         // Silently handle network/timeout errors - they're expected in poor network conditions
         // Only log in development mode
-        if (__DEV__) {
+        if (isDev) {
           console.warn(`Network/timeout error searching for book "${title}":`, errorMessage);
         }
       } else {
@@ -442,10 +477,10 @@ export async function searchMultipleBooks(
         return [];
       }
 
-      const data = await response.json();
+      const data = await response.json() as GoogleBooksResponse;
 
       if (data.items && data.items.length > 0) {
-        const results: GoogleBooksData[] = data.items.map((book: any) => {
+        const results: GoogleBooksData[] = data.items.map((book: GoogleBooksVolume) => {
           const volumeInfo = book.volumeInfo;
 
           const result: GoogleBooksData = {
@@ -479,8 +514,8 @@ export async function searchMultipleBooks(
           return result;
         });
 
-        // Cache the results as an array
-        cache.set(cacheKey, results);
+        // Cache the results as an array (cast to satisfy cache type)
+        cache.set(cacheKey, results as any);
         return results;
       }
 
@@ -492,7 +527,7 @@ export async function searchMultipleBooks(
           errorMessage.includes('network') ||
           errorMessage.includes('timeout') ||
           errorMessage.includes('AbortError')) {
-        if (__DEV__) {
+        if (isDev) {
           console.warn(`Network/timeout error searching for multiple books "${title}":`, errorMessage);
         }
       } else {
@@ -568,10 +603,10 @@ export async function searchBooksByQuery(
         return [];
       }
 
-      const data = await response.json();
+      const data = await response.json() as GoogleBooksResponse;
 
       if (data.items && data.items.length > 0) {
-        const results = data.items.map((book: any) => {
+        const results = data.items.map((book: GoogleBooksVolume) => {
           const volumeInfo = book.volumeInfo;
           return {
             googleBooksId: book.id,
@@ -600,7 +635,7 @@ export async function searchBooksByQuery(
           errorMessage.includes('network') ||
           errorMessage.includes('timeout') ||
           errorMessage.includes('AbortError')) {
-        if (__DEV__) {
+        if (isDev) {
           console.warn(`Network/timeout error searching books by query "${query}":`, errorMessage);
         }
       } else {

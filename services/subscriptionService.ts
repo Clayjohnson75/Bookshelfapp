@@ -20,7 +20,7 @@ import { supabase } from '../lib/supabaseClient';
  * 
  * To toggle: Change this single value and rebuild the app.
  */
-const ENABLE_PRO_FOR_EVERYONE = true; // ⚠️ CHANGE THIS TO false TO RE-ENABLE SUBSCRIPTIONS
+const ENABLE_PRO_FOR_EVERYONE = true; // ⚠️ No Pro features - all users get unlimited scans when signed in
 
 /**
  * Check if subscription UI should be hidden (when pro is enabled for everyone)
@@ -100,12 +100,12 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
     }
 
     if (!data || data.length === 0) {
-      // Return default for new users
+      // Return default for new signed-in users: unlimited scans
       return {
         subscriptionTier: 'free',
         monthlyScans: 0,
-        monthlyLimit: 5,
-        scansRemaining: 5,
+        monthlyLimit: null, // null = unlimited for signed-in users
+        scansRemaining: null, // null = unlimited
         resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
       };
     }

@@ -188,26 +188,9 @@ export const ScansTab: React.FC = () => {
       console.log('📱 Guest user: Allowing first free scan (local only)');
       // Mark scan as used after successful scan (will be done after scan completes)
     } else if (user) {
-      // Authenticated users: check scan limit
-      const canScan = await canUserScan(user.uid);
-      if (!canScan) {
-        // Limit reached, show upgrade modal (only if subscription UI is not hidden)
-        if (!isSubscriptionUIHidden()) {
-          Alert.alert(
-            'Scan Limit Reached',
-            'You\'ve used all 5 free scans this month. Upgrade to Pro for unlimited scans!',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Upgrade', onPress: () => {
-                if (!isSubscriptionUIHidden()) {
-                  setShowUpgradeModal(true);
-                }
-              }},
-            ]
-          );
-        }
-        return;
-      }
+      // Authenticated users: unlimited scans (no limit check needed)
+      // All signed-in users get unlimited scans
+      console.log('📱 Signed-in user: Unlimited scans available');
     }
     
     console.log('🖼️ Scan limit check passed, starting scan...');
@@ -560,17 +543,18 @@ export const ScansTab: React.FC = () => {
       setScanUsage(usage);
       
       // Determine if user can scan based on usage data
-      // Only disable if user is free tier AND has used all 5 scans
+      // Signed-in users: unlimited scans (scansRemaining is null = unlimited)
       if (usage) {
-        const isFreeTier = usage.subscriptionTier === 'free';
+        // If scansRemaining is null, user has unlimited scans
+        const hasUnlimitedScans = usage.scansRemaining === null;
         const hasScansRemaining = usage.scansRemaining !== null && usage.scansRemaining > 0;
-        const userCanScan = !isFreeTier || hasScansRemaining;
+        const userCanScan = hasUnlimitedScans || hasScansRemaining;
         setCanScan(userCanScan);
         
-        console.log(`📊 Scan usage: tier=${usage.subscriptionTier}, scans=${usage.monthlyScans}/${usage.monthlyLimit}, remaining=${usage.scansRemaining}, canScan=${userCanScan}`);
+        console.log(`📊 Scan usage: tier=${usage.subscriptionTier}, scans=${usage.monthlyScans}/${usage.monthlyLimit || 'unlimited'}, remaining=${usage.scansRemaining || 'unlimited'}, canScan=${userCanScan}`);
       } else {
-        // If we can't get usage, default to allowing scans (don't block users)
-        console.warn('⚠️ Could not load scan usage, allowing scans by default');
+        // If we can't get usage, default to allowing scans (signed-in users get unlimited)
+        console.warn('⚠️ Could not load scan usage, allowing scans by default (signed-in users have unlimited)');
         setCanScan(true);
       }
     } catch (error: any) {
@@ -582,11 +566,13 @@ export const ScansTab: React.FC = () => {
       // Default to allowing scans if we can't load usage (don't block users)
       setCanScan(true);
       // Set a default scanUsage so the banner doesn't show "loading" forever
+      // Signed-in users get unlimited scans
       setScanUsage({
         subscriptionTier: 'free',
         monthlyScans: 0,
-        monthlyLimit: 5,
-        scansRemaining: 5,
+        monthlyLimit: null, // null = unlimited for signed-in users
+        scansRemaining: null, // null = unlimited
+        resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
       });
     }
   };
@@ -2116,18 +2102,21 @@ export const ScansTab: React.FC = () => {
         console.log('📸 Adding photo, total photos now:', updatedPhotos.length);
         
         // Save photos to AsyncStorage immediately to prevent data loss
-        const userPhotosKey = `photos_${user.uid}`;
-        AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos)).catch(error => {
-          console.error('Error saving photos to AsyncStorage:', error);
-        });
-        
-        // Upload photo to Supabase Storage in the background (don't block UI)
-        // IMPORTANT: Save with books immediately to prevent data loss
+        // Only save if user exists (should always exist, but safety check)
         if (user) {
+          const userPhotosKey = `photos_${user.uid}`;
+          AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos)).catch(error => {
+            console.error('Error saving photos to AsyncStorage:', error);
+          });
+          
+          // Upload photo to Supabase Storage in the background (don't block UI)
+          // IMPORTANT: Save with books immediately to prevent data loss
           savePhotoToSupabase(user.uid, newPhoto).catch(error => {
             console.error('Error uploading photo to Supabase (non-blocking):', error);
             // Don't throw - photo is saved locally, Supabase upload can retry later
           });
+        } else {
+          console.warn('⚠️ No user found when saving photo - skipping AsyncStorage save');
         }
         
         // Deduplicate books by ID to prevent duplicate key errors
@@ -2143,10 +2132,14 @@ export const ScansTab: React.FC = () => {
           console.log('📚 Updated pending books count:', updatedPending.length);
           console.log('📚 Unique new books added:', uniqueNewPendingBooks.length);
           
-          // Save data with the updated values
-          saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
-            console.error('Error saving user data:', error);
-          });
+          // Save data with the updated values (only if user exists)
+          if (user) {
+            saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
+              console.error('Error saving user data:', error);
+            });
+          } else {
+            console.warn('⚠️ No user found when saving books - skipping save');
+          }
           
           return updatedPending;
         });
@@ -2280,8 +2273,32 @@ export const ScansTab: React.FC = () => {
       
       console.log(`✅ Scan complete: ${newPendingBooks.length} books ready, ${newIncompleteBooks.length} incomplete`);
       
-    } catch (error) {
-      console.error(' Processing failed:', error);
+    } catch (error: any) {
+      console.error('❌ Processing failed:', error);
+      console.error('❌ Error details:', {
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack?.slice(0, 500),
+        scanId,
+        uri: uri?.substring(0, 50)
+      });
+      
+      // Show user-friendly error message
+      const errorMessage = error?.message || String(error) || 'Unknown error';
+      if (errorMessage.includes('user') || errorMessage.includes('uid')) {
+        Alert.alert(
+          'Scan Error',
+          'An error occurred while saving your scan. Please try signing in and scanning again.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Scan Failed',
+          `An error occurred: ${errorMessage.substring(0, 100)}`,
+          [{ text: 'OK' }]
+        );
+      }
+      
       // Use functional update to get latest queue state
       setScanQueue(prev => {
         const failedQueue = prev.map(item => 
@@ -3600,38 +3617,18 @@ export const ScansTab: React.FC = () => {
         <TouchableOpacity 
           style={styles.scanButton} 
           onPress={async () => {
-            // Only check scan limit if user is free tier and has NO scans remaining
-            if (user && scanUsage) {
-              const isFreeTier = scanUsage.subscriptionTier === 'free';
-              const hasNoScans = scanUsage.scansRemaining !== null && scanUsage.scansRemaining <= 0;
-              
-              // Only block if free tier AND no scans remaining
-              if (isFreeTier && hasNoScans) {
-                // Double-check with server to be sure
-                const canScanNow = await canUserScan(user.uid);
-                if (!canScanNow) {
-                  // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
-                  if (!isSubscriptionUIHidden()) {
-                  setShowUpgradeModal(true);
-                  }
-                  loadScanUsage();
-                  return;
-                }
-              }
-              // If user has scans remaining OR is pro/owner, proceed normally
-            } else if (user && !scanUsage) {
-              // If scanUsage not loaded yet, check with server
-              const canScanNow = await canUserScan(user.uid);
-              if (!canScanNow) {
-                // 🎛️ FEATURE FLAG: Only show upgrade modal if subscription UI is not hidden
-                if (!isSubscriptionUIHidden()) {
-                setShowUpgradeModal(true);
-                }
-                loadScanUsage();
+            // Signed-in users: unlimited scans (no limit check needed)
+            // Guest users: check if they've used their one free scan
+            if (!user || isGuestUser(user)) {
+              const guestScanKey = 'guest_scan_used';
+              const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+              if (hasUsedScan === 'true') {
+                // Navigate to My Library tab which shows login screen
+                navigation.navigate('MyLibrary' as never);
                 return;
               }
             }
-            // User has scans or is pro/owner - proceed normally
+            // Proceed with camera (signed-in users have unlimited, guests have 1 free)
             handleStartCamera();
           }}
           activeOpacity={0.7}
@@ -3644,34 +3641,18 @@ export const ScansTab: React.FC = () => {
         <TouchableOpacity 
           style={styles.scanButton} 
           onPress={async () => {
-            // Only check scan limit if user is free tier and has NO scans remaining
-            if (user && scanUsage) {
-              const isFreeTier = scanUsage.subscriptionTier === 'free';
-              const hasNoScans = scanUsage.scansRemaining !== null && scanUsage.scansRemaining <= 0;
-              
-              // Only block if free tier AND no scans remaining
-              if (isFreeTier && hasNoScans) {
-                // Double-check with server to be sure
-                const canScanNow = await canUserScan(user.uid);
-                if (!canScanNow) {
-                  // User is out of scans - show upgrade modal (only if subscription UI is not hidden)
-                  if (!isSubscriptionUIHidden()) {
-                  setShowUpgradeModal(true);
-                  }
-                  loadScanUsage();
-                  return;
-                }
+            // Signed-in users: unlimited scans (no limit check needed)
+            // Guest users: check if they've used their one free scan
+            if (!user || isGuestUser(user)) {
+              const guestScanKey = 'guest_scan_used';
+              const hasUsedScan = await AsyncStorage.getItem(guestScanKey);
+              if (hasUsedScan === 'true') {
+                // Navigate to My Library tab which shows login screen
+                navigation.navigate('MyLibrary' as never);
+                return;
               }
-              // If user has scans remaining OR is pro/owner, proceed normally
-            } else if (user && !scanUsage) {
-              // If scanUsage not loaded yet, allow the action but check in background
-              // Don't block user - load usage in background
-              loadScanUsage().catch(() => {});
-              // Proceed with image picker - we'll check limit when scan completes
-              pickImage();
-              return;
             }
-            // User has scans or is pro/owner - proceed normally
+            // Proceed with image picker (signed-in users have unlimited, guests have 1 free)
             pickImage();
           }}
           activeOpacity={0.7}
