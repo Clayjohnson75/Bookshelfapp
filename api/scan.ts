@@ -18,8 +18,10 @@ interface GeminiQueueItem {
 let geminiQueue: GeminiQueueItem[] = [];
 let geminiProcessing = false;
 let lastGeminiRequestTime = 0;
-const MIN_GEMINI_INTERVAL_MS = 3000; // 3 seconds minimum between requests (20 RPM max, safely under 25)
+// Target 20 RPM (safely under Gemini 3 Pro's 25 RPM limit)
+const MIN_GEMINI_INTERVAL_MS = 3000; // 3 seconds minimum between requests = 20 RPM max
 const MAX_GEMINI_RETRIES = 2; // Max retries (but with proper delays, not immediate)
+let geminiModelVerified = false; // Track if we've verified the model exists
 
 /**
  * Process Gemini queue - ensures single-flight execution
@@ -112,16 +114,55 @@ function queueGeminiRequest(imageDataURL: string, retryCount = 0): Promise<any[]
 }
 
 /**
- * Health check for Gemini API - confirms endpoint and quota surface
+ * List available Gemini models - verifies model availability and quota surface
  */
-async function pingGeminiAPI(): Promise<{ success: boolean; endpoint?: string; model?: string; error?: string }> {
+async function listGeminiModels(): Promise<{ success: boolean; models?: string[]; endpoint?: string; error?: string }> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
     return { success: false, error: 'No API key' };
   }
   
-  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-  const model = 'gemini-1.5-flash';
+  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models';
+  
+  try {
+    const res = await fetch(`${endpoint}?key=${key}`);
+    if (!res.ok) {
+      const errorText = await res.text();
+      return {
+        success: false,
+        endpoint: 'generativelanguage.googleapis.com',
+        error: `Status ${res.status}: ${errorText.slice(0, 200)}`,
+      };
+    }
+    
+    const data = await res.json() as { models?: Array<{ name: string }> };
+    const models = data.models?.map(m => m.name.replace('models/', '')) || [];
+    
+    return {
+      success: true,
+      models,
+      endpoint: 'generativelanguage.googleapis.com',
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      endpoint: 'generativelanguage.googleapis.com',
+      error: error?.message || String(error),
+    };
+  }
+}
+
+/**
+ * Health check for Gemini API - confirms endpoint and quota surface
+ */
+async function pingGeminiAPI(model: string): Promise<{ success: boolean; endpoint?: string; model?: string; error?: string }> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    return { success: false, error: 'No API key' };
+  }
+  
+  // Verify URL format: POST /v1beta/models/<model>:generateContent
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   
   try {
     const res = await fetch(`${endpoint}?key=${key}`, {
@@ -132,11 +173,13 @@ async function pingGeminiAPI(): Promise<{ success: boolean; endpoint?: string; m
       }),
     });
     
+    const errorText = res.ok ? undefined : await res.text();
+    
     return {
       success: res.ok,
       endpoint: 'generativelanguage.googleapis.com',
       model,
-      error: res.ok ? undefined : `Status ${res.status}`,
+      error: res.ok ? undefined : `Status ${res.status}: ${errorText?.slice(0, 200) || 'Unknown error'}`,
     };
   } catch (error: any) {
     return {
@@ -155,12 +198,12 @@ async function scanWithGeminiDirect(imageDataURL: string): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
   
-  // Use stable model name (gemini-1.5-flash or gemini-1.5-pro) instead of preview
-  // Preview models may have different quota buckets
-  const model = 'gemini-1.5-flash'; // Stable model, better quota allocation
+  // Use valid model name - gemini-3-flash-preview (as per Google docs)
+  // Verify model exists via ListModels call on startup
+  const model = 'gemini-3-flash-preview'; // Valid model for generateContent
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   
-  console.log(`[API] Gemini request: endpoint=generativelanguage.googleapis.com, model=${model}, client=vanilla-fetch`);
+  console.log(`[API] Gemini request: endpoint=generativelanguage.googleapis.com, model=${model}, client=vanilla-fetch, URL=POST /v1beta/models/${model}:generateContent`);
   
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   const res = await fetch(
@@ -1468,19 +1511,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
     
-    // Health check Gemini API on first request to confirm endpoint and quota surface
-    if (hasGeminiKey) {
+    // Verify Gemini model availability on first request
+    if (hasGeminiKey && !geminiModelVerified) {
       try {
-        const healthCheck = await pingGeminiAPI();
+        // First, list available models
+        const modelsList = await listGeminiModels();
+        console.log(`[API] Gemini ListModels:`, {
+          success: modelsList.success,
+          endpoint: modelsList.endpoint,
+          availableModels: modelsList.models?.slice(0, 10) || [], // Show first 10 models
+          error: modelsList.error,
+        });
+        
+        // Then ping the model we'll use
+        const modelToUse = 'gemini-3-flash-preview';
+        const healthCheck = await pingGeminiAPI(modelToUse);
         console.log(`[API] Gemini health check:`, {
           success: healthCheck.success,
           endpoint: healthCheck.endpoint,
           model: healthCheck.model,
           error: healthCheck.error,
           quotaSurface: 'Gemini API (AI Studio) - generativelanguage.googleapis.com',
+          urlFormat: `POST /v1beta/models/${modelToUse}:generateContent`,
         });
+        
         if (!healthCheck.success) {
-          console.warn(`[API] Gemini health check failed - API may be unavailable or key invalid`);
+          console.error(`[API] Gemini model ${modelToUse} not available - check model name and API key`);
+        } else {
+          geminiModelVerified = true;
         }
       } catch (error) {
         console.warn(`[API] Gemini health check error:`, error);
@@ -1600,17 +1658,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
     console.log(`[API] Cheap validator: ${cheapFiltered.length} passed, ${cheapValidated.length - cheapFiltered.length} filtered`);
     
-    // NEW PIPELINE: Step 2 - Early external lookup for ALL books (to get covers and googleBooksId)
-    console.log(`[API] Early lookup for all books (to get covers and googleBooksId)...`);
-    const withLookups = await Promise.all(
-      cheapFiltered.map(book => earlyLookup(book))
-    );
-    const lookupCount = withLookups.filter(b => b.googleBooksId || b.external_match?.googleBooksId).length;
-    console.log(`[API] Early lookup: ${lookupCount} books found in Google Books`);
-    
-    // NEW PIPELINE: Step 3 - Batch validation (replaces per-book validation)
-    console.log(`[API] Batch validating ${withLookups.length} books...`);
-    const validatedBooks = await batchValidateBooks(withLookups);
+    // NEW PIPELINE: Step 2 - Batch validation (replaces per-book validation)
+    // Skip early lookup - we'll fetch covers AFTER validation for better accuracy
+    console.log(`[API] Batch validating ${cheapFiltered.length} books...`);
+    const validatedBooks = await batchValidateBooks(cheapFiltered);
     
     // Filter out invalid books
     const validBooks = validatedBooks.filter(book => {
@@ -1628,64 +1679,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
-    // CRITICAL: Post-validation cover fetch - fetch covers for books that don't have them yet
-    // This ensures covers load immediately even if early lookup failed
-    const booksNeedingCovers = finalBooks.filter(book => !book.coverUrl && !book.googleBooksId);
-    if (booksNeedingCovers.length > 0) {
-      console.log(`[API] Post-validation: Fetching covers for ${booksNeedingCovers.length} books without covers...`);
-      
-      // Fetch covers in parallel (but with rate limiting handled by the service)
-      const coverPromises = booksNeedingCovers.map(async (book) => {
-        try {
-          const { fetchBookData } = await import('../services/googleBooksService');
-          const result = await fetchBookData(book.title || '', book.author || undefined);
-          
-          if (result && result.googleBooksId) {
-            console.log(`[API] Post-validation cover fetch SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
-            return {
-              ...book,
-              googleBooksId: result.googleBooksId,
-              coverUrl: result.coverUrl || book.coverUrl,
-            };
-          } else {
-            console.log(`[API] Post-validation cover fetch NO MATCH for "${book.title}"`);
-            return book;
-          }
-        } catch (error) {
-          console.log(`[API] Post-validation cover fetch ERROR for "${book.title}":`, error?.message || error);
-          return book;
-        }
-      });
-      
-      const booksWithCovers = await Promise.all(coverPromises);
-      
-      // Update finalBooks with cover data
-      const coverMap = new Map(booksWithCovers.map(b => [b.title + '|' + (b.author || ''), b]));
-      const finalBooksWithCovers = finalBooks.map(book => {
-        const key = book.title + '|' + (book.author || '');
-        const withCover = coverMap.get(key);
-        if (withCover && (withCover.coverUrl || withCover.googleBooksId)) {
+    // CRITICAL: Post-validation cover fetch - fetch covers for ALL books AFTER validation
+    // This ensures covers load immediately with correct titles/authors from validation
+    console.log(`[API] Post-validation: Fetching covers for ${finalBooks.length} books...`);
+    
+    // Fetch covers in parallel (but with rate limiting handled by the service)
+    const coverPromises = finalBooks.map(async (book) => {
+      try {
+        const { fetchBookData } = await import('../services/googleBooksService');
+        // Use validated title/author (more accurate than early lookup)
+        const result = await fetchBookData(book.title || '', book.author || undefined);
+        
+        if (result && result.googleBooksId) {
+          console.log(`[API] Post-validation cover SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
           return {
             ...book,
-            googleBooksId: withCover.googleBooksId || book.googleBooksId,
-            coverUrl: withCover.coverUrl || book.coverUrl,
+            googleBooksId: result.googleBooksId,
+            coverUrl: result.coverUrl || book.coverUrl,
           };
+        } else {
+          console.log(`[API] Post-validation cover NO MATCH for "${book.title}" by ${book.author || 'no author'}`);
+          return book;
         }
+      } catch (error) {
+        console.log(`[API] Post-validation cover ERROR for "${book.title}":`, error?.message || error);
         return book;
-      });
-      
-      const coversFound = finalBooksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
-      console.log(`[API] Post-validation: ${coversFound}/${finalBooksWithCovers.length} books now have covers/googleBooksId`);
+      }
+    });
+    
+    const finalBooksWithCovers = await Promise.all(coverPromises);
+    
+    const coversFound = finalBooksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
+    console.log(`[API] Post-validation: ${coversFound}/${finalBooksWithCovers.length} books now have covers/googleBooksId`);
     
     return res.status(200).json({ 
-        books: finalBooksWithCovers, // Books with covers attached
-        apiResults
-      });
-    }
-    
-    return res.status(200).json({ 
-      books: finalBooks, // Only return deduplicated valid books
-      apiResults // Include API status for debugging (already defined above with error info)
+      books: finalBooksWithCovers, // Books with covers attached
+      apiResults
     });
   } catch (e: any) {
     return res.status(500).json({ error: 'scan_failed', detail: e?.message || String(e) });
