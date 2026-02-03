@@ -268,7 +268,7 @@ async function scanWithGeminiDirect(imageDataURL: string, scanId?: string): Prom
               {
                 parts: [
                   {
-                    text: `Scan book spines in this image and return ONLY a strict JSON array.
+                    text: `Scan book spines in this image and return ONLY a JSON array. No markdown. No explanations.
 
 CRITICAL RULES:
 - TITLE is the book name (usually larger text on spine)
@@ -279,24 +279,33 @@ CRITICAL RULES:
 - Capture raw spine_text exactly as you see it (even if messy)
 - Detect language: "en", "es", "fr", or "unknown"
 
-Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
-[{
-  "title": "Book Title Here or null",
-  "author": "Author Name Here or null",
-  "confidence": "high|medium|low",
-  "spine_text": "raw text from spine",
-  "language": "en|es|fr|unknown",
-  "reason": "brief reason for confidence",
-  "spine_index": 0
-}]`,
+Return only a JSON array like:
+[{"title":"Book Title","author":"Author Name","confidence":"high","spine_text":"raw text","language":"en","reason":"brief reason","spine_index":0}]`,
                   },
                   { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
                 ],
               },
             ],
             generationConfig: { 
-              temperature: 0.1, 
+              responseMimeType: "application/json",
+              temperature: 0,
               maxOutputTokens: 8000,
+            },
+            responseSchema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  author: { type: "string" },
+                  confidence: { type: "string", enum: ["high", "medium", "low"] },
+                  spine_text: { type: "string" },
+                  language: { type: "string", enum: ["en", "es", "fr", "unknown"] },
+                  reason: { type: "string" },
+                  spine_index: { type: "number" },
+                },
+                required: ["title", "confidence", "spine_index"],
+              },
             },
           }),
         }
@@ -392,43 +401,94 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
     
     // Parse response from result
     const data = result;
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const rawGeminiText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     
-    if (!content) {
+    if (!rawGeminiText) {
       console.error(`${logPrefix} Gemini returned empty content`);
       return [];
     }
     
-    // Remove markdown code blocks
-    let cleaned = content;
+    // Store raw text for debugging (redact API keys)
+    const rawGeminiTextForLog = rawGeminiText.replace(/AIza[^\s"]+/g, '[REDACTED]');
+    
+    // Step 1: Try parsing raw text directly
+    try {
+      const parsed = JSON.parse(rawGeminiText);
+      if (Array.isArray(parsed)) {
+        console.log(`${logPrefix} Gemini parsed ${parsed.length} books (direct JSON)`);
+        return parsed;
+      }
+      // If it's an object with a books array, use that
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.books)) {
+        console.log(`${logPrefix} Gemini parsed ${parsed.books.length} books (from books property)`);
+        return parsed.books;
+      }
+    } catch (e) {
+      // Continue to next parsing strategy
+    }
+    
+    // Step 2: Remove markdown code blocks if present
+    let cleaned = rawGeminiText;
     if (cleaned.includes('```')) {
       cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     }
     
-    // Try to parse JSON
+    // Step 3: Try parsing cleaned text
     try {
       const parsed = JSON.parse(cleaned);
       if (Array.isArray(parsed)) {
-        console.log(`${logPrefix} Gemini parsed ${parsed.length} books`);
+        console.log(`${logPrefix} Gemini parsed ${parsed.length} books (cleaned JSON)`);
         return parsed;
       }
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.books)) {
+        console.log(`${logPrefix} Gemini parsed ${parsed.books.length} books (from books property, cleaned)`);
+        return parsed.books;
+      }
     } catch (e) {
-      // Try to extract JSON array
-      const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-      if (arrayMatch) {
+      // Continue to next parsing strategy
+    }
+    
+    // Step 4: Regex-extract the first [...] block
+    const arrayMatch = cleaned.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) {
+      try {
+        const parsed = JSON.parse(arrayMatch[0]);
+        if (Array.isArray(parsed)) {
+          console.log(`${logPrefix} Gemini parsed ${parsed.length} books (extracted array)`);
+          return parsed;
+        }
+      } catch (e2) {
+        // Try JSON repair on extracted array
+        console.warn(`${logPrefix} Gemini JSON parse failed on extracted array, attempting repair...`);
         try {
-          const parsed = JSON.parse(arrayMatch[0]);
-          if (Array.isArray(parsed)) {
-            console.log(`${logPrefix} Gemini parsed ${parsed.length} books (extracted)`);
-            return parsed;
+          const repaired = await repairJSON(arrayMatch[0], 'array of book objects with title, author, confidence, spine_text, language, reason, spine_index');
+          if (repaired && Array.isArray(repaired)) {
+            console.log(`${logPrefix} Gemini parsed ${repaired.length} books (repaired extracted array)`);
+            return repaired;
           }
-        } catch (e2) {
-          console.error(`${logPrefix} Gemini failed to parse JSON:`, e2);
+        } catch (repairError) {
+          console.error(`${logPrefix} Gemini JSON repair failed:`, repairError);
         }
       }
     }
     
+    // Step 5: Final attempt - try repairing the entire cleaned content
+    console.warn(`${logPrefix} Gemini attempting final JSON repair on full content...`);
+    try {
+      const repaired = await repairJSON(cleaned, 'array of book objects');
+      if (repaired && Array.isArray(repaired)) {
+        console.log(`${logPrefix} Gemini parsed ${repaired.length} books (final repair)`);
+        return repaired;
+      }
+    } catch (repairError) {
+      console.error(`${logPrefix} Gemini final JSON repair failed:`, repairError);
+    }
+    
+    // All parsing attempts failed - log for debugging and treat as provider failure
     console.error(`${logPrefix} Gemini response doesn't contain valid JSON array`);
+    console.error(`${logPrefix} Raw response preview (first 300 chars, API keys redacted): ${rawGeminiTextForLog.substring(0, 300)}`);
+    console.error(`${logPrefix} Full content length: ${rawGeminiText.length} chars`);
+    console.error(`${logPrefix} Treating as provider failure, will fallback to OpenAI`);
     return [];
   } catch (error: any) {
     // If retries exhausted, return empty array (fallback to OpenAI)

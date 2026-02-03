@@ -769,21 +769,6 @@ async function searchBook(
         }
       }
 
-      // Enhanced DEBUG_GOOGLE_BOOKS logging
-      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
-      
-      if (DEBUG_GOOGLE_BOOKS) {
-        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
-        console.log(`[DEBUG_GOOGLE_BOOKS] Search Request:`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Title: "${title}"`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Author: "${author || 'none'}"`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Query: "${query}"`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Full URL: ${url}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Response Status: ${response.status} ${response.statusText}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Total Items: ${data.totalItems || 0}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Items Returned: ${data.items?.length || 0}`);
-      }
-
       if (data.items?.length) {
         // Pick best volume using improved scoring (no hard cover requirement)
         // This function includes detailed debug logging for top 3 candidates

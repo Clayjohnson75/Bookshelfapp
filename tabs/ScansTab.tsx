@@ -1162,9 +1162,14 @@ export const ScansTab: React.FC = () => {
       // Cleanup: mark screen as inactive when blurred
       return () => {
         isActiveRef.current = false;
-        // Clear Google Books queue when leaving tab
-        const { clearGoogleBooksQueue } = require('../services/googleBooksService');
-        clearGoogleBooksQueue();
+        // Clear Google Books queue when leaving tab (safely, don't let errors propagate)
+        try {
+          const { clearGoogleBooksQueue } = require('../services/googleBooksService');
+          clearGoogleBooksQueue();
+        } catch (error) {
+          // Silently ignore errors from clearing queue
+          console.debug('Error clearing Google Books queue:', error);
+        }
       };
     }, [user, checkAndCompletePendingActions])
   );
@@ -1399,32 +1404,32 @@ export const ScansTab: React.FC = () => {
       // Import the centralized service
       const { fetchBookData } = await import('../services/googleBooksService');
       
-      // Filter out books that already have covers
+      // Filter out books that already have covers - LESS AGGRESSIVE FILTERING
+      // Only skip if we have BOTH coverUrl AND localCoverPath (fully loaded)
       const booksNeedingCovers = books.filter(book => {
-      // Skip if already has cover and local cache
-      if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
-        // We'll check file existence in parallel, but skip if we already have cover URL
-        if (book.coverUrl) return false;
-      }
-      // Skip if we already have description and all stats (even without local cover)
-      if (book.description && book.googleBooksId && 
-          (book.pageCount || book.publisher || book.publishedDate)) {
-        return false; // Already has description and stats, skip
-      }
-      return true;
-    });
+        // Skip ONLY if we have both cover URL and local file cached
+        if (book.coverUrl && book.localCoverPath && FileSystem.documentDirectory) {
+          // Double-check file exists
+          return false; // Has both, skip
+        }
+        // Always fetch if missing coverUrl (even if we have other data)
+        return true; // Need cover, fetch it
+      });
+      
+      console.log(`📚 Cover fetch: ${books.length} total books, ${booksNeedingCovers.length} need covers`);
 
     if (booksNeedingCovers.length === 0) return;
 
-    // Batch state updates: accumulate updates in a map and flush every 300ms
+    // Batch state updates: accumulate updates in a map and flush every 100ms (faster updates)
     const patchById = new Map<string, Partial<Book>>();
     let flushTimer: NodeJS.Timeout | null = null;
     let lastFlushTime = 0;
-    const FLUSH_INTERVAL_MS = 300;
+    const FLUSH_INTERVAL_MS = 100; // Reduced from 300ms for faster cover appearance
 
     const flushUpdates = () => {
       // Don't update state if screen is not active
       if (!isActiveRef.current) {
+        console.log('🛑 Flush cancelled: screen not active');
         patchById.clear();
         return;
       }
@@ -1432,15 +1437,22 @@ export const ScansTab: React.FC = () => {
       if (patchById.size === 0) return;
       
       const patches = Array.from(patchById.entries());
+      console.log(`🔄 Flushing ${patches.length} cover updates to state`);
       patchById.clear();
       
       // Double-check active state before updating
-      if (!isActiveRef.current) return;
+      if (!isActiveRef.current) {
+        console.log('🛑 Flush cancelled: screen became inactive');
+        return;
+      }
       
       // Update pendingBooks (always flush)
       // Use a more efficient approach: only create new array if there are actual changes
       setPendingBooks(prev => {
-        if (!isActiveRef.current) return prev; // Don't update if inactive
+        if (!isActiveRef.current) {
+          console.log('🛑 setPendingBooks cancelled: screen not active');
+          return prev; // Don't update if inactive
+        }
         
         const patchMap = new Map(patches);
         let hasChanges = false;
@@ -1448,10 +1460,15 @@ export const ScansTab: React.FC = () => {
           const patch = patchMap.get(pendingBook.id);
           if (patch) {
             hasChanges = true;
+            console.log(`✅ Updating pendingBook "${pendingBook.title}" with coverUrl=${patch.coverUrl ? 'YES' : 'NO'}`);
             return { ...pendingBook, ...patch };
           }
           return pendingBook;
         });
+        
+        if (hasChanges) {
+          console.log(`✅ Updated ${patches.length} pendingBooks with covers`);
+        }
         
         // Only return new array if there were actual changes (prevents unnecessary re-renders)
         return hasChanges ? updated : prev;
@@ -1511,8 +1528,9 @@ export const ScansTab: React.FC = () => {
         flushTimer = null;
       }
       
-      if (timeSinceLastFlush >= FLUSH_INTERVAL_MS) {
-        // Flush immediately if enough time has passed
+      // If this is the first update or enough time has passed, flush immediately
+      if (lastFlushTime === 0 || timeSinceLastFlush >= FLUSH_INTERVAL_MS) {
+        // Flush immediately for faster cover appearance
         flushUpdates();
       } else {
         // Schedule flush for remaining time
@@ -1524,7 +1542,10 @@ export const ScansTab: React.FC = () => {
     };
 
     // Process books sequentially (rate limiting handled by queue)
-    for (const book of booksNeedingCovers) {
+    console.log(`🚀 Starting cover fetch for ${booksNeedingCovers.length} books`);
+    for (let i = 0; i < booksNeedingCovers.length; i++) {
+      const book = booksNeedingCovers[i];
+      console.log(`📖 Processing book ${i + 1}/${booksNeedingCovers.length}: "${book.title}"`);
       // Check if screen is still active - break if not
       if (!isActiveRef.current) {
         console.log('🛑 Cover fetch cancelled: screen not active');
@@ -1548,11 +1569,14 @@ export const ScansTab: React.FC = () => {
         }
 
         // Use centralized service - it will use googleBooksId if available (much faster!)
+        console.log(`🔍 Fetching cover for: "${book.title}"${book.author ? ` by ${book.author}` : ''}${book.googleBooksId ? ` (ID: ${book.googleBooksId})` : ''}`);
         const bookData = await fetchBookData(
           book.title,
           book.author,
           book.googleBooksId // If we already have the ID, use it instead of searching
         );
+        
+        console.log(`📦 Got book data for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
         
         // Check again after async operation
         if (!isActiveRef.current) {
@@ -1561,6 +1585,7 @@ export const ScansTab: React.FC = () => {
         }
         
         if (bookData.coverUrl && bookData.googleBooksId) {
+          console.log(`✅ Found cover for "${book.title}": ${bookData.coverUrl.substring(0, 80)}...`);
           // Download and cache the cover (non-blocking)
           const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
           
@@ -1591,8 +1616,11 @@ export const ScansTab: React.FC = () => {
           // Accumulate update in patch map (don't update state immediately)
           // Only if screen is still active
           if (book.id && isActiveRef.current) {
+            console.log(`💾 Queuing state update for "${book.title}" with coverUrl`);
             patchById.set(book.id, updatedBook);
             scheduleFlush();
+          } else {
+            console.warn(`⚠️ Skipping state update for "${book.title}": book.id=${book.id}, isActive=${isActiveRef.current}`);
           }
           
           // Save to Supabase immediately if cover, description, or stats were fetched
@@ -1612,11 +1640,13 @@ export const ScansTab: React.FC = () => {
                 console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
               });
           }
+        } else {
+          console.warn(`⚠️ No cover found for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
         }
       } catch (error) {
         // Only log if still active
         if (isActiveRef.current) {
-          console.error(`Error fetching data for ${book.title}:`, error);
+          console.error(`❌ Error fetching data for "${book.title}":`, error);
         }
         // Continue to next book even if this one fails - but break if inactive
         if (!isActiveRef.current) {
@@ -2287,11 +2317,13 @@ export const ScansTab: React.FC = () => {
       setSelectedBooks(new Set());
       
       // Fetch covers for books immediately (don't wait for this)
-      // Start fetching right away for faster cover loading
+      // Start fetching right away for faster cover loading - NO DELAY
       console.log('🖼️ Fetching covers for', newPendingBooks.length, 'books');
-      fetchCoversForBooks(newPendingBooks).catch(error => {
-        console.error('❌ Error fetching covers:', error);
-      });
+      if (isActiveRef.current && newPendingBooks.length > 0) {
+        fetchCoversForBooks(newPendingBooks).catch(error => {
+          console.error('❌ Error fetching covers:', error);
+        });
+      }
       
       // Add books to selected folder if one was chosen
       if (selectedFolderId) {
@@ -3715,14 +3747,15 @@ export const ScansTab: React.FC = () => {
   // Notification is at: insets.bottom + tabBarHeight (~49-56px)
   // Position toolbar as low as possible - use minimal height to eliminate gap
   const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
-  // To eliminate gap: notification is at bottom: insets.bottom + tabBarHeight
-  // Toolbar should be positioned so its bottom touches notification's top
-  // Subtract significantly more to move toolbar DOWN and eliminate gap completely
+  // When scanProgress exists, notification is above tab bar
+  // When scanProgress is null, toolbar should be directly above tab bar
   const notificationHeight = scanProgress ? 75 : 0; // Actual measured height
   // Ensure position is always valid (never negative, never undefined)
+  // When notification exists: position toolbar above notification
+  // When no notification: position toolbar directly above tab bar (at bottom: 0, React Navigation handles tab bar spacing)
   const stickyBottomPosition = scanProgress 
-    ? Math.max(0, insets.bottom + tabBarHeight + notificationHeight - 75) // Subtract 75px to move toolbar down and eliminate gap
-    : Math.max(0, insets.bottom + tabBarHeight); // Directly above tab bar when no notification
+    ? Math.max(0, insets.bottom + tabBarHeight + notificationHeight) // Above notification
+    : 0; // Directly at bottom when no notification (React Navigation tab bar will be below it)
 
   return (
     <View style={styles.safeContainer}>
