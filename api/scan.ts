@@ -3,41 +3,228 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Gemini rate limiter: track requests per minute
-let geminiRequestTimes: number[] = [];
-const GEMINI_RPM_LIMIT = 10; // More conservative limit (10 RPM = 1 request every 6 seconds)
-const GEMINI_MIN_INTERVAL = 6000; // Minimum 6 seconds between requests (10 requests per minute)
+// Gemini rate limiter: GLOBAL queue with single-flight execution
+// HARD RULE: Only ONE Gemini request at a time, globally
+// This prevents burst RPM limits (Gemini 3 Pro = 25 RPM, but burst tolerance is lower)
 
-async function waitForGeminiRateLimit(): Promise<void> {
-  const now = Date.now();
-  
-  // Remove requests older than 1 minute
-  geminiRequestTimes = geminiRequestTimes.filter(time => now - time < 60000);
-  
-  // If we're at the limit, wait until we can make another request
-  if (geminiRequestTimes.length >= GEMINI_RPM_LIMIT) {
-    const oldestRequest = Math.min(...geminiRequestTimes);
-    const waitTime = 60000 - (now - oldestRequest) + 1000; // Wait until oldest request is 1 minute old, plus 1s buffer
-    console.log(`[API] Gemini rate limit: ${geminiRequestTimes.length}/${GEMINI_RPM_LIMIT} requests in last minute, waiting ${Math.ceil(waitTime/1000)}s...`);
-    await delay(waitTime);
-    // Clean up again after waiting
-    const newNow = Date.now();
-    geminiRequestTimes = geminiRequestTimes.filter(time => newNow - time < 60000);
+interface GeminiQueueItem {
+  imageDataURL: string;
+  resolve: (value: any[]) => void;
+  reject: (error: any) => void;
+  retryCount: number;
+  timestamp: number;
+}
+
+let geminiQueue: GeminiQueueItem[] = [];
+let geminiProcessing = false;
+let lastGeminiRequestTime = 0;
+const MIN_GEMINI_INTERVAL_MS = 3000; // 3 seconds minimum between requests (20 RPM max, safely under 25)
+const MAX_GEMINI_RETRIES = 2; // Max retries (but with proper delays, not immediate)
+
+/**
+ * Process Gemini queue - ensures single-flight execution
+ * Only ONE Gemini request runs at a time, globally
+ */
+async function processGeminiQueue(): Promise<void> {
+  // If already processing or queue is empty, return
+  if (geminiProcessing || geminiQueue.length === 0) {
+    return;
   }
   
-  // Ensure minimum interval between requests
-  if (geminiRequestTimes.length > 0) {
-    const lastRequest = Math.max(...geminiRequestTimes);
-    const timeSinceLastRequest = now - lastRequest;
-    if (timeSinceLastRequest < GEMINI_MIN_INTERVAL) {
-      const waitTime = GEMINI_MIN_INTERVAL - timeSinceLastRequest;
-      console.log(`[API] Gemini rate limit: waiting ${Math.ceil(waitTime/1000)}s between requests...`);
+  geminiProcessing = true;
+  
+  while (geminiQueue.length > 0) {
+    const item = geminiQueue.shift()!;
+    const now = Date.now();
+    
+    // Enforce minimum interval between requests
+    const timeSinceLastRequest = now - lastGeminiRequestTime;
+    if (timeSinceLastRequest < MIN_GEMINI_INTERVAL_MS) {
+      const waitTime = MIN_GEMINI_INTERVAL_MS - timeSinceLastRequest;
+      console.log(`[API] Gemini queue: waiting ${Math.ceil(waitTime/1000)}s before next request (enforcing ${MIN_GEMINI_INTERVAL_MS}ms interval, ${geminiQueue.length} in queue)...`);
       await delay(waitTime);
+    }
+    
+    try {
+      console.log(`[API] Gemini queue: processing request (${geminiQueue.length} remaining, retry ${item.retryCount})...`);
+      lastGeminiRequestTime = Date.now();
+      
+      const result = await scanWithGeminiDirect(item.imageDataURL);
+      item.resolve(result);
+    } catch (error: any) {
+      // Handle 429 errors - re-queue with delay instead of immediate retry
+      if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
+        if (item.retryCount < MAX_GEMINI_RETRIES) {
+          // Re-queue with exponential backoff + jitter
+          const baseDelay = Math.pow(2, item.retryCount) * 5000; // 5s, 10s
+          const jitter = Math.random() * 1000; // 0-1s random
+          const retryDelay = baseDelay + jitter;
+          
+          console.log(`[API] Gemini 429: re-queuing with ${Math.ceil(retryDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GEMINI_RETRIES})...`);
+          
+          // Add back to queue with delay
+          setTimeout(() => {
+            geminiQueue.push({
+              ...item,
+              retryCount: item.retryCount + 1,
+              timestamp: Date.now(),
+            });
+            processGeminiQueue(); // Process queue again
+          }, retryDelay);
+        } else {
+          console.error(`[API] Gemini failed after ${MAX_GEMINI_RETRIES} retries, returning empty array`);
+          item.resolve([]); // Return empty instead of failing
+        }
+      } else {
+        // Non-429 error - fail immediately
+        console.error(`[API] Gemini non-429 error:`, error?.message || error);
+        item.resolve([]); // Return empty on other errors too
+      }
     }
   }
   
-  // Record this request
-  geminiRequestTimes.push(Date.now());
+  geminiProcessing = false;
+}
+
+/**
+ * Queue a Gemini request (single-flight execution)
+ */
+function queueGeminiRequest(imageDataURL: string, retryCount = 0): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    geminiQueue.push({
+      imageDataURL,
+      resolve,
+      reject,
+      retryCount,
+      timestamp: Date.now(),
+    });
+    
+    // Start processing if not already running
+    processGeminiQueue();
+  });
+}
+
+/**
+ * Direct Gemini API call (no queue, used by queue processor)
+ */
+async function scanWithGeminiDirect(imageDataURL: string): Promise<any[]> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return [];
+  
+  const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: `Scan book spines in this image and return ONLY a strict JSON array.
+
+CRITICAL RULES:
+- TITLE is the book name (usually larger text on spine)
+- AUTHOR is the person's name who wrote it (usually smaller text)
+- DO NOT swap title and author - titles are book names, authors are people's names
+- If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE
+- Number books left-to-right: spine_index 0, 1, 2, etc.
+- Capture raw spine_text exactly as you see it (even if messy)
+- Detect language: "en", "es", "fr", or "unknown"
+
+Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
+[{
+  "title": "Book Title Here or null",
+  "author": "Author Name Here or null",
+  "confidence": "high|medium|low",
+  "spine_text": "raw text from spine",
+  "language": "en|es|fr|unknown",
+  "reason": "brief reason for confidence",
+  "spine_index": 0
+}]`,
+              },
+              { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
+            ],
+          },
+        ],
+        generationConfig: { 
+          temperature: 0.1, 
+          maxOutputTokens: 8000,
+        },
+      }),
+    }
+  );
+  
+  // Throw 429 errors so queue can handle them
+  if (res.status === 429) {
+    const errorText = await res.text();
+    let errorData: any = null;
+    try {
+      errorData = errorText ? JSON.parse(errorText) : null;
+    } catch (e) {
+      // Error text is not JSON, that's fine
+    }
+    const errorMessage = errorData?.error?.message || '';
+    const error: any = new Error(`Gemini 429: ${errorMessage}`);
+    error.status = 429;
+    error.statusCode = 429;
+    throw error;
+  }
+  
+  if (!res.ok) {
+    const errorText = await res.text();
+    let errorData: any = null;
+    try {
+      errorData = errorText ? JSON.parse(errorText) : null;
+    } catch (e) {
+      // Error text is not JSON, that's fine
+    }
+    const errorMessage = errorData?.error?.message || errorText || '';
+    console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorMessage.slice(0, 200)}`);
+    return [];
+  }
+  
+  // Parse response (same as before)
+  const data = await res.json() as any;
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  
+  if (!content) {
+    console.error(`[API] Gemini returned empty content`);
+    return [];
+  }
+  
+  // Remove markdown code blocks
+  let cleaned = content;
+  if (cleaned.includes('```')) {
+    cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  }
+  
+  // Try to parse JSON
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      console.log(`[API] Gemini parsed ${parsed.length} books`);
+      return parsed;
+    }
+  } catch (e) {
+    // Try to extract JSON array
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        const parsed = JSON.parse(arrayMatch[0]);
+        if (Array.isArray(parsed)) {
+          console.log(`[API] Gemini parsed ${parsed.length} books (extracted)`);
+          return parsed;
+        }
+      } catch (e2) {
+        console.error(`[API] Gemini failed to parse JSON:`, e2);
+      }
+    }
+  }
+  
+  console.error(`[API] Gemini response doesn't contain valid JSON array`);
+  return [];
 }
 
 /**
@@ -557,19 +744,22 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
   }
 }
 
-async function scanWithGemini(imageDataURL: string, retryCount = 0): Promise<any[]> {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return [];
-  
-  // Wait for rate limit before making request
-  await waitForGeminiRateLimit();
-  
-  const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+/**
+ * Public interface for Gemini scanning - uses queue for single-flight execution
+ */
+/**
+ * Public interface for Gemini scanning - uses queue for single-flight execution
+ */
+/**
+ * Public interface for Gemini scanning - uses queue for single-flight execution
+ */
+async function scanWithGemini(imageDataURL: string): Promise<any[]> {
+  // Queue the request - ensures single-flight execution globally
+  return queueGeminiRequest(imageDataURL, 0);
+}
+
+/**
+ * Early external lookup for ambiguous items (before batch validation)
       body: JSON.stringify({
         contents: [
           {
@@ -833,6 +1023,13 @@ async function earlyLookup(book: any): Promise<any> {
     
     const result = await fetchBookData(query, book.author || undefined);
     
+    // Log lookup result for debugging
+    if (result && result.googleBooksId) {
+      console.log(`[API] Early lookup SUCCESS for "${book.title}": found googleBooksId=${result.googleBooksId.substring(0, 20)}...`);
+    } else {
+      console.log(`[API] Early lookup NO MATCH for "${book.title}" by ${book.author || 'no author'}`);
+    }
+    
     // GoogleBooksData doesn't have title/author directly, but fetchBookData returns data with googleBooksId
     // We'll use the original book data but mark that we found a match
     if (result && result.googleBooksId) {
@@ -846,6 +1043,8 @@ async function earlyLookup(book: any): Promise<any> {
         },
         // Keep original title/author but mark as externally validated
         googleBooksId: result.googleBooksId,
+        // Add cover URL if available (so covers load immediately)
+        coverUrl: result.coverUrl || book.coverUrl,
       };
     }
   } catch (error) {
@@ -969,8 +1168,9 @@ Return ONLY valid JSON array (no markdown, no code blocks):
             confidence: validation.final_confidence || book.confidence,
             validationFixes: validation.fixes || [],
             validationNotes: validation.notes,
-            // Explicitly preserve googleBooksId and external_match from early lookup
+            // Explicitly preserve googleBooksId, coverUrl, and external_match from early lookup
             googleBooksId: book.googleBooksId || book.external_match?.googleBooksId,
+            coverUrl: book.coverUrl, // Preserve cover URL from early lookup
             external_match: book.external_match,
           });
         } else {
@@ -980,8 +1180,9 @@ Return ONLY valid JSON array (no markdown, no code blocks):
             ...book,
             isValid: false,
             confidence: 'invalid',
-            // Preserve googleBooksId even for invalid books (might be useful for debugging)
+            // Preserve googleBooksId and coverUrl even for invalid books (might be useful for debugging)
             googleBooksId: book.googleBooksId || book.external_match?.googleBooksId,
+            coverUrl: book.coverUrl, // Preserve cover URL
           });
         }
       }
@@ -1178,36 +1379,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
     
-    // Run scans in parallel - but add small delay for Gemini to avoid burst rate limits
-    // If one fails, just use the other (no waiting, no retries)
-    console.log('[API] Starting OpenAI and Gemini scans in parallel...');
+    // HARD RULE: Gemini first, OpenAI second (sequential, not parallel)
+    // This prevents burst RPM limits and ensures single-flight execution
+    let gemini: any[] = [];
+    let openai: any[] = [];
     
-    let openaiError: any = null;
-    let geminiError: any = null;
-    
-    // Start OpenAI immediately
-    const openaiPromise = scanWithOpenAI(imageDataURL).catch((err) => {
-      openaiError = err;
-      console.error('[API] OpenAI scan failed:', err?.message || err);
-      return []; // Return empty array on failure
-    });
-    
-    // Add longer delay for Gemini to avoid burst rate limits (3 second delay)
-    // The waitForGeminiRateLimit() function will handle additional rate limiting
-    const geminiPromise = delay(3000).then(() => scanWithGemini(imageDataURL)).catch((err) => {
-      geminiError = err;
-      // scanWithGemini should handle its own errors and return [], but log unexpected errors
-      if (err && !err.message?.includes('429')) {
-        console.error('[API] Gemini scan failed with unexpected error:', err?.message || err);
+    // Try Gemini first (queued, single-flight execution)
+    if (hasGeminiKey) {
+      console.log('[API] Starting Gemini scan (queued, single-flight)...');
+      try {
+        gemini = await scanWithGemini(imageDataURL);
+        console.log(`[API] Gemini completed: ${gemini.length} books`);
+      } catch (err: any) {
+        console.error('[API] Gemini scan failed:', err?.message || err);
+        gemini = [];
       }
-      return []; // Return empty array on failure
-    });
+    }
     
-    // Wait for both to complete (or fail) - whichever finishes first doesn't block the other
-    const [openai, gemini] = await Promise.all([
-      openaiPromise,
-      geminiPromise
-    ]);
+    // If Gemini succeeded, use it. Otherwise fallback to OpenAI
+    if (gemini.length > 0) {
+      console.log(`[API] Using Gemini results (${gemini.length} books), skipping OpenAI`);
+      openai = [];
+    } else if (hasOpenAIKey) {
+      console.log('[API] Gemini returned no results, falling back to OpenAI...');
+      try {
+        openai = await scanWithOpenAI(imageDataURL);
+        console.log(`[API] OpenAI completed: ${openai.length} books`);
+      } catch (err: any) {
+        console.error('[API] OpenAI scan failed:', err?.message || err);
+        openai = [];
+      }
+    }
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
     const totalBeforeDedup = openaiCount + geminiCount;
@@ -1260,19 +1462,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         working: hasOpenAIKey && openaiCount > 0,
         count: openaiCount,
         hasKey: hasOpenAIKey,
-        error: openaiError ? (openaiError?.message || String(openaiError)) : null
+        error: openai.length === 0 && hasOpenAIKey ? 'No books returned' : null
       },
       gemini: {
         working: hasGeminiKey && geminiCount > 0,
         count: geminiCount,
         hasKey: hasGeminiKey,
-        error: geminiError ? (geminiError?.message || String(geminiError)) : null
+        error: gemini.length === 0 && hasGeminiKey ? 'No books returned' : null
       }
     };
     
     // Log detailed status if both failed
     if (openaiCount === 0 && geminiCount === 0) {
-      console.error('[API] Both APIs returned 0 books. OpenAI error:', openaiError, 'Gemini error:', geminiError);
+      console.error('[API] Both APIs returned 0 books');
     }
     
     // NEW PIPELINE: Step 1 - Cheap validator (filter obvious junk)
