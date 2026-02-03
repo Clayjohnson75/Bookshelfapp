@@ -123,6 +123,9 @@ export const ScansTab: React.FC = () => {
   // Ref for search debounce timeout
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Ref to track if screen is active/mounted (prevents background updates)
+  const isActiveRef = useRef(true);
+  
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
   const [approvedBooks, setApprovedBooks] = useState<Book[]>([]);
@@ -803,11 +806,11 @@ export const ScansTab: React.FC = () => {
         supabaseBooks = null;
         supabasePhotos = null;
       } else {
-        try {
-          const supabasePromise = Promise.all([
-            loadBooksFromSupabase(user.uid),
-            loadPhotosFromSupabase(user.uid),
-          ]);
+      try {
+        const supabasePromise = Promise.all([
+          loadBooksFromSupabase(user.uid),
+          loadPhotosFromSupabase(user.uid),
+        ]);
         
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Supabase load timeout')), 5000)
@@ -1119,11 +1122,14 @@ export const ScansTab: React.FC = () => {
     
     checkGuestScanStatus();
   }, [user, pendingBooks]); // Re-check when pendingBooks changes (after scan completes)
-
+  
   // Reload data when tab is focused (user navigates back to this tab)
   // Must be after loadUserData and loadScanUsage are defined
   useFocusEffect(
     useCallback(() => {
+      // Mark screen as active when focused
+      isActiveRef.current = true;
+      
       if (user) {
         console.log('🔄 Tab focused, refreshing data...');
         // Reload data in background
@@ -1149,6 +1155,14 @@ export const ScansTab: React.FC = () => {
           setGuestHasUsedScan(hasUsedScan === 'true');
         });
       }
+      
+      // Cleanup: mark screen as inactive when blurred
+      return () => {
+        isActiveRef.current = false;
+        // Clear Google Books queue when leaving tab
+        const { clearGoogleBooksQueue } = require('../services/googleBooksService');
+        clearGoogleBooksQueue();
+      };
     }, [user, checkAndCompletePendingActions])
   );
 
@@ -1302,7 +1316,17 @@ export const ScansTab: React.FC = () => {
 
   // Helper to get cover URI - prefer remote URL (works in production), fall back to local
   const getBookCoverUri = (book: Book): string | undefined => {
-    // Always validate coverUrl before returning it
+    // Prefer local cover first (faster, cached)
+    if (book.localCoverPath && FileSystem.documentDirectory) {
+      try {
+        const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+        return localPath;
+      } catch (error) {
+        // Silently fail - don't log errors for missing local covers
+      }
+    }
+    
+    // Fall back to remote coverUrl if local path doesn't exist
     if (book.coverUrl) {
       // Ensure it's a valid URL (starts with http:// or https://)
       const url = book.coverUrl.trim();
@@ -1311,17 +1335,6 @@ export const ScansTab: React.FC = () => {
       } else {
         // Invalid URL format - log warning but don't crash
         console.warn(`⚠️ Invalid coverUrl format for "${book.title}": ${url.substring(0, 50)}`);
-        return undefined;
-      }
-    }
-    
-    // Fall back to local path only if no remote URL exists
-    if (book.localCoverPath && FileSystem.documentDirectory) {
-      try {
-        const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
-        return localPath;
-      } catch (error) {
-        // Silently fail - don't log errors for missing local covers
         return undefined;
       }
     }
@@ -1391,114 +1404,189 @@ export const ScansTab: React.FC = () => {
 
     if (booksNeedingCovers.length === 0) return;
 
-    // Process books ONE AT A TIME (sequentially) to prevent rate limits and allow incremental loading
-    // This ensures covers load one by one and the UI updates as each cover arrives
-    for (const book of booksNeedingCovers) {
-      try {
-        try {
-          // Skip if already has all data (cover, description, and stats) and local cache
-          if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
-            try {
-              const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
-              const fileInfo = await FileSystem.getInfoAsync(fullPath);
-              // Check if we already have cover, description, and key stats
-              if (fileInfo.exists && book.coverUrl && book.description && 
-                  (book.pageCount || book.publisher || book.publishedDate)) {
-                return; // Already has everything, skip
-              }
-            } catch (error) {
-              // File doesn't exist, continue to fetch
-            }
-          }
+    // Batch state updates: accumulate updates in a map and flush every 300ms
+    const patchById = new Map<string, Partial<Book>>();
+    let flushTimer: NodeJS.Timeout | null = null;
+    let lastFlushTime = 0;
+    const FLUSH_INTERVAL_MS = 300;
 
-          // Use centralized service - it will use googleBooksId if available (much faster!)
-          const bookData = await fetchBookData(
-            book.title,
-            book.author,
-            book.googleBooksId // If we already have the ID, use it instead of searching
-          );
-          
-          if (bookData.coverUrl && bookData.googleBooksId) {
-            // Download and cache the cover (non-blocking)
-            const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
-            
-            // Include all stats data from Google Books API
-            const updatedBook = {
-              coverUrl: bookData.coverUrl,
-              googleBooksId: bookData.googleBooksId,
-              ...(localPath && { localCoverPath: localPath }),
-              // Include all stats fields
-              ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
-              ...(bookData.categories && { categories: bookData.categories }),
-              ...(bookData.publisher && { publisher: bookData.publisher }),
-              ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
-              ...(bookData.language && { language: bookData.language }),
-              ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
-              ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
-              ...(bookData.subtitle && { subtitle: bookData.subtitle }),
-              ...(bookData.printType && { printType: bookData.printType }),
-              ...(bookData.description && { description: bookData.description }),
-            };
-
-            // Update the book in pending state
-            setPendingBooks(prev => 
-              prev.map(pendingBook => 
-                pendingBook.id === book.id 
-                  ? { ...pendingBook, ...updatedBook }
-                  : pendingBook
-              )
-            );
-            
-            // Also update photos
-            setPhotos(prev =>
-              prev.map(photo => ({
-                ...photo,
-                books: photo.books.map(photoBook =>
-                  photoBook.id === book.id
-                    ? { ...photoBook, ...updatedBook }
-                    : photoBook
-                )
-              }))
-            );
-
-            // Update approved books if applicable
-            setApprovedBooks(prev =>
-              prev.map(approvedBook =>
-                approvedBook.id === book.id
-                  ? { ...approvedBook, ...updatedBook }
-                  : approvedBook
-              )
-            );
-            
-            // Save to Supabase immediately if cover, description, or stats were fetched
-            // Skip Supabase for guest users
-            if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
-              const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
-              console.log(`💾 Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
-              saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
-                .then(success => {
-                  if (success) {
-                    console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
-                  } else {
-                    console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
-                  }
-                })
-                .catch(error => {
-                  console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
-                });
-            }
-          }
-      } catch (error) {
-        console.error(`Error fetching data for ${book.title}:`, error);
-        // Continue to next book even if this one fails - don't break the loop
+    const flushUpdates = () => {
+      // Don't update state if screen is not active
+      if (!isActiveRef.current) {
+        patchById.clear();
+        return;
       }
       
-      // Small delay between books to respect rate limits (800ms between each book)
-      // This prevents 429 errors and allows UI to update incrementally
-      if (booksNeedingCovers.indexOf(book) < booksNeedingCovers.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 800));
+      if (patchById.size === 0) return;
+      
+      const patches = Array.from(patchById.entries());
+      patchById.clear();
+      
+      // Double-check active state before updating
+      if (!isActiveRef.current) return;
+      
+      // Update pendingBooks (always flush)
+      setPendingBooks(prev => {
+        if (!isActiveRef.current) return prev; // Don't update if inactive
+        let updated = prev;
+        for (const [bookId, patch] of patches) {
+          updated = updated.map(pendingBook =>
+            pendingBook.id === bookId
+              ? { ...pendingBook, ...patch }
+              : pendingBook
+          );
+        }
+        return updated;
+      });
+      
+      // Update photos and approvedBooks (on demand - only if needed)
+      // We'll update these when the component actually needs them, or in the same flush
+      if (isActiveRef.current) {
+        setPhotos(prev =>
+          prev.map(photo => ({
+            ...photo,
+            books: photo.books.map(photoBook => {
+              const patch = patches.find(([id]) => id === photoBook.id)?.[1];
+              return patch ? { ...photoBook, ...patch } : photoBook;
+            })
+          }))
+        );
+
+        setApprovedBooks(prev =>
+          prev.map(approvedBook => {
+            const patch = patches.find(([id]) => id === approvedBook.id)?.[1];
+            return patch ? { ...approvedBook, ...patch } : approvedBook;
+          })
+        );
+      }
+      
+      lastFlushTime = Date.now();
+    };
+
+    const scheduleFlush = () => {
+      const now = Date.now();
+      const timeSinceLastFlush = now - lastFlushTime;
+      
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+      }
+      
+      if (timeSinceLastFlush >= FLUSH_INTERVAL_MS) {
+        // Flush immediately if enough time has passed
+        flushUpdates();
+      } else {
+        // Schedule flush for remaining time
+        flushTimer = setTimeout(flushUpdates, FLUSH_INTERVAL_MS - timeSinceLastFlush);
+      }
+    };
+
+    // Process books sequentially (rate limiting handled by queue)
+    for (const book of booksNeedingCovers) {
+      // Check if screen is still active - break if not
+      if (!isActiveRef.current) {
+        console.log('🛑 Cover fetch cancelled: screen not active');
+        break;
+      }
+      
+      try {
+        // Skip if already has all data (cover, description, and stats) and local cache
+        if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
+          try {
+            const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            // Check if we already have cover, description, and key stats
+            if (fileInfo.exists && book.coverUrl && book.description && 
+                (book.pageCount || book.publisher || book.publishedDate)) {
+              continue; // Already has everything, skip
+            }
+          } catch (error) {
+            // File doesn't exist, continue to fetch
+          }
+        }
+
+        // Use centralized service - it will use googleBooksId if available (much faster!)
+        const bookData = await fetchBookData(
+          book.title,
+          book.author,
+          book.googleBooksId // If we already have the ID, use it instead of searching
+        );
+        
+        // Check again after async operation
+        if (!isActiveRef.current) {
+          console.log('🛑 Cover fetch cancelled: screen not active (after fetch)');
+          break;
+        }
+        
+        if (bookData.coverUrl && bookData.googleBooksId) {
+          // Download and cache the cover (non-blocking)
+          const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
+          
+          // Check again after download
+          if (!isActiveRef.current) {
+            console.log('🛑 Cover fetch cancelled: screen not active (after download)');
+            break;
+          }
+          
+          // Include all stats data from Google Books API
+          const updatedBook = {
+            coverUrl: bookData.coverUrl,
+            googleBooksId: bookData.googleBooksId,
+            ...(localPath && { localCoverPath: localPath }),
+            // Include all stats fields
+            ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
+            ...(bookData.categories && { categories: bookData.categories }),
+            ...(bookData.publisher && { publisher: bookData.publisher }),
+            ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
+            ...(bookData.language && { language: bookData.language }),
+            ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
+            ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
+            ...(bookData.subtitle && { subtitle: bookData.subtitle }),
+            ...(bookData.printType && { printType: bookData.printType }),
+            ...(bookData.description && { description: bookData.description }),
+          };
+
+          // Accumulate update in patch map (don't update state immediately)
+          // Only if screen is still active
+          if (book.id && isActiveRef.current) {
+            patchById.set(book.id, updatedBook);
+            scheduleFlush();
+          }
+          
+          // Save to Supabase immediately if cover, description, or stats were fetched
+          // Skip Supabase for guest users
+          if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
+            const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
+            console.log(`💾 Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
+            saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
+              .then(success => {
+                if (success) {
+                  console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
+                } else {
+                  console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
+                }
+              })
+              .catch(error => {
+                console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
+              });
+          }
+        }
+      } catch (error) {
+        // Only log if still active
+        if (isActiveRef.current) {
+          console.error(`Error fetching data for ${book.title}:`, error);
+        }
+        // Continue to next book even if this one fails - but break if inactive
+        if (!isActiveRef.current) {
+          break;
+        }
       }
     }
+
+    // Final flush of any remaining updates
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+    }
+    flushUpdates();
 
     // Note: Descriptions and stats are now saved to Supabase immediately when fetched
     // This ensures data persists even if the app is closed before the next user action
@@ -2105,13 +2193,13 @@ export const ScansTab: React.FC = () => {
         // Save photos to AsyncStorage immediately to prevent data loss
         // Only save if user exists (should always exist, but safety check)
         if (user) {
-          const userPhotosKey = `photos_${user.uid}`;
-          AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos)).catch(error => {
-            console.error('Error saving photos to AsyncStorage:', error);
-          });
-          
-          // Upload photo to Supabase Storage in the background (don't block UI)
-          // IMPORTANT: Save with books immediately to prevent data loss
+        const userPhotosKey = `photos_${user.uid}`;
+        AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos)).catch(error => {
+          console.error('Error saving photos to AsyncStorage:', error);
+        });
+        
+        // Upload photo to Supabase Storage in the background (don't block UI)
+        // IMPORTANT: Save with books immediately to prevent data loss
           savePhotoToSupabase(user.uid, newPhoto).catch(error => {
             console.error('Error uploading photo to Supabase (non-blocking):', error);
             // Don't throw - photo is saved locally, Supabase upload can retry later
@@ -2135,9 +2223,9 @@ export const ScansTab: React.FC = () => {
           
           // Save data with the updated values (only if user exists)
           if (user) {
-            saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
-              console.error('Error saving user data:', error);
-            });
+          saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
+            console.error('Error saving user data:', error);
+          });
           } else {
             console.warn('⚠️ No user found when saving books - skipping save');
           }
@@ -3291,9 +3379,9 @@ export const ScansTab: React.FC = () => {
         if (photo?.uri) {
           console.log('📷 Photo taken:', photo.uri);
         
-          // Store photo URI first before any state changes
-          const photoUri = photo.uri;
-          
+        // Store photo URI first before any state changes
+        const photoUri = photo.uri;
+        
           // Close camera AFTER photo is successfully taken
           // Use setTimeout to ensure photo processing is complete
           setTimeout(() => {
@@ -3306,9 +3394,9 @@ export const ScansTab: React.FC = () => {
         
           // Start scanning immediately
           handleImageSelected(photoUri);
-        } else {
-          console.error('Photo captured but no URI returned');
-          Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
+      } else {
+        console.error('Photo captured but no URI returned');
+        Alert.alert('Camera Error', 'Photo was taken but could not be saved. Please try again.');
         }
     } catch (error: any) {
         console.error('Error taking picture:', error);
@@ -3627,9 +3715,9 @@ export const ScansTab: React.FC = () => {
               if (hasUsedScan === 'true') {
                 // Navigate to My Library tab which shows login screen
                 navigation.navigate('MyLibrary' as never);
-                return;
+                  return;
+                }
               }
-            }
             // Proceed with camera (signed-in users have unlimited, guests have 1 free)
             handleStartCamera();
           }}
@@ -3651,9 +3739,9 @@ export const ScansTab: React.FC = () => {
               if (hasUsedScan === 'true') {
                 // Navigate to My Library tab which shows login screen
                 navigation.navigate('MyLibrary' as never);
-                return;
+                  return;
+                }
               }
-            }
             // Proceed with image picker (signed-in users have unlimited, guests have 1 free)
             pickImage();
           }}

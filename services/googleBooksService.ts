@@ -104,6 +104,25 @@ let lastGoogleBooksRequestTime = 0;
 const MIN_GOOGLE_BOOKS_INTERVAL_MS = 1200; // 1.2 seconds minimum between requests (very conservative to prevent 429s)
 const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
 
+/**
+ * Clear the Google Books queue (cancel all pending requests)
+ * Called when screen loses focus or component unmounts
+ */
+export function clearGoogleBooksQueue() {
+  log('info', '[GoogleBooks] Clearing queue, cancelling all pending requests');
+  
+  // Reject all pending queue items
+  for (const item of googleBooksQueue) {
+    item.reject(new Error('Queue cleared - screen inactive'));
+  }
+  
+  // Clear the queue
+  googleBooksQueue = [];
+  
+  // Stop processing
+  googleBooksProcessing = false;
+}
+
 // Cache for cover results (7 days for success, 24h for no match)
 interface CacheEntry {
   data: GoogleBooksData;
@@ -391,9 +410,9 @@ async function fetchByGoogleBooksId(
     try {
       await waitForRateLimit();
       
-      // Add timeout to prevent hanging requests (reduced to 5 seconds to fail faster)
+      // Add timeout to prevent hanging requests (8 second timeout)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
 
       let response: Response;
       try {
@@ -405,25 +424,21 @@ async function fetchByGoogleBooksId(
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
+          // Let queue retry once, then fail gracefully
+          if (retryCount < 1) {
+            throw new Error('Request timeout - retrying...');
+          }
           throw new Error('Request timeout - please check your internet connection');
         }
         throw fetchError;
       }
 
-      // Handle rate limiting (429) with exponential backoff
+      // Handle rate limiting (429) - throw error so queue can handle it
       if (response.status === 429) {
-        const maxRetries = 3;
-        if (retryCount < maxRetries) {
-          const backoffDelay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
-          console.warn(
-            `Google Books API rate limited (429), retrying in ${backoffDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`
-          );
-          await new Promise(resolve => setTimeout(resolve, backoffDelay));
-          return fetchByGoogleBooksId(googleBooksId, retryCount + 1);
-        } else {
-          console.warn(`Google Books API rate limited (429), max retries reached for ID: ${googleBooksId}`);
-          return {};
-        }
+        const error: any = new Error(`Google Books 429: Rate limited`);
+        error.status = 429;
+        error.statusCode = 429;
+        throw error; // Let queue handle retry logic
       }
 
       if (!response.ok) {
@@ -556,11 +571,13 @@ async function searchBook(
     try {
       await waitForRateLimit();
 
-      // Add timeout to prevent hanging requests (reduced to 5 seconds to fail faster)
+      // Add timeout to prevent hanging requests (8 second timeout)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
 
-      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10`; // Get multiple candidates for scoring
+      // Add fields parameter to limit payload to only needed fields
+      const fields = 'items(id,volumeInfo(title,authors,pageCount,categories,publisher,publishedDate,language,averageRating,ratingsCount,subtitle,printType,description,imageLinks))';
+      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10&fields=${encodeURIComponent(fields)}`; // Get multiple candidates for scoring
       
       let response: Response;
       try {
@@ -569,6 +586,10 @@ async function searchBook(
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
+          // Let queue retry once, then fail gracefully
+          if (retryCount < 1) {
+            throw new Error('Request timeout - retrying...');
+          }
           throw new Error('Request timeout - please check your internet connection');
         }
         throw fetchError;
