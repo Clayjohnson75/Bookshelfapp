@@ -26,10 +26,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'jobId required' });
     }
 
+    // CRITICAL: Read from durable storage (Supabase), not in-memory state
+    // This ensures all serverless instances see the same job state
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
+      console.error(`[API] [JOB ${jobId}] Database not configured for job status check`);
       return res.status(500).json({ error: 'Database not configured' });
     }
 
@@ -41,6 +44,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
+    // Read from durable storage - this works across all serverless instances
+    console.log(`[API] [JOB ${jobId}] Reading job status from durable storage (Supabase)`);
     const { data, error } = await supabase
       .from('scan_jobs')
       .select('*')

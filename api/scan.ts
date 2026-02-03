@@ -2291,7 +2291,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
     
-    // Create job record
+    // Server-side dedupe: hash image bytes and check for recent duplicate
+    let imageHash: string | null = null;
+    try {
+      const crypto = await import('crypto');
+      imageHash = crypto.createHash('sha256').update(imageDataURL).digest('hex').substring(0, 16);
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Image hash: ${imageHash}, userId: ${userId || 'guest'}`);
+      
+      // Check Supabase for recent duplicate job (same user within 5 seconds)
+      const { data: duplicateJobs } = await supabase
+        .from('scan_jobs')
+        .select('id, status, created_at')
+        .eq('user_id', userId || null)
+        .gte('created_at', new Date(Date.now() - 5000).toISOString())
+        .order('created_at', { ascending: false })
+        .limit(5);
+      
+      if (duplicateJobs && duplicateJobs.length > 0) {
+        console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Found ${duplicateJobs.length} recent scan jobs (possible duplicate)`);
+        for (const dup of duplicateJobs) {
+          if (dup.id !== jobId) {
+            console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Recent job found: ${dup.id} (status: ${dup.status}, created: ${dup.created_at})`);
+          }
+        }
+      }
+    } catch (hashError) {
+      // Hash calculation failed, continue anyway
+      console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Failed to hash image for duplicate detection:`, hashError);
+    }
+    
+    // Create job record in durable storage (Supabase)
+    // This ensures all instances can read the same job state
     const { error: insertError } = await supabase
       .from('scan_jobs')
       .insert({
@@ -2302,6 +2332,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
+    
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job created in durable storage (Supabase)`);
     
     if (insertError) {
       console.error('[API] Error creating scan job:', insertError);

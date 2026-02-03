@@ -81,6 +81,11 @@ interface ScanQueueItem {
 export const ScansTab: React.FC = () => {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  
+  // Client-side dedupe: track active scans by image hash to prevent double-submit
+  // Defined at component level to persist across renders
+  const activeScansRef = React.useRef(new Map<string, { jobId: string; timestamp: number }>());
+  const DEDUPE_WINDOW_MS = 5000; // 5 seconds
   const { user } = useAuth();
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
   
@@ -1901,11 +1906,26 @@ export const ScansTab: React.FC = () => {
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string, useBackground: boolean = false, scanId?: string, photoId?: string): Promise<{ books: Book[], fromVercel: boolean, jobId?: string }> => {
     console.log('🚀 Starting AI scan via server API (async job model)...');
-    const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    
+    // Get canonical API base URL (enforce www to avoid redirects)
+    let baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    
+    // Enforce canonical URL: always use www.bookshelfscan.app (no redirects, no mixed hosts)
+    if (!baseUrl || baseUrl.includes('bookshelfapp-five') || baseUrl === 'https://bookshelfscan.app') {
+      baseUrl = 'https://www.bookshelfscan.app';
+      console.log(`🔧 Using canonical API URL: ${baseUrl} (enforced to prevent redirects)`);
+    }
+    
+    // Normalize to ensure https and www
+    if (baseUrl && !baseUrl.startsWith('http')) {
+      baseUrl = `https://${baseUrl}`;
+    }
+    if (baseUrl && baseUrl.includes('bookshelfscan.app') && !baseUrl.includes('www.')) {
+      baseUrl = baseUrl.replace('bookshelfscan.app', 'www.bookshelfscan.app');
+    }
     
     if (!baseUrl) {
       console.error('❌ CRITICAL: No API base URL configured!');
-      console.error('❌ Please set EXPO_PUBLIC_API_BASE_URL in your .env file or app.config.js');
       Alert.alert(
         'Configuration Error',
         'The API server URL is not configured. Please contact support or check your configuration.'
@@ -1913,10 +1933,47 @@ export const ScansTab: React.FC = () => {
       return { books: [], fromVercel: false };
     }
     
+    // Client-side dedupe: check if same image was scanned recently
+    // Use simple string hash as fallback if expo-crypto not available
+    try {
+      let imageHash: string;
+      try {
+        const crypto = await import('expo-crypto');
+        imageHash = await crypto.digestStringAsync(
+          crypto.CryptoDigestAlgorithm.SHA256,
+          primaryDataURL
+        ).then(h => h.substring(0, 16));
+      } catch {
+        // Fallback: simple hash from first/last 100 chars
+        imageHash = `${primaryDataURL.substring(0, 50)}_${primaryDataURL.substring(primaryDataURL.length - 50)}`.length.toString();
+      }
+      
+      const now = Date.now();
+      const activeScans = activeScansRef.current;
+      const existingScan = activeScans.get(imageHash);
+      
+      if (existingScan && (now - existingScan.timestamp) < DEDUPE_WINDOW_MS) {
+        console.warn(`⚠️ Duplicate scan detected (same image within ${DEDUPE_WINDOW_MS}ms), reusing jobId: ${existingScan.jobId}`);
+        // Return the existing jobId - client should poll for it
+        return { books: [], fromVercel: false, jobId: existingScan.jobId };
+      }
+      
+      // Clean up old entries
+      for (const [hash, scan] of activeScans.entries()) {
+        if (now - scan.timestamp > DEDUPE_WINDOW_MS * 2) {
+          activeScans.delete(hash);
+        }
+      }
+    } catch (hashError) {
+      console.warn('⚠️ Failed to hash image for dedupe (continuing anyway):', hashError);
+    }
+    
     try {
       // Step 1: Create scan job (returns immediately with jobId)
-      console.log(`📡 Creating scan job at: ${baseUrl}/api/scan`);
-      const createResp = await fetch(`${baseUrl}/api/scan`, {
+      // Use canonical URL - no redirects allowed
+      const scanUrl = `${baseUrl}/api/scan`;
+      console.log(`📡 Creating scan job at: ${scanUrl} [SCAN ${scanId || 'new'}]`);
+      const createResp = await fetch(scanUrl, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -1971,9 +2028,28 @@ export const ScansTab: React.FC = () => {
         return { books: [], fromVercel: false };
       }
       
-      console.log(`✅ Scan job created: ${jobId}, status: ${jobData.status}`);
+      console.log(`✅ Scan job created: ${jobId}, status: ${jobData.status} [SCAN ${scanId || 'new'}]`);
+      
+      // Track active scan for dedupe
+      try {
+        let imageHash: string;
+        try {
+          const crypto = await import('expo-crypto');
+          imageHash = await crypto.digestStringAsync(
+            crypto.CryptoDigestAlgorithm.SHA256,
+            primaryDataURL
+          ).then(h => h.substring(0, 16));
+        } catch {
+          // Fallback: simple hash
+          imageHash = `${primaryDataURL.substring(0, 50)}_${primaryDataURL.substring(primaryDataURL.length - 50)}`.length.toString();
+        }
+        activeScansRef.current.set(imageHash, { jobId, timestamp: Date.now() });
+      } catch (hashError) {
+        // Ignore hash errors for tracking
+      }
       
       // Step 2: Poll for job completion (with progress updates)
+      // CRITICAL: Use same canonical baseUrl for polling (no redirects, no mixed hosts)
       const POLL_INTERVAL_MS = 1500; // Poll every 1.5 seconds
       const MAX_POLL_TIME_MS = 300000; // Max 5 minutes of polling
       const startTime = Date.now();
@@ -1983,7 +2059,10 @@ export const ScansTab: React.FC = () => {
         await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
         
         try {
-          const statusResp = await fetch(`${baseUrl}/api/scan/${jobId}`, {
+          // Use same canonical baseUrl - never use different host
+          const pollUrl = `${baseUrl}/api/scan/${jobId}`;
+          console.log(`🔄 Polling job status: ${pollUrl} [JOB ${jobId}] [SCAN ${scanId || 'new'}]`);
+          const statusResp = await fetch(pollUrl, {
             method: 'GET',
             headers: { 'Accept': 'application/json' }
           });
