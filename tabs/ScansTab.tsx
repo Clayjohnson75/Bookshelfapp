@@ -1900,9 +1900,7 @@ export const ScansTab: React.FC = () => {
   };
 
   const scanImageWithAI = async (primaryDataURL: string, fallbackDataURL: string, useBackground: boolean = false, scanId?: string, photoId?: string): Promise<{ books: Book[], fromVercel: boolean, jobId?: string }> => {
-    // Background mode disabled - always scan directly
-    
-    console.log('🚀 Starting AI scan via server API...');
+    console.log('🚀 Starting AI scan via server API (async job model)...');
     const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
     
     if (!baseUrl) {
@@ -1915,140 +1913,150 @@ export const ScansTab: React.FC = () => {
       return { books: [], fromVercel: false };
     }
     
-    console.log(`📡 Attempting server API scan at: ${baseUrl}/api/scan`);
-    
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.warn('⏱️ Scan request timeout after 2 minutes - server may be slow');
-        controller.abort();
-      }, 120000); // 2 minute timeout - fail faster if server is slow
+      // Step 1: Create scan job (returns immediately with jobId)
+      console.log(`📡 Creating scan job at: ${baseUrl}/api/scan`);
+      const createResp = await fetch(`${baseUrl}/api/scan`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ 
+          imageDataURL: primaryDataURL,
+          userId: user?.uid || undefined
+        }),
+      });
       
-        const resp = await fetch(`${baseUrl}/api/scan`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ 
-            imageDataURL: primaryDataURL,
-            userId: user?.uid || undefined // Include user ID for scan tracking
-          }),
-          signal: controller.signal,
-        });
-      
-      clearTimeout(timeoutId);
-        
-        if (resp.ok) {
-          const data = await resp.json();
-          const serverBooks = Array.isArray(data.books) ? data.books : [];
-          
-          // Log API status if available
-          if (data.apiResults) {
-            const { openai, gemini } = data.apiResults;
-          console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
-          if (openai.error) {
-            console.error(`❌ OpenAI error: ${openai.error}`);
-          }
-          if (gemini.error) {
-            console.error(`❌ Gemini error: ${gemini.error}`);
-          }
-          } else {
-          console.log(`✅ Server API returned ${serverBooks.length} books`);
-          }
-          
-          // If API didn't track the scan, do it client-side as fallback (skip for guest users)
-          if (user && (!data.scanTracked) && !isGuestUser(user)) {
-            console.warn('⚠️ API did not track scan, attempting client-side fallback...');
-            incrementScanCount(user.uid).catch(err => {
-              console.error('❌ Client-side scan tracking also failed:', err);
-            });
-          }
-          
-        console.log(`✅ Using server API results: ${serverBooks.length} books found (already validated)`);
-            return { books: serverBooks, fromVercel: true };
-        } else {
-          const errorText = await resp.text().catch(() => '');
-        console.error(`❌ Server API error: ${resp.status} - ${errorText.substring(0, 200)}`);
+      if (!createResp.ok) {
+        const errorText = await createResp.text().catch(() => '');
+        console.error(`❌ Failed to create scan job: ${createResp.status} - ${errorText.substring(0, 200)}`);
         
         // Check if it's a scan limit error
-        if (resp.status === 403) {
+        if (createResp.status === 403) {
           try {
             const errorData = JSON.parse(errorText);
             if (errorData.error === 'scan_limit_reached') {
-              // 🎛️ FEATURE FLAG: Only show upgrade prompt if subscription UI is not hidden
               if (!isSubscriptionUIHidden()) {
-              Alert.alert(
-                'Scan Limit Reached',
-                errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
-                [
-                  { text: 'OK', onPress: () => {
-                    if (!isSubscriptionUIHidden()) {
-                      setShowUpgradeModal(true);
-                    }
-                  }}
-                ]
-              );
+                Alert.alert(
+                  'Scan Limit Reached',
+                  errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
+                  [
+                    { text: 'OK', onPress: () => {
+                      if (!isSubscriptionUIHidden()) {
+                        setShowUpgradeModal(true);
+                      }
+                    }}
+                  ]
+                );
               }
-              // Refresh scan usage
               if (user) {
                 loadScanUsage();
               }
               return { books: [], fromVercel: false };
             }
           } catch (e) {
-            // Not JSON, continue with normal error handling
-          }
-        }
-        
-        // If server returns 0 books, try with fallback image
-        if (resp.status === 200) {
-          // Status 200 but might have returned empty array, try fallback
-          console.log('⚠️ Server returned empty results, trying with downscaled image...');
-          try {
-            const fallbackResp = await fetch(`${baseUrl}/api/scan`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                imageDataURL: fallbackDataURL,
-                userId: user?.uid || undefined // Include user ID for scan tracking
-              }),
-            });
-            
-            if (fallbackResp.ok) {
-              const fallbackData = await fallbackResp.json();
-              const fallbackBooks = Array.isArray(fallbackData.books) ? fallbackData.books : [];
-              if (fallbackBooks.length > 0) {
-                console.log(`✅ Fallback scan returned ${fallbackBooks.length} books`);
-                return { books: fallbackBooks, fromVercel: true };
-              }
-            }
-          } catch (fallbackErr) {
-            console.error('❌ Fallback scan failed:', fallbackErr);
+            // Not JSON, continue
           }
         }
         
         return { books: [], fromVercel: false };
       }
+      
+      const jobData = await createResp.json();
+      const jobId = jobData.jobId;
+      
+      if (!jobId) {
+        console.error('❌ No jobId returned from scan API');
+        return { books: [], fromVercel: false };
+      }
+      
+      console.log(`✅ Scan job created: ${jobId}, status: ${jobData.status}`);
+      
+      // Step 2: Poll for job completion (with progress updates)
+      const POLL_INTERVAL_MS = 1500; // Poll every 1.5 seconds
+      const MAX_POLL_TIME_MS = 300000; // Max 5 minutes of polling
+      const startTime = Date.now();
+      let lastStatus = jobData.status;
+      
+      while (Date.now() - startTime < MAX_POLL_TIME_MS) {
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        
+        try {
+          const statusResp = await fetch(`${baseUrl}/api/scan/${jobId}`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+          });
+          
+          if (!statusResp.ok) {
+            console.error(`❌ Failed to check job status: ${statusResp.status}`);
+            break;
+          }
+          
+          const statusData = await statusResp.json();
+          const currentStatus = statusData.status;
+          
+          // Log progress updates
+          if (statusData.progress && statusData.progress.stage !== lastStatus) {
+            const progress = statusData.progress;
+            console.log(`📊 Scan progress: ${progress.stage}${progress.booksFound ? ` (${progress.booksFound} books)` : ''}`);
+            lastStatus = progress.stage;
+          }
+          
+          // Check if job is complete
+          if (currentStatus === 'completed') {
+            const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
+            
+            // Log API status if available
+            if (statusData.apiResults) {
+              const { openai, gemini } = statusData.apiResults;
+              console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
+              if (openai.error) {
+                console.error(`❌ OpenAI error: ${openai.error}`);
+              }
+              if (gemini.error) {
+                console.error(`❌ Gemini error: ${gemini.error}`);
+              }
+            }
+            
+            // Track scan (skip for guest users)
+            if (user && !isGuestUser(user)) {
+              incrementScanCount(user.uid).catch(err => {
+                console.error('❌ Client-side scan tracking failed:', err);
+              });
+            }
+            
+            console.log(`✅ Scan job completed: ${serverBooks.length} books found`);
+            return { books: serverBooks, fromVercel: true, jobId };
+          }
+          
+          // Check if job failed
+          if (currentStatus === 'failed') {
+            console.error(`❌ Scan job failed: ${statusData.error || 'Unknown error'}`);
+            return { books: [], fromVercel: false, jobId };
+          }
+          
+          // Continue polling if still pending/processing
+        } catch (pollError: any) {
+          console.error(`❌ Error polling job status:`, pollError?.message || pollError);
+          // Continue polling on network errors
+        }
+      }
+      
+      // Timeout - job took too long
+      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
+      return { books: [], fromVercel: false, jobId };
+      
     } catch (e: any) {
       const errorMsg = e?.message || String(e);
-      const isAborted = errorMsg.includes('Aborted') || errorMsg.includes('aborted') || e?.name === 'AbortError';
       
-      console.error('❌ Server API request failed:', errorMsg);
+      console.error('❌ Scan job creation/polling failed:', errorMsg);
       console.error('❌ Error details:', {
         message: errorMsg,
         name: e?.name,
-        isAborted,
         stack: e?.stack?.slice(0, 500),
         baseUrl: baseUrl
       });
-      
-      // If aborted, it's likely a timeout - server took too long
-      if (isAborted) {
-        console.warn('⚠️ Scan request was aborted (likely timeout) - server took too long');
-        // Don't show error alert, just return empty and let fallback handle it
-        return { books: [], fromVercel: false };
-      }
       
       // Check if it's a network error vs other error
       if (errorMsg.includes('Network request failed') || errorMsg.includes('Failed to fetch')) {

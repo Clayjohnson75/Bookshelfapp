@@ -1781,6 +1781,321 @@ Remember: When in doubt, KEEP IT. Only reject if clearly not a real book. Respon
   }
 }
 
+/**
+ * Process a scan job asynchronously - wraps the existing scan logic
+ * This function will be called in the background after job creation
+ */
+async function processScanJob(
+  imageDataURL: string,
+  userId: string | undefined,
+  scanId: string,
+  jobId: string
+): Promise<void> {
+  // Initialize Supabase client for job updates
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  
+  if (!supabaseUrl || !supabaseServiceKey) {
+    console.error(`[API] [SCAN ${scanId}] Database not configured for job updates`);
+    return;
+  }
+  
+  const { createClient } = await import('@supabase/supabase-js');
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+  
+  // Update job status to processing
+  await supabase
+    .from('scan_jobs')
+    .update({
+      status: 'processing',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', jobId);
+  
+  try {
+    // Call the existing scan processing logic
+    // We'll need to extract this into a reusable function
+    // For now, we'll create a minimal wrapper that calls the scan endpoint internally
+    // OR we can inline the logic here
+    
+    // Since the scan logic is complex and embedded in the handler,
+    // we'll make an internal call to process it
+    // But actually, we should extract the logic - for now, let's call the existing handler logic
+    // by creating a mock request/response
+    
+    // Actually, the best approach is to extract all the scan logic into this function
+    // But that's a large refactor. For now, let's use a simpler approach:
+    // Call the scan processing via an internal function call
+    
+    // Extract and run the scan processing logic
+  // Check if API keys are configured
+  const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+  
+  if (!hasOpenAIKey && !hasGeminiKey) {
+    console.error(`[API] [SCAN ${scanId}] ERROR: No API keys configured!`);
+    throw new Error('API keys not configured');
+  }
+  
+  // Initialize time budget (75s total)
+  const timeBudget = new ScanTimeBudget(scanId, 75000, 30000);
+  timeBudget.logStatus();
+  
+  // PARALLEL EXECUTION: Start Gemini + OpenAI immediately (no 30s hedge)
+  let gemini: any[] = [];
+  let openai: any[] = [];
+  let scanFailed = false;
+  
+  // Check circuit breaker before trying Gemini
+  const geminiQuotaExceeded = isGeminiQuotaExceeded();
+  const geminiInCooldown = isGeminiInCooldown();
+  
+  // AbortControllers for cancellation
+  const geminiController = new AbortController();
+  const openaiController = new AbortController();
+  let geminiTimeout: NodeJS.Timeout | null = null;
+  let openaiTimeout: NodeJS.Timeout | null = null;
+  
+  // Monotonic clock for accurate elapsed time tracking
+  const scanStartTime = Date.now();
+  const getElapsedMs = () => Date.now() - scanStartTime;
+  const getElapsedSeconds = () => Math.round((Date.now() - scanStartTime) / 1000);
+  
+  // Track whether OpenAI was actually attempted
+  let openaiAttempted = false;
+  let geminiAttempted = false;
+  
+  // Update job progress helper
+  const updateProgress = async (stage: string, booksFound?: number) => {
+    try {
+      await supabase
+        .from('scan_jobs')
+        .update({
+          progress: { stage, booksFound: booksFound || 0 },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+    } catch (e) {
+      // Ignore progress update errors
+    }
+  };
+  
+  try {
+    // Start Gemini + OpenAI in PARALLEL immediately (no hedge delay)
+    await updateProgress('starting', 0);
+    
+    const geminiPromise = hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()
+      ? (async () => {
+          geminiAttempted = true;
+          log('info', `[SCAN ${scanId}] Starting Gemini scan (parallel, t=0s)...`);
+          await updateProgress('gemini', 0);
+          try {
+            geminiTimeout = setTimeout(() => {
+              geminiController.abort();
+            }, timeBudget.totalBudget);
+            
+            const result = await scanWithGemini(imageDataURL, scanId);
+            if (geminiTimeout) clearTimeout(geminiTimeout);
+            
+            // Update progress with initial results
+            if (result.books.length > 0) {
+              await updateProgress('gemini', result.books.length);
+            }
+            
+            // Quality gate and continuation logic
+            const MIN_EXPECTED_BOOKS_LOCAL = 12;
+            const MIN_RESPONSE_LENGTH_LOCAL = 2000;
+            
+            const qualityGateFailed = 
+              result.usedRepair ||
+              result.books.length < MIN_EXPECTED_BOOKS_LOCAL ||
+              result.rawLength < MIN_RESPONSE_LENGTH_LOCAL;
+            
+            // Only do continuation if quality gate failed AND we have some books
+            if (qualityGateFailed && result.books.length > 0) {
+              console.warn(`[SCAN ${scanId}] ⚠️ Gemini response looks incomplete, attempting continuation...`);
+              await updateProgress('gemini_continuation', result.books.length);
+              try {
+                const continuation = await continueGeminiScan(imageDataURL, result.books, scanId);
+                if (continuation.books.length > 0) {
+                  const merged = [...result.books, ...continuation.books];
+                  const deduped = dedupeBooks(merged);
+                  result.books = deduped;
+                  result.rawLength = result.rawLength + continuation.rawLength;
+                  result.usedRepair = result.usedRepair || continuation.usedRepair;
+                  await updateProgress('gemini', result.books.length);
+                }
+              } catch (continuationError: any) {
+                console.error(`[SCAN ${scanId}] Gemini continuation failed:`, continuationError?.message || continuationError);
+              }
+            }
+            
+            log('info', `[SCAN ${scanId}] Gemini completed: ${result.books.length} books`);
+            return result;
+          } catch (err: any) {
+            if (geminiTimeout) clearTimeout(geminiTimeout);
+            if (err?.name !== 'AbortError') {
+              console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
+            }
+            return { books: [], usedRepair: false, rawLength: 0, needsOpenAI: false };
+          }
+        })()
+      : Promise.resolve({ books: [], usedRepair: false, rawLength: 0, needsOpenAI: false });
+    
+    // Start OpenAI IMMEDIATELY in parallel (no delay)
+    const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
+      ? (async () => {
+          openaiAttempted = true;
+          log('info', `[SCAN ${scanId}] Starting OpenAI scan (parallel, t=0s)...`);
+          await updateProgress('openai', 0);
+          try {
+            const remainingTime = Math.max(0, timeBudget.totalBudget - getElapsedMs());
+            const openaiRequestTimeout = Math.max(60000, remainingTime);
+            openaiTimeout = setTimeout(() => {
+              openaiController.abort();
+            }, openaiRequestTimeout);
+            
+            const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
+            if (openaiTimeout) clearTimeout(openaiTimeout);
+            
+            if (result.length > 0) {
+              await updateProgress('openai', result.length);
+            }
+            
+            log('info', `[SCAN ${scanId}] OpenAI completed: ${result.length} books`);
+            return result;
+          } catch (err: any) {
+            if (openaiTimeout) clearTimeout(openaiTimeout);
+            if (err?.name !== 'AbortError') {
+              console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
+            }
+            return [];
+          }
+        })()
+      : Promise.resolve([]);
+        
+    // Wait for both to complete (or race to first result for early UI)
+    // Use Promise.allSettled to get both results regardless of which finishes first
+    await updateProgress('processing', 0);
+    
+    const [geminiResult, openaiResult] = await Promise.allSettled([
+      geminiPromise,
+      openaiPromise
+    ]);
+    
+    finalizedScans.add(scanId);
+    
+    // Extract results from settled promises
+    const geminiData = geminiResult.status === 'fulfilled' ? geminiResult.value : { books: [], usedRepair: false, rawLength: 0, needsOpenAI: false };
+    const openaiData = openaiResult.status === 'fulfilled' ? openaiResult.value : [];
+    
+    gemini = geminiData.books || [];
+    openai = Array.isArray(openaiData) ? openaiData : [];
+    
+    // Merge results - always merge for best coverage
+    if (gemini.length > 0 || openai.length > 0) {
+      const merged = mergeBookResults(gemini, openai);
+      gemini = merged;
+      openai = [];
+      await updateProgress('merging', merged.length);
+    } else {
+      scanFailed = true;
+      console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
+    }
+    
+  } catch (err: any) {
+    console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
+    scanFailed = true;
+    finalizedScans.add(scanId);
+  } finally {
+    // Cleanup
+    if (geminiTimeout) clearTimeout(geminiTimeout);
+    if (openaiTimeout) clearTimeout(openaiTimeout);
+    if (!geminiController.signal.aborted) geminiController.abort();
+    if (!openaiController.signal.aborted) openaiController.abort();
+  }
+      
+  // Process and validate results
+  const openaiCount = openai?.length || 0;
+  const geminiCount = gemini?.length || 0;
+  
+  await updateProgress('validating', gemini.length);
+  
+  // Fix title/author swaps
+  const fixSwappedBooks = (books: any[]) => {
+    return books.map(book => {
+      const title = book.title?.trim() || '';
+      const author = book.author?.trim() || '';
+      const titleLooksLikeName = title && /^[A-Z][a-z]+ [A-Z][a-z]+/.test(title) && title.split(' ').length <= 4;
+      const authorLooksLikeTitle = author && (author.toLowerCase().startsWith('the ') || author.length > 20);
+      if (titleLooksLikeName && authorLooksLikeTitle) {
+        return { ...book, title: author, author: formatAuthorName(title) };
+      }
+      return book;
+    });
+  };
+  
+  const fixedBooks = fixSwappedBooks(gemini || []);
+  const merged = dedupeBooks(fixedBooks);
+  
+  // Apply cheap validator
+  const cheapValidated = merged.map(book => cheapValidate(book).normalizedBook);
+  const cheapFiltered = cheapValidated.filter(book => !book.cheapFilterReason);
+  
+  // Batch validate
+  await updateProgress('batch_validating', cheapFiltered.length);
+  const validatedBooks = await batchValidateBooks(cheapFiltered);
+  const validBooks = validatedBooks.filter(book => book.confidence !== 'invalid' && book.isValid !== false);
+  const finalBooks = dedupeBooks(validBooks);
+  
+  const apiResults = {
+    openai: {
+      working: hasOpenAIKey && openaiCount > 0,
+      count: openaiCount,
+      hasKey: hasOpenAIKey,
+      error: openai.length === 0 && hasOpenAIKey && openaiAttempted ? 'No books returned' : null
+    },
+    gemini: {
+      working: hasGeminiKey && geminiCount > 0,
+      count: geminiCount,
+      hasKey: hasGeminiKey,
+      error: gemini.length === 0 && hasGeminiKey && geminiAttempted ? 'No books returned' : null
+    }
+  };
+  
+  // Update job with final results
+  await supabase
+    .from('scan_jobs')
+    .update({
+      status: 'completed',
+      books: finalBooks,
+      api_results: apiResults,
+      progress: { stage: 'completed', booksFound: finalBooks.length },
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', jobId);
+  
+  console.log(`[API] Scan job ${jobId} completed with ${finalBooks.length} books`);
+  } catch (error: any) {
+    // Update job with error
+    await supabase
+      .from('scan_jobs')
+      .update({
+        status: 'failed',
+        error: error?.message || String(error),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    
+    console.error(`[API] Scan job ${jobId} failed:`, error);
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1796,536 +2111,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+  
   try {
     const { imageDataURL, userId } = req.body || {};
     if (!imageDataURL || typeof imageDataURL !== 'string') {
       return res.status(400).json({ error: 'imageDataURL required' });
     }
 
-    // Generate scanId for tracking this scan session (used in all logs)
+    // Generate jobId for this scan
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-
-    // Check if API keys are configured
-    const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
-    const hasGeminiKey = !!process.env.GEMINI_API_KEY;
     
-    if (!hasOpenAIKey && !hasGeminiKey) {
-      console.error(`[API] [SCAN ${scanId}] ERROR: No API keys configured! OPENAI_API_KEY and GEMINI_API_KEY are both missing.`);
-      return res.status(500).json({ 
-        error: 'API keys not configured',
-        message: 'Server is missing required API keys for scanning'
+    // Create job in Supabase immediately
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return res.status(500).json({ error: 'Database not configured' });
+    }
+    
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+    
+    // Create job record
+    const { error: insertError } = await supabase
+      .from('scan_jobs')
+      .insert({
+        id: jobId,
+        user_id: userId || null,
+        image_data: imageDataURL,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       });
+    
+    if (insertError) {
+      console.error('[API] Error creating scan job:', insertError);
+      return res.status(500).json({ error: 'Failed to create scan job' });
     }
     
-    console.log(`[API] [SCAN ${scanId}] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
-    
-    // Verify Gemini model availability on first request
-    if (hasGeminiKey && !geminiModelVerified) {
-      try {
-        // First, list available models
-        const modelsList = await listGeminiModels();
-        log('debug', `[API] Gemini ListModels:`, {
-          success: modelsList.success,
-          endpoint: modelsList.endpoint,
-          availableModels: modelsList.models?.slice(0, 10) || [], // Show first 10 models
-          error: modelsList.error,
-        });
-        
-        // Then ping the model we'll use
-        const modelToUse = 'gemini-3-flash-preview';
-        const healthCheck = await pingGeminiAPI(modelToUse);
-        log('debug', `[API] Gemini health check:`, {
-          success: healthCheck.success,
-          endpoint: healthCheck.endpoint,
-          model: healthCheck.model,
-          error: healthCheck.error,
-          quotaSurface: 'Gemini API (AI Studio) - generativelanguage.googleapis.com',
-          urlFormat: `POST /v1beta/models/${modelToUse}:generateContent`,
-        });
-        
-        if (!healthCheck.success) {
-          log('error', `[API] Gemini model ${modelToUse} not available - check model name and API key`);
-        } else {
-          geminiModelVerified = true;
-        }
-      } catch (error) {
-        log('warn', `[API] Gemini health check error:`, error);
-      }
-    }
-    
-    // Initialize time budget (75s total, 30s Gemini primary window)
-    const timeBudget = new ScanTimeBudget(scanId, 75000, 30000);
-    timeBudget.logStatus();
-    
-    // HEDGED REQUEST PATTERN: Start Gemini, if not done by 30s, start OpenAI in parallel
-    // Whichever finishes first wins, cancel the loser
-    let gemini: any[] = [];
-    let openai: any[] = [];
-    let scanFailed = false;
-    
-    // Check circuit breaker before trying Gemini
-    const geminiQuotaExceeded = isGeminiQuotaExceeded();
-    const geminiInCooldown = isGeminiInCooldown();
-    
-    if (geminiQuotaExceeded) {
-      console.log(`[SCAN ${scanId}] 🔴 Gemini QUOTA EXCEEDED - using OpenAI only`);
-    } else if (geminiInCooldown) {
-      console.log(`[SCAN ${scanId}] 🔴 Gemini in cooldown, using OpenAI only`);
-    }
-    
-    // AbortControllers for cancellation
-    const geminiController = new AbortController();
-    const openaiController = new AbortController();
-    let geminiTimeout: NodeJS.Timeout | null = null;
-    let openaiTimeout: NodeJS.Timeout | null = null;
-    let openaiStartTimeout: NodeJS.Timeout | null = null;
-    
-    // Monotonic clock for accurate elapsed time tracking
-    const scanStartTime = Date.now();
-    const getElapsedMs = () => Date.now() - scanStartTime;
-    const getElapsedSeconds = () => Math.round((Date.now() - scanStartTime) / 1000);
-    
-    // Track whether OpenAI was actually attempted (not just cancelled/not started)
-    let openaiAttempted = false;
-    let geminiAttempted = false;
-    
-    // Helper to cancel hedge timer immediately
-    const cancelHedgeTimer = () => {
-      if (openaiStartTimeout) {
-        clearTimeout(openaiStartTimeout);
-        openaiStartTimeout = null;
-      }
-    };
-    
-    try {
-      // Start Gemini if available and not in cooldown/quota exceeded
-      const geminiPromise = hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()
-        ? (async () => {
-            geminiAttempted = true;
-            log('info', `[SCAN ${scanId}] Starting Gemini scan (t=0s)...`);
-            try {
-              // Set timeout for total budget
-              geminiTimeout = setTimeout(() => {
-                geminiController.abort();
-              }, timeBudget.totalBudget);
-              
-              const result = await scanWithGemini(imageDataURL, scanId);
-              if (geminiTimeout) clearTimeout(geminiTimeout);
-              
-              // Quality gate: check if Gemini result is acceptable
-              const MIN_EXPECTED_BOOKS_LOCAL = 12; // Minimum expected books for a healthy scan
-              const MIN_RESPONSE_LENGTH_LOCAL = 2000; // Minimum response length to consider complete (increased from 500)
-              
-              const qualityGateFailed = 
-                result.usedRepair || // JSON repair was required
-                result.books.length < MIN_EXPECTED_BOOKS_LOCAL || // Suspiciously low count
-                result.rawLength < MIN_RESPONSE_LENGTH_LOCAL; // Response too short/malformed
-              
-              // Continuation strategy: if response looks truncated, try to get more books
-              if (qualityGateFailed && result.books.length > 0) {
-                console.warn(`[SCAN ${scanId}] ⚠️ Gemini response looks incomplete: usedRepair=${result.usedRepair}, count=${result.books.length}, rawLength=${result.rawLength}`);
-                console.log(`[SCAN ${scanId}] 🔄 Attempting Gemini continuation to get remaining books...`);
-                
-                try {
-                  const continuation = await continueGeminiScan(imageDataURL, result.books, scanId);
-                  if (continuation.books.length > 0) {
-                    // Merge continuation results with original
-                    const merged = [...result.books, ...continuation.books];
-                    const deduped = dedupeBooks(merged);
-                    console.log(`[SCAN ${scanId}] ✅ Gemini continuation: ${result.books.length} + ${continuation.books.length} = ${deduped.length} books (after dedupe)`);
-                    
-                    // Update result with merged books
-                    result.books = deduped;
-                    result.rawLength = result.rawLength + continuation.rawLength;
-                    result.usedRepair = result.usedRepair || continuation.usedRepair;
-                    
-                    // Re-check quality gate after continuation
-                    if (result.books.length >= MIN_EXPECTED_BOOKS_LOCAL && result.rawLength >= MIN_RESPONSE_LENGTH_LOCAL && !result.usedRepair) {
-                      log('info', `[SCAN ${scanId}] Gemini completed with continuation: ${result.books.length} books (quality gate: PASS after continuation)`);
-                      return result;
-                    }
-                  } else {
-                    console.warn(`[SCAN ${scanId}] Gemini continuation returned no additional books`);
-                  }
-                } catch (continuationError: any) {
-                  console.error(`[SCAN ${scanId}] Gemini continuation failed:`, continuationError?.message || continuationError);
-                }
-              }
-              
-              // Cancel hedge timer immediately when Gemini completes (before quality gate check)
-              // This ensures timer is cancelled even if quality gate fails
-              cancelHedgeTimer();
-              
-              if (qualityGateFailed) {
-                const elapsedSeconds = getElapsedSeconds();
-                console.warn(`[SCAN ${scanId}] ⚠️ Gemini quality gate FAILED (t=${elapsedSeconds}s): usedRepair=${result.usedRepair}, count=${result.books.length}, rawLength=${result.rawLength}`);
-                console.warn(`[SCAN ${scanId}] Will still run OpenAI to merge results`);
-                // Return result but mark it as needing OpenAI backup
-                // Note: Hedge timer is already cancelled, but OpenAI will start if hedge timer fires before this completes
-                return { ...result, needsOpenAI: true };
-              }
-              
-              const elapsedSeconds = getElapsedSeconds();
-              log('info', `[SCAN ${scanId}] Gemini completed (t=${elapsedSeconds}s): ${result.books.length} books in ${getElapsedMs()}ms (quality gate: PASS)`);
-              return result;
-            } catch (err: any) {
-              if (geminiTimeout) clearTimeout(geminiTimeout);
-              // Cancel hedge timer on error too
-              cancelHedgeTimer();
-              if (err?.isQuotaError) {
-                console.log(`[SCAN ${scanId}] Gemini quota exceeded`);
-              } else if (err?.name !== 'AbortError') {
-                console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
-              }
-              return { books: [], usedRepair: false, rawLength: 0, needsOpenAI: false };
-            }
-          })()
-        : Promise.resolve({ books: [], usedRepair: false, rawLength: 0, needsOpenAI: false });
-      
-      // Start OpenAI after 12s if Gemini hasn't finished (hedged request - earlier hedge for better fallback)
-      let openaiStarted = false;
-      const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
-        ? new Promise<any[]>(async (resolve) => {
-            // Wait 12s, then start OpenAI if Gemini is still running (reduced from 30s for earlier hedge)
-            openaiStartTimeout = setTimeout(async () => {
-              // Check if Gemini already finished (race condition check)
-              const elapsedSeconds = getElapsedSeconds();
-              const geminiResult = await geminiPromise.catch(() => ({ books: [], needsOpenAI: false }));
-              
-              // Always run OpenAI if quality gate failed, even if Gemini finished
-              if (geminiResult.books.length > 0 && !geminiResult.needsOpenAI) {
-                console.log(`[SCAN ${scanId}] Gemini finished before hedge timer (t=${elapsedSeconds}s) with good quality, skipping OpenAI`);
-                resolve([]);
-                return;
-              }
-              // If quality gate failed, we need OpenAI even if Gemini finished
-              if (geminiResult.needsOpenAI) {
-                console.log(`[SCAN ${scanId}] Gemini quality gate failed (t=${elapsedSeconds}s), starting OpenAI for backup/merge`);
-              }
-              
-              if (!geminiController.signal.aborted && !openaiStarted) {
-                openaiStarted = true;
-                openaiAttempted = true;
-                console.log(`[SCAN ${scanId}] t=${elapsedSeconds}s: Gemini still running, starting OpenAI in parallel (hedged request)...`);
-                
-                try {
-                  // Set timeout for OpenAI request - use at least 60s, or remaining budget if more
-                  const remainingTime = Math.max(0, timeBudget.totalBudget - getElapsedMs());
-                  const openaiRequestTimeout = Math.max(60000, remainingTime); // At least 60s for OpenAI
-                  openaiTimeout = setTimeout(() => {
-                    openaiController.abort();
-                  }, openaiRequestTimeout);
-                  console.log(`[SCAN ${scanId}] OpenAI timeout set to ${openaiRequestTimeout}ms (remaining budget: ${remainingTime}ms)`);
-                  
-                  const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
-                  if (openaiTimeout) clearTimeout(openaiTimeout);
-                  console.log(`[SCAN ${scanId}] OpenAI completed: ${result.length} books in ${getElapsedMs()}ms`);
-                  resolve(result);
-                } catch (err: any) {
-                  if (openaiTimeout) clearTimeout(openaiTimeout);
-                  if (err?.name !== 'AbortError') {
-                    console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
-                  }
-                  resolve([]);
-                }
-              } else {
-                resolve([]);
-              }
-            }, 12000); // 12 second delay (reduced from 30s for earlier hedge)
-            
-            // Cancel hedge timer immediately when Gemini finishes (both success and quality-gate-failed paths)
-            geminiPromise.then((result) => {
-              const elapsedSeconds = getElapsedSeconds();
-              cancelHedgeTimer(); // Always cancel timer when Gemini completes
-              
-              if (result.books.length > 0 && !result.needsOpenAI) {
-                console.log(`[SCAN ${scanId}] Gemini finished early (t=${elapsedSeconds}s, ${getElapsedMs()}ms) with good quality, cancelled OpenAI hedge timer`);
-                if (!openaiStarted) {
-                  resolve([]);
-                }
-              } else if (result.needsOpenAI) {
-                // Quality gate failed - OpenAI will start from hedge timer if not already started
-                console.log(`[SCAN ${scanId}] Gemini finished (t=${elapsedSeconds}s) but quality gate failed, OpenAI will start from hedge timer`);
-                // Don't resolve here - let the hedge timer start OpenAI
-              }
-            }).catch(() => {
-              // Gemini failed, let OpenAI start from hedge timer
-              cancelHedgeTimer(); // Still cancel to avoid duplicate starts
-            });
-          })
-        : Promise.resolve([]);
-      
-      // Race: whichever finishes first wins (but check quality gate)
-      const results = await Promise.race([
-        geminiPromise.then((result) => ({ source: 'gemini', result, books: result.books })),
-        openaiPromise.then((result) => ({ source: 'openai', result: null, books: result })),
-      ]);
-      
-      // Mark scan as finalized once we have a winner
-      finalizedScans.add(scanId);
-      
-      // Cancel the loser (but only if quality gate passed)
-      if (results.source === 'gemini' && results.books.length > 0 && !results.result.needsOpenAI) {
-        console.log(`[SCAN ${scanId}] ✅ Gemini won the race (${results.books.length} books, quality gate PASS), cancelling OpenAI`);
-        if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
-        openaiController.abort();
-        gemini = results.books;
-        openai = [];
-      } else if (results.source === 'gemini' && results.result.needsOpenAI) {
-        // Quality gate failed - wait for OpenAI and merge
-        console.log(`[SCAN ${scanId}] ⚠️ Gemini finished but quality gate FAILED, waiting for OpenAI to merge...`);
-        const openaiResult = await openaiPromise.catch(() => []);
-        gemini = results.books;
-        openai = openaiResult;
-        // Merge results
-        const merged = mergeBookResults(gemini, openai);
-        gemini = merged;
-        openai = [];
-      } else if (results.source === 'openai' && results.books.length > 0) {
-        console.log(`[SCAN ${scanId}] ✅ OpenAI won the race (${results.books.length} books), cancelling Gemini`);
-        geminiController.abort();
-        if (geminiTimeout) clearTimeout(geminiTimeout);
-        openai = results.books;
-        gemini = [];
-      } else {
-        // Both failed or returned empty - wait for both to finish to see if either has results
-        const [geminiResult, openaiResult] = await Promise.all([
-          geminiPromise.catch(() => ({ books: [], needsOpenAI: false })),
-          openaiPromise.catch(() => []),
-        ]);
-        
-        // Check if scan was already finalized by another result
-        if (finalizedScans.has(scanId)) {
-          console.log(`[SCAN ${scanId}] Scan already finalized, ignoring late results`);
-          // Return empty with default API results
-          return res.status(200).json({ 
-            books: [], 
-            apiResults: {
-              openai: { working: false, count: 0, hasKey: hasOpenAIKey, error: null },
-              gemini: { working: false, count: 0, hasKey: hasGeminiKey, error: null }
-            }
-          });
-        }
-        
-        // Handle Gemini result structure
-        const geminiBooks = (geminiResult as any).books || [];
-        const geminiNeedsOpenAI = (geminiResult as any).needsOpenAI || false;
-        
-        if (geminiBooks.length > 0 && !geminiNeedsOpenAI) {
-          gemini = geminiBooks;
-          openai = [];
-          console.log(`[SCAN ${scanId}] Using Gemini results (${gemini.length} books)`);
-        } else if (geminiNeedsOpenAI && openaiResult.length > 0) {
-          // Quality gate failed - merge results
-          gemini = geminiBooks;
-          openai = openaiResult;
-          const merged = mergeBookResults(gemini, openai);
-          gemini = merged;
-          openai = [];
-          console.log(`[SCAN ${scanId}] Merged Gemini (${geminiBooks.length}) + OpenAI (${openaiResult.length}) = ${merged.length} books`);
-        } else if (openaiResult.length > 0) {
-          openai = openaiResult;
-          gemini = [];
-          console.log(`[SCAN ${scanId}] Using OpenAI results (${openai.length} books)`);
-        } else {
-          console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
-          scanFailed = true;
-        }
-      }
-      
-      // Cleanup timeouts (unified cleanup in finally block)
-      
-    } catch (err: any) {
-      console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
-      scanFailed = true;
-      finalizedScans.add(scanId); // Mark as finalized on error to prevent late updates
-    } finally {
-      // Unified timeout cleanup - ensure all timers are cleared
-      if (geminiTimeout) {
-        clearTimeout(geminiTimeout);
-        geminiTimeout = null;
-      }
-      if (openaiTimeout) {
-        clearTimeout(openaiTimeout);
-        openaiTimeout = null;
-      }
-      if (openaiStartTimeout) {
-        clearTimeout(openaiStartTimeout);
-        openaiStartTimeout = null;
-      }
-      // Abort controllers if not already aborted
-      if (!geminiController.signal.aborted) {
-        geminiController.abort();
-      }
-      if (!openaiController.signal.aborted) {
-        openaiController.abort();
-      }
-    }
-    
-    // Check if we've exceeded budget
-    if (timeBudget.hasExceededBudget()) {
-      console.warn(`[SCAN ${scanId}] Time budget exceeded, will queue as background job`);
-      scanFailed = true;
-    }
-    
-    // If both providers failed or exceeded budget, create a scan job for background processing
-    if (scanFailed && gemini.length === 0 && openai.length === 0) {
-      try {
-        const baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfscan.app';
-        const jobResponse = await fetch(`${baseUrl}/api/scan-job`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imageDataURL,
-            userId: userId || undefined,
-            jobId: scanId,
-          }),
-        });
-        
-        if (jobResponse.ok) {
-          const jobData = await jobResponse.json() as { jobId?: string; status?: string };
-          console.log(`[SCAN ${scanId}] Queued as background job: ${jobData.jobId || scanId}`);
-          return res.status(202).json({
-            status: 'queued',
-            jobId: jobData.jobId || scanId,
-            scanId,
-            message: 'Scan queued for background processing',
-          });
-        } else {
-          console.error(`[SCAN ${scanId}] Failed to create scan job: ${jobResponse.status}`);
-        }
-      } catch (jobError: any) {
-        console.error(`[SCAN ${scanId}] Error creating scan job:`, jobError?.message || jobError);
-      }
-    }
-    
-    const openaiCount = openai?.length || 0;
-    const geminiCount = gemini?.length || 0;
-    const totalBeforeDedup = openaiCount + geminiCount;
-    
-    // Fix title/author swaps before deduplication
-    const fixSwappedBooks = (books: any[]) => {
-      return books.map(book => {
-        const title = book.title?.trim() || '';
-        const author = book.author?.trim() || '';
-        
-        // Heuristic: If title looks like a person's name and author looks like a book title, swap them
-        // Person names typically: 2-3 words, capitalized, may have initials
-        // Book titles typically: longer, may have "The", "A", "An", etc.
-        const titleLooksLikeName = title && (
-          /^[A-Z][a-z]+ [A-Z][a-z]+/.test(title) || // "John Smith" format
-          /^[A-Z]\. [A-Z][a-z]+/.test(title) || // "J. Smith" format
-          /^[A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+/.test(title) // "John A. Smith" format
-        ) && title.split(' ').length <= 4; // Names are usually 2-4 words
-        
-        const authorLooksLikeTitle = author && (
-          author.toLowerCase().startsWith('the ') ||
-          author.toLowerCase().startsWith('a ') ||
-          author.toLowerCase().startsWith('an ') ||
-          author.length > 20 || // Titles are usually longer
-          author.split(' ').length > 4 // Titles usually have more words
-        );
-        
-        if (titleLooksLikeName && authorLooksLikeTitle) {
-          console.log(`🔄 Auto-fixing swapped title/author: "${title}" (title) ↔ "${author}" (author)`);
-          return {
-            ...book,
-            title: author,
-            author: formatAuthorName(title), // Format author name after swap
-          };
-        }
-        
-        return book;
-      });
-    };
-    
-    const fixedOpenAI = fixSwappedBooks(openai || []);
-    const fixedGemini = fixSwappedBooks(gemini || []);
-    const merged = dedupeBooks([...fixedOpenAI, ...fixedGemini]);
-    
-    console.log(`[API] Scan results: OpenAI=${openaiCount} books, Gemini=${geminiCount} books, Total=${totalBeforeDedup}, Merged=${merged.length} unique (removed ${totalBeforeDedup - merged.length} duplicates)`);
-    
-    // Return API status for debugging
-    // Only report errors if the API was actually attempted (not cancelled/not started)
-    const apiResults = {
-      openai: {
-        working: hasOpenAIKey && openaiCount > 0,
-        count: openaiCount,
-        hasKey: hasOpenAIKey,
-        error: openai.length === 0 && hasOpenAIKey && openaiAttempted ? 'No books returned' : null
-      },
-      gemini: {
-        working: hasGeminiKey && geminiCount > 0,
-        count: geminiCount,
-        hasKey: hasGeminiKey,
-        error: gemini.length === 0 && hasGeminiKey && geminiAttempted ? 'No books returned' : null
-      }
-    };
-    
-    // Log detailed status if both failed
-    if (openaiCount === 0 && geminiCount === 0) {
-      console.error('[API] Both APIs returned 0 books');
-    }
-    
-    // NEW PIPELINE: Step 1 - Cheap validator (filter obvious junk)
-    console.log(`[API] Applying cheap validator to ${merged.length} books...`);
-    const cheapValidated = merged.map(book => {
-      const result = cheapValidate(book);
-      return result.normalizedBook;
-    });
-    const cheapFiltered = cheapValidated.filter(book => {
-      const isValid = !book.cheapFilterReason;
-      if (!isValid) {
-        console.log(`[API] Cheap filter rejected: "${book.title}" - ${book.cheapFilterReason}`);
-      }
-      return isValid;
-    });
-    console.log(`[API] Cheap validator: ${cheapFiltered.length} passed, ${cheapValidated.length - cheapFiltered.length} filtered`);
-    
-    // NEW PIPELINE: Step 2 - Batch validation (replaces per-book validation)
-    // Skip early lookup - we'll fetch covers AFTER validation for better accuracy
-    console.log(`[API] Batch validating ${cheapFiltered.length} books...`);
-    const validatedBooks = await batchValidateBooks(cheapFiltered);
-    
-    // Filter out invalid books
-    const validBooks = validatedBooks.filter(book => {
-      const isInvalid = book.confidence === 'invalid' || book.isValid === false;
-      if (isInvalid) {
-        console.log(`[API] Filtering out invalid book: "${book.title}" by ${book.author || 'no author'}`);
-      }
-      return !isInvalid;
+    // Return jobId immediately (202 Accepted)
+    res.status(202).json({
+      jobId,
+      status: 'pending',
+      message: 'Scan job created, processing in background'
     });
     
-    console.log(`[API] Validation complete: ${validatedBooks.length} validated, ${validatedBooks.length - validBooks.length} invalid, ${validBooks.length} valid`);
-    
-    // Deduplicate again AFTER validation (validation might have normalized titles/authors differently)
-    const finalBooks = dedupeBooks(validBooks);
-    
-    console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
-    
-    // Return books immediately - covers will be fetched asynchronously in background
-    // This prevents the app from breaking when covers fail or are rate-limited
-    log('info', `[API] Scan completed: books=${finalBooks.length} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
-    
-    // Start cover fetching asynchronously (fire and forget - don't block response)
-    // NOTE: Server-side cover fetching is DISABLED because:
-    // 1. Client-side already fetches covers and persists to Supabase
-    // 2. Running both causes duplicate API calls and rate limiting
-    // 3. Server-side can't easily identify books for persistence without userId/book IDs
-    // 
-    // If you need server-side covers, you would need to:
-    // - Pass userId and book IDs in the request
-    // - Use saveBookToSupabase to persist results
-    // - Add scanId tracking to all logs
-    // - Coordinate with client to avoid duplicate fetching
-    //
-    // For now, let the client handle all cover fetching (it's already set up correctly)
-    
-    return res.status(200).json({ 
-      books: finalBooks, // Return books immediately, covers will load asynchronously
-      apiResults
+    // Process scan in background (don't await - let it run async)
+    processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
+      console.error(`[API] Background scan job ${jobId} error:`, error);
     });
+    
   } catch (e: any) {
+    console.error('[API] Error in scan handler:', e);
     return res.status(500).json({ error: 'scan_failed', detail: e?.message || String(e) });
   }
 }
