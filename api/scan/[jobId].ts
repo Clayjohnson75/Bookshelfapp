@@ -51,16 +51,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Return job status
+    // Return job status - only status, books, and error
+    // Only include books if status is 'completed'
+    // Parse error if it's a JSON string
+    let errorObj = null;
+    if (data.error) {
+      try {
+        errorObj = typeof data.error === 'string' ? JSON.parse(data.error) : data.error;
+      } catch {
+        errorObj = { code: 'unknown_error', message: data.error };
+      }
+    }
+    
     return res.status(200).json({
-      jobId: data.id,
       status: data.status, // 'pending' | 'processing' | 'completed' | 'failed'
-      books: data.books || [],
-      error: data.error || null,
-      apiResults: data.api_results || null,
-      createdAt: data.created_at,
-      updatedAt: data.updated_at,
-      progress: data.progress || null, // Optional progress indicator
+      books: data.status === 'completed' ? (data.books || []) : [],
+      error: errorObj
     });
 
   } catch (e: any) {

@@ -1996,28 +1996,10 @@ export const ScansTab: React.FC = () => {
           const statusData = await statusResp.json();
           const currentStatus = statusData.status;
           
-          // Log progress updates
-          if (statusData.progress && statusData.progress.stage !== lastStatus) {
-            const progress = statusData.progress;
-            console.log(`📊 Scan progress: ${progress.stage}${progress.booksFound ? ` (${progress.booksFound} books)` : ''}`);
-            lastStatus = progress.stage;
-          }
-          
-          // Check if job is complete
+          // Only process results if status is 'completed' or 'failed'
+          // Do NOT show "0 books" while status is 'pending' or 'processing'
           if (currentStatus === 'completed') {
             const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
-            
-            // Log API status if available
-            if (statusData.apiResults) {
-              const { openai, gemini } = statusData.apiResults;
-              console.log(`✅ Server API Status: OpenAI=${openai.working ? '✅' : '❌'} (${openai.count} books), Gemini=${gemini.working ? '✅' : '❌'} (${gemini.count} books)`);
-              if (openai.error) {
-                console.error(`❌ OpenAI error: ${openai.error}`);
-              }
-              if (gemini.error) {
-                console.error(`❌ Gemini error: ${gemini.error}`);
-              }
-            }
             
             // Track scan (skip for guest users)
             if (user && !isGuestUser(user)) {
@@ -2030,21 +2012,26 @@ export const ScansTab: React.FC = () => {
             return { books: serverBooks, fromVercel: true, jobId };
           }
           
-          // Check if job failed
           if (currentStatus === 'failed') {
-            console.error(`❌ Scan job failed: ${statusData.error || 'Unknown error'}`);
+            const errorInfo = statusData.error || {};
+            const errorCode = errorInfo.code || 'unknown_error';
+            const errorMessage = errorInfo.message || 'Scan failed';
+            console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage}`);
+            // Only return empty books if status is explicitly 'failed' (not 'pending' or 'processing')
             return { books: [], fromVercel: false, jobId };
           }
           
-          // Continue polling if still pending/processing
+          // Continue polling if still pending/processing - do NOT return empty books yet
+          // Status is 'pending' or 'processing', keep waiting
         } catch (pollError: any) {
           console.error(`❌ Error polling job status:`, pollError?.message || pollError);
           // Continue polling on network errors
         }
       }
       
-      // Timeout - job took too long
-      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
+      // Timeout - job took too long (still pending/processing)
+      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s (status may still be processing)`);
+      // Return empty books on timeout - job may still be processing on server
       return { books: [], fromVercel: false, jobId };
       
     } catch (e: any) {

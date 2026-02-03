@@ -629,7 +629,7 @@ Return only a JSON array like:
     } catch (error: any) {
       console.error(`${logPrefix} Gemini continuation error:`, error?.message || error);
       return { books: [], usedRepair: false, rawLength: 0 };
-    }
+  }
 }
 
 /**
@@ -1808,6 +1808,71 @@ async function processScanJob(
     }
   });
   
+  // Track scan metadata for logging and error reporting
+  const scanMetadata: {
+    received_image_bytes?: number;
+    content_type?: string;
+    parse_path?: string[];
+    ended_reason?: string;
+  } = {};
+  
+  // Validate and log image data
+  try {
+    if (!imageDataURL || typeof imageDataURL !== 'string') {
+      scanMetadata.ended_reason = 'missing_image';
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({ code: 'missing_image', message: 'imageDataURL is required' }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      console.error(`[API] [SCAN ${scanId}] Missing image data`);
+      return;
+    }
+    
+    // Extract image metadata
+    const imageBytes = imageDataURL.length; // Approximate size
+    scanMetadata.received_image_bytes = imageBytes;
+    
+    // Detect content type from data URL
+    const dataUrlMatch = imageDataURL.match(/^data:([^;]+);base64,/);
+    scanMetadata.content_type = dataUrlMatch ? dataUrlMatch[1] : 'unknown';
+    
+    console.log(`[API] [SCAN ${scanId}] Image received: ${imageBytes} bytes, type: ${scanMetadata.content_type}`);
+    
+    // Validate base64 data
+    const base64Data = imageDataURL.split(',')[1];
+    if (!base64Data || base64Data.length < 100) {
+      scanMetadata.ended_reason = 'invalid_image';
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({ code: 'invalid_image', message: 'Image data too small or invalid' }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      console.error(`[API] [SCAN ${scanId}] Invalid image data (too small)`);
+      return;
+    }
+    
+    scanMetadata.parse_path = ['image_validated'];
+  } catch (imageError: any) {
+    scanMetadata.ended_reason = 'image_validation_failed';
+    await supabase
+      .from('scan_jobs')
+      .update({
+        status: 'failed',
+        error: JSON.stringify({ code: 'image_validation_failed', message: imageError?.message || 'Image validation error' }),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    console.error(`[API] [SCAN ${scanId}] Image validation error:`, imageError);
+    return;
+  }
+  
   // Update job status to processing
   await supabase
     .from('scan_jobs')
@@ -1833,33 +1898,42 @@ async function processScanJob(
     // Call the scan processing via an internal function call
     
     // Extract and run the scan processing logic
-  // Check if API keys are configured
-  const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
-  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
-  
-  if (!hasOpenAIKey && !hasGeminiKey) {
-    console.error(`[API] [SCAN ${scanId}] ERROR: No API keys configured!`);
-    throw new Error('API keys not configured');
-  }
+    // Check if API keys are configured
+    const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+    const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+    
+    if (!hasOpenAIKey && !hasGeminiKey) {
+      scanMetadata.ended_reason = 'api_keys_missing';
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({ code: 'api_keys_missing', message: 'No API keys configured' }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      console.error(`[API] [SCAN ${scanId}] ERROR: No API keys configured!`);
+      return;
+    }
   
   // Initialize time budget (75s total)
-  const timeBudget = new ScanTimeBudget(scanId, 75000, 30000);
-  timeBudget.logStatus();
-  
+    const timeBudget = new ScanTimeBudget(scanId, 75000, 30000);
+    timeBudget.logStatus();
+    
   // PARALLEL EXECUTION: Start Gemini + OpenAI immediately (no 30s hedge)
-  let gemini: any[] = [];
-  let openai: any[] = [];
-  let scanFailed = false;
-  
-  // Check circuit breaker before trying Gemini
-  const geminiQuotaExceeded = isGeminiQuotaExceeded();
-  const geminiInCooldown = isGeminiInCooldown();
-  
-  // AbortControllers for cancellation
-  const geminiController = new AbortController();
-  const openaiController = new AbortController();
-  let geminiTimeout: NodeJS.Timeout | null = null;
-  let openaiTimeout: NodeJS.Timeout | null = null;
+    let gemini: any[] = [];
+    let openai: any[] = [];
+    let scanFailed = false;
+    
+    // Check circuit breaker before trying Gemini
+    const geminiQuotaExceeded = isGeminiQuotaExceeded();
+    const geminiInCooldown = isGeminiInCooldown();
+    
+    // AbortControllers for cancellation
+    const geminiController = new AbortController();
+    const openaiController = new AbortController();
+    let geminiTimeout: NodeJS.Timeout | null = null;
+    let openaiTimeout: NodeJS.Timeout | null = null;
   
   // Monotonic clock for accurate elapsed time tracking
   const scanStartTime = Date.now();
@@ -1873,6 +1947,10 @@ async function processScanJob(
   // Update job progress helper
   const updateProgress = async (stage: string, booksFound?: number) => {
     try {
+      if (!scanMetadata.parse_path) scanMetadata.parse_path = [];
+      if (!scanMetadata.parse_path.includes(stage)) {
+        scanMetadata.parse_path.push(stage);
+      }
       await supabase
         .from('scan_jobs')
         .update({
@@ -1889,18 +1967,18 @@ async function processScanJob(
     // Start Gemini + OpenAI in PARALLEL immediately (no hedge delay)
     await updateProgress('starting', 0);
     
-    const geminiPromise = hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()
-      ? (async () => {
+      const geminiPromise = hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()
+        ? (async () => {
           geminiAttempted = true;
           log('info', `[SCAN ${scanId}] Starting Gemini scan (parallel, t=0s)...`);
           await updateProgress('gemini', 0);
-          try {
-            geminiTimeout = setTimeout(() => {
-              geminiController.abort();
-            }, timeBudget.totalBudget);
-            
-            const result = await scanWithGemini(imageDataURL, scanId);
-            if (geminiTimeout) clearTimeout(geminiTimeout);
+            try {
+              geminiTimeout = setTimeout(() => {
+                geminiController.abort();
+              }, timeBudget.totalBudget);
+              
+              const result = await scanWithGemini(imageDataURL, scanId);
+              if (geminiTimeout) clearTimeout(geminiTimeout);
             
             // Update progress with initial results
             if (result.books.length > 0) {
@@ -1936,19 +2014,23 @@ async function processScanJob(
             }
             
             log('info', `[SCAN ${scanId}] Gemini completed: ${result.books.length} books`);
-            return result;
-          } catch (err: any) {
-            if (geminiTimeout) clearTimeout(geminiTimeout);
-            if (err?.name !== 'AbortError') {
-              console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
-            }
+              return result;
+            } catch (err: any) {
+              if (geminiTimeout) clearTimeout(geminiTimeout);
+            if (err?.name === 'AbortError') {
+                scanMetadata.ended_reason = scanMetadata.ended_reason || 'model_timeout';
+                console.warn(`[SCAN ${scanId}] Gemini scan aborted (timeout)`);
+              } else {
+                console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
+                scanMetadata.ended_reason = scanMetadata.ended_reason || 'gemini_api_error';
+              }
             return { books: [], usedRepair: false, rawLength: 0, needsOpenAI: false };
-          }
-        })()
+            }
+          })()
       : Promise.resolve({ books: [], usedRepair: false, rawLength: 0, needsOpenAI: false });
-    
+      
     // Start OpenAI IMMEDIATELY in parallel (no delay)
-    const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
+      const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
       ? (async () => {
           openaiAttempted = true;
           log('info', `[SCAN ${scanId}] Starting OpenAI scan (parallel, t=0s)...`);
@@ -1956,12 +2038,12 @@ async function processScanJob(
           try {
             const remainingTime = Math.max(0, timeBudget.totalBudget - getElapsedMs());
             const openaiRequestTimeout = Math.max(60000, remainingTime);
-            openaiTimeout = setTimeout(() => {
-              openaiController.abort();
+                  openaiTimeout = setTimeout(() => {
+                    openaiController.abort();
             }, openaiRequestTimeout);
-            
-            const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
-            if (openaiTimeout) clearTimeout(openaiTimeout);
+                  
+                  const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
             
             if (result.length > 0) {
               await updateProgress('openai', result.length);
@@ -1969,16 +2051,20 @@ async function processScanJob(
             
             log('info', `[SCAN ${scanId}] OpenAI completed: ${result.length} books`);
             return result;
-          } catch (err: any) {
-            if (openaiTimeout) clearTimeout(openaiTimeout);
-            if (err?.name !== 'AbortError') {
-              console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
-            }
+                } catch (err: any) {
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
+                  if (err?.name === 'AbortError') {
+                    scanMetadata.ended_reason = scanMetadata.ended_reason || 'model_timeout';
+                    console.warn(`[SCAN ${scanId}] OpenAI scan aborted (timeout)`);
+                  } else {
+                    console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
+                    scanMetadata.ended_reason = scanMetadata.ended_reason || 'openai_api_error';
+                  }
             return [];
           }
         })()
-      : Promise.resolve([]);
-        
+        : Promise.resolve([]);
+      
     // Wait for both to complete (or race to first result for early UI)
     // Use Promise.allSettled to get both results regardless of which finishes first
     await updateProgress('processing', 0);
@@ -2001,45 +2087,50 @@ async function processScanJob(
     if (gemini.length > 0 || openai.length > 0) {
       const merged = mergeBookResults(gemini, openai);
       gemini = merged;
-      openai = [];
+          openai = [];
       await updateProgress('merging', merged.length);
-    } else {
-      scanFailed = true;
+        } else {
+          scanFailed = true;
+          scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
       console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
-    }
-    
-  } catch (err: any) {
-    console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
-    scanFailed = true;
+      }
+      
+    } catch (err: any) {
+      console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
+      scanFailed = true;
+      scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';
+      if (err?.name === 'AbortError') {
+        scanMetadata.ended_reason = 'request_aborted';
+      }
     finalizedScans.add(scanId);
   } finally {
     // Cleanup
-    if (geminiTimeout) clearTimeout(geminiTimeout);
-    if (openaiTimeout) clearTimeout(openaiTimeout);
+      if (geminiTimeout) clearTimeout(geminiTimeout);
+      if (openaiTimeout) clearTimeout(openaiTimeout);
     if (!geminiController.signal.aborted) geminiController.abort();
     if (!openaiController.signal.aborted) openaiController.abort();
   }
       
   // Process and validate results
-  const openaiCount = openai?.length || 0;
-  const geminiCount = gemini?.length || 0;
-  
+    const openaiCount = openai?.length || 0;
+    const geminiCount = gemini?.length || 0;
+    
   await updateProgress('validating', gemini.length);
   
   // Fix title/author swaps
-  const fixSwappedBooks = (books: any[]) => {
-    return books.map(book => {
-      const title = book.title?.trim() || '';
-      const author = book.author?.trim() || '';
+    const fixSwappedBooks = (books: any[]) => {
+      return books.map(book => {
+        const title = book.title?.trim() || '';
+        const author = book.author?.trim() || '';
       const titleLooksLikeName = title && /^[A-Z][a-z]+ [A-Z][a-z]+/.test(title) && title.split(' ').length <= 4;
       const authorLooksLikeTitle = author && (author.toLowerCase().startsWith('the ') || author.length > 20);
-      if (titleLooksLikeName && authorLooksLikeTitle) {
+        if (titleLooksLikeName && authorLooksLikeTitle) {
         return { ...book, title: author, author: formatAuthorName(title) };
       }
-      return book;
-    });
-  };
-  
+        return book;
+      });
+    };
+    
   const fixedBooks = fixSwappedBooks(gemini || []);
   const merged = dedupeBooks(fixedBooks);
   
@@ -2053,29 +2144,53 @@ async function processScanJob(
   const validBooks = validatedBooks.filter(book => book.confidence !== 'invalid' && book.isValid !== false);
   const finalBooks = dedupeBooks(validBooks);
   
-  const apiResults = {
-    openai: {
-      working: hasOpenAIKey && openaiCount > 0,
-      count: openaiCount,
-      hasKey: hasOpenAIKey,
+  // Check if validation filtered everything out
+  if (finalBooks.length === 0 && (gemini.length > 0 || openai.length > 0)) {
+    scanMetadata.ended_reason = 'validation_failed';
+    console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
+  } else if (finalBooks.length === 0) {
+    scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
+  } else {
+    scanMetadata.ended_reason = 'completed';
+  }
+  
+    const apiResults = {
+      openai: {
+        working: hasOpenAIKey && openaiCount > 0,
+        count: openaiCount,
+        hasKey: hasOpenAIKey,
       error: openai.length === 0 && hasOpenAIKey && openaiAttempted ? 'No books returned' : null
-    },
-    gemini: {
-      working: hasGeminiKey && geminiCount > 0,
-      count: geminiCount,
-      hasKey: hasGeminiKey,
+      },
+      gemini: {
+        working: hasGeminiKey && geminiCount > 0,
+        count: geminiCount,
+        hasKey: hasGeminiKey,
       error: gemini.length === 0 && hasGeminiKey && geminiAttempted ? 'No books returned' : null
     }
   };
+  
+  // Log final metadata
+  console.log(`[API] [SCAN ${scanId}] Scan completed:`, {
+    received_image_bytes: scanMetadata.received_image_bytes,
+    content_type: scanMetadata.content_type,
+    parse_path: scanMetadata.parse_path,
+    ended_reason: scanMetadata.ended_reason,
+    books_found: finalBooks.length
+  });
   
   // Update job with final results
   await supabase
     .from('scan_jobs')
     .update({
-      status: 'completed',
+      status: finalBooks.length > 0 ? 'completed' : 'failed',
       books: finalBooks,
       api_results: apiResults,
       progress: { stage: 'completed', booksFound: finalBooks.length },
+      error: finalBooks.length === 0 ? JSON.stringify({
+        code: scanMetadata.ended_reason || 'no_books_detected',
+        message: 'No books detected after validation',
+        metadata: scanMetadata
+      }) : null,
       updated_at: new Date().toISOString()
     })
     .eq('id', jobId);
@@ -2083,16 +2198,31 @@ async function processScanJob(
   console.log(`[API] Scan job ${jobId} completed with ${finalBooks.length} books`);
   } catch (error: any) {
     // Update job with error
+    scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';
+    const errorCode = error?.name === 'AbortError' ? 'request_aborted' : 
+                     error?.code || 'scan_exception';
+    
+    console.error(`[API] Scan job ${jobId} failed:`, error);
+    console.error(`[API] [SCAN ${scanId}] Error metadata:`, {
+      received_image_bytes: scanMetadata.received_image_bytes,
+      content_type: scanMetadata.content_type,
+      parse_path: scanMetadata.parse_path,
+      ended_reason: scanMetadata.ended_reason,
+      error_message: error?.message || String(error)
+    });
+    
     await supabase
       .from('scan_jobs')
       .update({
         status: 'failed',
-        error: error?.message || String(error),
+        error: JSON.stringify({
+          code: errorCode,
+          message: error?.message || String(error),
+          metadata: scanMetadata
+        }),
         updated_at: new Date().toISOString()
       })
       .eq('id', jobId);
-    
-    console.error(`[API] Scan job ${jobId} failed:`, error);
   }
 }
 
@@ -2115,7 +2245,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const { imageDataURL, userId } = req.body || {};
     if (!imageDataURL || typeof imageDataURL !== 'string') {
-      return res.status(400).json({ error: 'imageDataURL required' });
+      return res.status(400).json({ 
+        status: 'error',
+        error: { code: 'missing_image', message: 'imageDataURL is required' }
+      });
     }
 
     // Generate jobId for this scan
@@ -2127,7 +2260,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     
     if (!supabaseUrl || !supabaseServiceKey) {
-      return res.status(500).json({ error: 'Database not configured' });
+      return res.status(500).json({ 
+        status: 'error',
+        error: { code: 'database_not_configured', message: 'Database not configured' }
+      });
     }
     
     const { createClient } = await import('@supabase/supabase-js');
@@ -2152,14 +2288,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     if (insertError) {
       console.error('[API] Error creating scan job:', insertError);
-      return res.status(500).json({ error: 'Failed to create scan job' });
+      return res.status(500).json({ 
+        status: 'error',
+        error: { code: 'job_creation_failed', message: 'Failed to create scan job' }
+      });
     }
     
-    // Return jobId immediately (202 Accepted)
+    // Return jobId immediately (202 Accepted) - only jobId and status, NEVER books
     res.status(202).json({
       jobId,
-      status: 'pending',
-      message: 'Scan job created, processing in background'
+      status: 'pending'
     });
     
     // Process scan in background (don't await - let it run async)
@@ -2169,6 +2307,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
   } catch (e: any) {
     console.error('[API] Error in scan handler:', e);
-    return res.status(500).json({ error: 'scan_failed', detail: e?.message || String(e) });
+    return res.status(500).json({ 
+      status: 'error',
+      error: { code: 'scan_failed', message: e?.message || String(e) }
+    });
   }
 }
