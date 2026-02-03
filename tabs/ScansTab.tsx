@@ -1302,20 +1302,31 @@ export const ScansTab: React.FC = () => {
 
   // Helper to get cover URI - prefer remote URL (works in production), fall back to local
   const getBookCoverUri = (book: Book): string | undefined => {
-    // In production builds, always prefer remote URL (more reliable)
+    // Always validate coverUrl before returning it
     if (book.coverUrl) {
-      return book.coverUrl;
+      // Ensure it's a valid URL (starts with http:// or https://)
+      const url = book.coverUrl.trim();
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        return url;
+      } else {
+        // Invalid URL format - log warning but don't crash
+        console.warn(`⚠️ Invalid coverUrl format for "${book.title}": ${url.substring(0, 50)}`);
+        return undefined;
+      }
     }
     
-    // Fall back to local path only if no remote URL
+    // Fall back to local path only if no remote URL exists
     if (book.localCoverPath && FileSystem.documentDirectory) {
       try {
         const localPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
         return localPath;
       } catch (error) {
-        console.warn('Error getting local cover path:', error);
+        // Silently fail - don't log errors for missing local covers
+        return undefined;
       }
     }
+    
+    // No cover available - return undefined (UI will show placeholder)
     return undefined;
   };
 
@@ -1380,18 +1391,10 @@ export const ScansTab: React.FC = () => {
 
     if (booksNeedingCovers.length === 0) return;
 
-    // Process books in parallel batches for faster loading
-    // Batch size of 3-4 works well with Google Books API rate limits
-    const BATCH_SIZE = 4;
-    const batches = [];
-    
-    for (let i = 0; i < booksNeedingCovers.length; i += BATCH_SIZE) {
-      batches.push(booksNeedingCovers.slice(i, i + BATCH_SIZE));
-    }
-
-    // Process batches sequentially, but books within each batch in parallel
-    for (const batch of batches) {
-      const promises = batch.map(async (book) => {
+    // Process books ONE AT A TIME (sequentially) to prevent rate limits and allow incremental loading
+    // This ensures covers load one by one and the UI updates as each cover arrives
+    for (const book of booksNeedingCovers) {
+      try {
         try {
           // Skip if already has all data (cover, description, and stats) and local cache
           if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
@@ -1485,17 +1488,15 @@ export const ScansTab: React.FC = () => {
                 });
             }
           }
-        } catch (error) {
-          console.error(`Error fetching data for ${book.title}:`, error);
-        }
-      });
-
-      // Wait for all books in this batch to complete (parallel processing)
-      await Promise.all(promises);
+      } catch (error) {
+        console.error(`Error fetching data for ${book.title}:`, error);
+        // Continue to next book even if this one fails - don't break the loop
+      }
       
-      // Small delay between batches to respect rate limits (reduced from 500ms to 200ms)
-      if (batches.indexOf(batch) < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+      // Small delay between books to respect rate limits (800ms between each book)
+      // This prevents 429 errors and allows UI to update incrementally
+      if (booksNeedingCovers.indexOf(book) < booksNeedingCovers.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 800));
       }
     }
 
@@ -3583,9 +3584,10 @@ export const ScansTab: React.FC = () => {
   // Toolbar should be positioned so its bottom touches notification's top
   // Subtract significantly more to move toolbar DOWN and eliminate gap completely
   const notificationHeight = scanProgress ? 75 : 0; // Actual measured height
+  // Ensure position is always valid (never negative, never undefined)
   const stickyBottomPosition = scanProgress 
-    ? insets.bottom + tabBarHeight + notificationHeight - 75 // Subtract 75px to move toolbar down and eliminate gap
-    : 0; // Directly at bottom when no notification
+    ? Math.max(0, insets.bottom + tabBarHeight + notificationHeight - 75) // Subtract 75px to move toolbar down and eliminate gap
+    : Math.max(0, insets.bottom + tabBarHeight); // Directly above tab bar when no notification
 
   return (
     <View style={styles.safeContainer}>
