@@ -1749,7 +1749,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const finalBooksWithCovers = await Promise.all(coverPromises);
     
     const coversFound = finalBooksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
-    console.log(`[API] Post-validation: ${coversFound}/${finalBooksWithCovers.length} books now have covers/googleBooksId`);
+    const missingCovers = finalBooksWithCovers.length - coversFound;
+    console.log(`[COVERS] found: ${coversFound}, missing: ${missingCovers}, total: ${finalBooksWithCovers.length}`);
+    
+    // Log sample of books with cover status
+    const sample = finalBooksWithCovers.slice(0, 3).map(b => ({
+      title: b.title?.substring(0, 40),
+      hasCover: !!b.coverUrl,
+      hasGoogleBooksId: !!b.googleBooksId,
+      coverUrl: b.coverUrl ? b.coverUrl.substring(0, 60) + '...' : null,
+    }));
+    console.log(`[COVERS] Sample (first 3):`, JSON.stringify(sample, null, 2));
+    
+    // Log just before returning response
+    const coversInResponse = finalBooksWithCovers.filter(b => b.coverUrl).length;
+    console.log(`[RESP] Returning ${finalBooksWithCovers.length} books, ${coversInResponse} have coverUrl`);
     
     return res.status(200).json({ 
       books: finalBooksWithCovers, // Books with covers attached

@@ -652,6 +652,9 @@ export async function saveBookToSupabase(
       print_type: book.printType || null,
       updated_at: new Date().toISOString(),
     };
+    
+    // Log cover persistence for debugging
+    console.log(`[DB] Upserting book: "${book.title}", coverUrl=${book.coverUrl ? 'YES (' + book.coverUrl.substring(0, 60) + '...)' : 'NO'}, googleBooksId=${book.googleBooksId || 'NO'}`);
 
     // Use upsert to insert or update based on user_id + title + author
     // First try to find existing book to avoid duplicate key errors
@@ -726,6 +729,10 @@ export async function saveBookToSupabase(
         }
         return false;
       }
+      
+      // Successfully updated - log cover status
+      console.log(`[DB] ✅ Updated book in Supabase: "${book.title}", cover_url=${bookData.cover_url ? 'YES' : 'NO'}, google_books_id=${bookData.google_books_id ? 'YES' : 'NO'}`);
+      return true;
     } else {
       // Insert new book - catch duplicate key errors and retry as update
       const { error: insertError } = await supabase
@@ -822,6 +829,8 @@ export async function saveBookToSupabase(
       }
     }
 
+    // If we get here, the insert was successful
+    console.log(`[DB] ✅ Inserted book into Supabase: "${book.title}", cover_url=${bookData.cover_url ? 'YES' : 'NO'}, google_books_id=${bookData.google_books_id ? 'YES' : 'NO'}`);
     return true;
   } catch (error) {
     console.error('Error saving book to Supabase:', error);
