@@ -101,8 +101,18 @@ interface GoogleBooksQueueItem {
 let googleBooksQueue: GoogleBooksQueueItem[] = [];
 let googleBooksProcessing = false;
 let lastGoogleBooksRequestTime = 0;
-const MIN_GOOGLE_BOOKS_INTERVAL_MS = 250; // 250ms minimum between requests (single-flight)
+const MIN_GOOGLE_BOOKS_INTERVAL_MS = 600; // 600ms minimum between requests (single-flight, more conservative)
 const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
+
+// Cache for cover results (7 days for success, 24h for no match)
+interface CacheEntry {
+  data: GoogleBooksData;
+  timestamp: number;
+  isNegative: boolean; // true if "no match found"
+}
+const coverCache = new Map<string, CacheEntry>();
+const CACHE_TTL_SUCCESS_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CACHE_TTL_NEGATIVE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Rate limiting: queue requests with delays (legacy, kept for backward compatibility)
 let lastRequestTime = 0;
@@ -124,6 +134,7 @@ async function waitForRateLimit(): Promise<void> {
 /**
  * Process Google Books queue - ensures single-flight execution
  * Only ONE Google Books request runs at a time, globally
+ * With proper spacing and exponential backoff on 429
  */
 async function processGoogleBooksQueue(): Promise<void> {
   // If already processing or queue is empty, return
@@ -137,7 +148,7 @@ async function processGoogleBooksQueue(): Promise<void> {
     const item = googleBooksQueue.shift()!;
     const now = Date.now();
     
-    // Enforce minimum interval between requests
+    // Enforce minimum interval between requests (CRITICAL: prevents burst 429s)
     const timeSinceLastRequest = now - lastGoogleBooksRequestTime;
     if (timeSinceLastRequest < MIN_GOOGLE_BOOKS_INTERVAL_MS) {
       const waitTime = MIN_GOOGLE_BOOKS_INTERVAL_MS - timeSinceLastRequest;
@@ -150,22 +161,33 @@ async function processGoogleBooksQueue(): Promise<void> {
       // Use the direct search function (bypassing queue to avoid recursion)
       const result = await searchBookDirect(item.title, item.author, item.googleBooksId, item.retryCount);
       item.resolve(result);
+      
+      // Add spacing after successful request (prevents burst)
+      await new Promise(resolve => setTimeout(resolve, 200));
     } catch (error: any) {
-      // Handle 429 errors - re-queue with delay instead of immediate retry
+      // Handle 429 errors - re-queue with exponential backoff
       if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
         if (item.retryCount < MAX_GOOGLE_BOOKS_RETRIES) {
-          // Wait 2-5 seconds before retry (longer than Gemini since Google Books is more sensitive)
-          const retryDelay = 2000 + (item.retryCount * 1500); // 2s, 3.5s
-          const jitter = Math.random() * 1000; // 0-1s random
-          const totalDelay = retryDelay + jitter;
-          
-          // Only log once per batch to avoid spam
-          if (item.retryCount === 0) {
-            log('warn', `[GoogleBooks] Rate limited (429), throttling cover fetch queue`);
+          // Check for Retry-After header first
+          let retryDelay: number;
+          if (error?.retryAfter && typeof error.retryAfter === 'number') {
+            retryDelay = error.retryAfter * 1000; // Convert seconds to ms
+            log('warn', `[GoogleBooks] Rate limited (429), using Retry-After: ${error.retryAfter}s`);
+          } else {
+            // Exponential backoff: 2s → 4s → 8s (cap at 30s)
+            retryDelay = Math.min(2000 * Math.pow(2, item.retryCount), 30000);
+            const jitter = Math.random() * 1000; // 0-1s random
+            retryDelay += jitter;
+            
+            // Only log once per batch to avoid spam
+            if (item.retryCount === 0) {
+              log('warn', `[GoogleBooks] Rate limited (429), throttling cover fetch queue`);
+            }
           }
-          log('debug', `[GoogleBooks] Re-queuing "${item.title}" with ${Math.ceil(totalDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GOOGLE_BOOKS_RETRIES})`);
           
-          // Add back to queue with delay
+          log('debug', `[GoogleBooks] Re-queuing "${item.title}" with ${Math.ceil(retryDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GOOGLE_BOOKS_RETRIES})`);
+          
+          // Add back to queue with delay (don't continue processing immediately)
           setTimeout(() => {
             googleBooksQueue.push({
               ...item,
@@ -173,7 +195,10 @@ async function processGoogleBooksQueue(): Promise<void> {
               timestamp: Date.now(),
             });
             processGoogleBooksQueue(); // Process queue again
-          }, totalDelay);
+          }, retryDelay);
+          
+          // Stop processing this batch - wait for retry
+          break;
         } else {
           log('warn', `[GoogleBooks] Failed after ${MAX_GOOGLE_BOOKS_RETRIES} retries for: "${item.title}"`);
           item.resolve({}); // Return empty instead of failing
@@ -183,6 +208,9 @@ async function processGoogleBooksQueue(): Promise<void> {
         log('error', `[GoogleBooks] Non-429 error for "${item.title}":`, error?.message || error);
         item.resolve({}); // Return empty on other errors too
       }
+      
+      // Add spacing after error (prevents hammering)
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
   

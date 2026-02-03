@@ -1697,76 +1697,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
     // CRITICAL: Fetch covers BEFORE returning (queue handles rate limiting)
+    // But don't block - return books immediately, fetch covers in background
     log('info', `[COVERS] starting: books=${finalBooks.length}`);
     
-    const booksWithCovers = await Promise.all(
-      finalBooks.map(async (book) => {
-        // Skip if already has cover
-        if (book.coverUrl || book.googleBooksId) {
-          return book;
-        }
+    // Fetch covers sequentially (not in parallel) to respect queue rate limits
+    const booksWithCovers = [];
+    for (const book of finalBooks) {
+      // Skip if already has cover
+      if (book.coverUrl || book.googleBooksId) {
+        booksWithCovers.push(book);
+        continue;
+      }
+      
+      try {
+        const { fetchBookData } = await import('../services/googleBooksService');
         
-        try {
-          const { fetchBookData, searchMultipleBooks } = await import('../services/googleBooksService');
-          
-          // Helper to normalize title for better Google Books matching
-          const normalizeTitle = (title: string): string => {
-            return title
-              .toLowerCase()
-              .split(' ')
-              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-              .join(' ');
-          };
-          
-          // Strategy 1: Try with original title/author
-          let result = await fetchBookData(book.title || '', book.author || undefined);
-          
-          // Strategy 2: If that fails, try with normalized (title case) title
-          if (!result?.googleBooksId && book.title) {
-            const normalizedTitle = normalizeTitle(book.title);
-            if (normalizedTitle !== book.title) {
-              result = await fetchBookData(normalizedTitle, book.author || undefined);
-            }
+        // Strategy 1: Try with original title/author (queue handles rate limiting)
+        // Don't do multiple fallback searches - queue will handle retries
+        let result = await fetchBookData(book.title || '', book.author || undefined);
+        
+        if (result && result.googleBooksId) {
+          // Ensure HTTPS (iOS ATS requirement)
+          let coverUrl = result.coverUrl;
+          if (coverUrl && coverUrl.startsWith('http:')) {
+            coverUrl = coverUrl.replace('http:', 'https:');
           }
           
-          // Strategy 3: If that fails, try title only (no author)
-          if (!result?.googleBooksId && book.title) {
-            result = await fetchBookData(book.title, undefined);
-          }
-          
-          // Strategy 4: If that fails, try searchMultipleBooks
-          if (!result?.googleBooksId && book.title) {
-            const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
-            if (multipleResults && multipleResults.length > 0) {
-              const firstResult = multipleResults[0];
-              result = {
-                googleBooksId: firstResult.googleBooksId,
-                coverUrl: firstResult.coverUrl,
-              };
-            }
-          }
-          
-          if (result && result.googleBooksId) {
-            // Ensure HTTPS (iOS ATS requirement)
-            let coverUrl = result.coverUrl;
-            if (coverUrl && coverUrl.startsWith('http:')) {
-              coverUrl = coverUrl.replace('http:', 'https:');
-            }
-            
-            return {
-              ...book,
-              googleBooksId: result.googleBooksId,
-              coverUrl: coverUrl || book.coverUrl,
-            };
-          }
-          
-          return book;
-        } catch (error: any) {
-          // Silently continue - covers are optional
-          return book;
+          booksWithCovers.push({
+            ...book,
+            googleBooksId: result.googleBooksId,
+            coverUrl: coverUrl || book.coverUrl,
+          });
+        } else {
+          // No result found, but don't retry immediately (queue handles this)
+          booksWithCovers.push(book);
         }
-      })
-    );
+      } catch (error: any) {
+        // Silently continue - covers are optional
+        // If it's a 429, the queue will handle retry
+        booksWithCovers.push(book);
+      }
+    }
     
     const withCoversCount = booksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
     log('info', `[COVERS] done: withCovers=${withCoversCount}/${finalBooks.length}`);
