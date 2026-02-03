@@ -1683,12 +1683,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // This ensures covers load immediately with correct titles/authors from validation
     console.log(`[API] Post-validation: Fetching covers for ${finalBooks.length} books...`);
     
+    // Helper to normalize title for better Google Books matching
+    const normalizeTitle = (title: string): string => {
+      // Convert to title case (first letter of each word capitalized)
+      return title
+        .toLowerCase()
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+    };
+    
     // Fetch covers in parallel (but with rate limiting handled by the service)
     const coverPromises = finalBooks.map(async (book) => {
       try {
-        const { fetchBookData } = await import('../services/googleBooksService');
-        // Use validated title/author (more accurate than early lookup)
-        const result = await fetchBookData(book.title || '', book.author || undefined);
+        const { fetchBookData, searchMultipleBooks } = await import('../services/googleBooksService');
+        
+        // Strategy 1: Try with original title/author
+        let result = await fetchBookData(book.title || '', book.author || undefined);
+        
+        // Strategy 2: If that fails, try with normalized (title case) title
+        if (!result?.googleBooksId && book.title) {
+          const normalizedTitle = normalizeTitle(book.title);
+          if (normalizedTitle !== book.title) {
+            console.log(`[API] Post-validation cover: Trying normalized title "${normalizedTitle}" for "${book.title}"`);
+            result = await fetchBookData(normalizedTitle, book.author || undefined);
+          }
+        }
+        
+        // Strategy 3: If that fails, try title only (no author) - sometimes author names are wrong
+        if (!result?.googleBooksId && book.title) {
+          console.log(`[API] Post-validation cover: Trying title-only search for "${book.title}"`);
+          result = await fetchBookData(book.title, undefined);
+        }
+        
+        // Strategy 4: If that fails, try searchMultipleBooks and take first result
+        if (!result?.googleBooksId && book.title) {
+          console.log(`[API] Post-validation cover: Trying searchMultipleBooks for "${book.title}"`);
+          const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
+          if (multipleResults && multipleResults.length > 0) {
+            const firstResult = multipleResults[0];
+            result = {
+              googleBooksId: firstResult.googleBooksId,
+              coverUrl: firstResult.coverUrl,
+            };
+          }
+        }
         
         if (result && result.googleBooksId) {
           console.log(`[API] Post-validation cover SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
@@ -1698,7 +1737,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             coverUrl: result.coverUrl || book.coverUrl,
           };
         } else {
-          console.log(`[API] Post-validation cover NO MATCH for "${book.title}" by ${book.author || 'no author'}`);
+          console.log(`[API] Post-validation cover NO MATCH for "${book.title}" by ${book.author || 'no author'} (tried multiple strategies)`);
           return book;
         }
       } catch (error) {
