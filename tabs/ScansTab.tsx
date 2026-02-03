@@ -43,6 +43,7 @@ import {
 import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage, isSubscriptionUIHidden } from '../services/subscriptionService';
 import { ScanLimitBanner, ScanLimitBannerRef } from '../components/ScanLimitBanner';
 import { UpgradeModal } from '../components/UpgradeModal';
+import { fetchBookData, searchMultipleBooks, searchBooksByQuery } from '../services/googleBooksService';
 
 // Helper to read env vars in both development and production builds
 const getEnvVar = (key: string): string => {
@@ -1401,9 +1402,6 @@ export const ScansTab: React.FC = () => {
     coverFetchInProgressRef.current = true;
     
     try {
-      // Import the centralized service
-      const { fetchBookData } = await import('../services/googleBooksService');
-      
       // Filter out books that already have covers - LESS AGGRESSIVE FILTERING
       // Only skip if we have BOTH coverUrl AND localCoverPath (fully loaded)
       const booksNeedingCovers = books.filter(book => {
@@ -3022,7 +3020,7 @@ export const ScansTab: React.FC = () => {
     setCoverSearchResults([]);
 
     try {
-      const { searchMultipleBooks } = await import('../services/googleBooksService');
+      // searchMultipleBooks is now imported at top
       const results = await searchMultipleBooks(bookToUpdate.title, bookToUpdate.author, 20);
       
       // Filter to only show results with covers
@@ -3044,7 +3042,6 @@ export const ScansTab: React.FC = () => {
     if (!bookToUpdate) return;
 
     // Download and cache the new cover
-    const { fetchBookData } = await import('../services/googleBooksService');
     const bookData = await fetchBookData(bookToUpdate.title, bookToUpdate.author, selectedCover.googleBooksId);
 
     if (bookData.coverUrl) {
@@ -3109,7 +3106,7 @@ export const ScansTab: React.FC = () => {
 
     setIsSearchingBooks(true);
     try {
-      const { searchBooksByQuery } = await import('../services/googleBooksService');
+      // searchBooksByQuery is now imported at top
       const results = await searchBooksByQuery(query, 20);
       setBookSearchResults(results);
     } catch (error) {
@@ -3128,7 +3125,6 @@ export const ScansTab: React.FC = () => {
     if (!bookToUpdate) return;
 
     // Fetch full book data
-    const { fetchBookData } = await import('../services/googleBooksService');
     const bookData = await fetchBookData(selectedBook.title, selectedBook.author, selectedBook.googleBooksId);
 
     // Download cover if available
@@ -4156,7 +4152,6 @@ export const ScansTab: React.FC = () => {
                       let statsData: any = {};
                       try {
                         // Use centralized service instead of direct API call
-                        const { fetchBookData } = await import('../services/googleBooksService');
                         const bookData = await fetchBookData(manualTitle.trim(), manualAuthor.trim());
                         
                         if (bookData.coverUrl && bookData.googleBooksId) {

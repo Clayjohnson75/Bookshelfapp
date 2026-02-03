@@ -628,40 +628,44 @@ export async function saveBookToSupabase(
       ? (typeof book.scannedAt === 'number' ? book.scannedAt : new Date(book.scannedAt).getTime())
       : null;
 
-    const bookData = {
+    // Build bookData with patch semantics: only include fields when they have real values
+    // Never overwrite existing good data with null/empty
+    const bookData: any = {
       user_id: userId,
       title: book.title,
-      author: book.author || null,
-      isbn: book.isbn || null,
-      confidence: book.confidence || null,
       status: status,
       scanned_at: scannedAtValue, // BIGINT timestamp in milliseconds
-      cover_url: book.coverUrl || null,
-      local_cover_path: book.localCoverPath || null,
-      google_books_id: book.googleBooksId || null,
-      description: book.description || null,
-      // Google Books API stats fields
-      page_count: book.pageCount || null,
-      categories: book.categories || null,
-      publisher: book.publisher || null,
-      published_date: book.publishedDate || null,
-      language: book.language || null,
-      average_rating: book.averageRating || null,
-      ratings_count: book.ratingsCount || null,
-      subtitle: book.subtitle || null,
-      print_type: book.printType || null,
       updated_at: new Date().toISOString(),
     };
+    
+    // Only include optional fields if they have values (patch semantics)
+    if (book.author) bookData.author = book.author;
+    if (book.isbn) bookData.isbn = book.isbn;
+    if (book.confidence) bookData.confidence = book.confidence;
+    if (book.coverUrl) bookData.cover_url = book.coverUrl;
+    if (book.localCoverPath) bookData.local_cover_path = book.localCoverPath;
+    if (book.googleBooksId) bookData.google_books_id = book.googleBooksId;
+    if (book.description) bookData.description = book.description;
+    // Google Books API stats fields - only include if present
+    if (book.pageCount) bookData.page_count = book.pageCount;
+    if (book.categories) bookData.categories = book.categories;
+    if (book.publisher) bookData.publisher = book.publisher;
+    if (book.publishedDate) bookData.published_date = book.publishedDate;
+    if (book.language) bookData.language = book.language;
+    if (book.averageRating) bookData.average_rating = book.averageRating;
+    if (book.ratingsCount) bookData.ratings_count = book.ratingsCount;
+    if (book.subtitle) bookData.subtitle = book.subtitle;
+    if (book.printType) bookData.print_type = book.printType;
     
     // Log cover persistence for debugging
     console.log(`[DB] Upserting book: "${book.title}", coverUrl=${book.coverUrl ? 'YES (' + book.coverUrl.substring(0, 60) + '...)' : 'NO'}, googleBooksId=${book.googleBooksId || 'NO'}`);
 
     // Use upsert to insert or update based on user_id + title + author
-    // First try to find existing book to avoid duplicate key errors
+    // First try to find existing book to avoid duplicate key errors and preserve existing data
     const authorForQuery = book.author || '';
     const { data: existingBook, error: findError } = await supabase
       .from('books')
-      .select('id')
+      .select('id, cover_url, google_books_id, description, page_count, categories, publisher, published_date, language, average_rating, ratings_count, subtitle, print_type')
       .eq('user_id', userId)
       .eq('title', book.title)
       .eq('author', authorForQuery)
@@ -683,10 +687,54 @@ export async function saveBookToSupabase(
     }
 
     if (existingBook) {
-      // Update existing book
+      // Update existing book with patch semantics: preserve existing good data
+      // Only update fields that have new values, never overwrite with null
+      const updateData: any = {
+        ...bookData, // Start with new data
+      };
+      
+      // Preserve existing cover/google_books_id if new data doesn't have them
+      if (!updateData.cover_url && existingBook.cover_url) {
+        updateData.cover_url = existingBook.cover_url;
+      }
+      if (!updateData.google_books_id && existingBook.google_books_id) {
+        updateData.google_books_id = existingBook.google_books_id;
+      }
+      // Preserve other metadata fields if new data doesn't have them
+      if (!updateData.description && existingBook.description) {
+        updateData.description = existingBook.description;
+      }
+      if (!updateData.page_count && existingBook.page_count) {
+        updateData.page_count = existingBook.page_count;
+      }
+      if (!updateData.categories && existingBook.categories) {
+        updateData.categories = existingBook.categories;
+      }
+      if (!updateData.publisher && existingBook.publisher) {
+        updateData.publisher = existingBook.publisher;
+      }
+      if (!updateData.published_date && existingBook.published_date) {
+        updateData.published_date = existingBook.published_date;
+      }
+      if (!updateData.language && existingBook.language) {
+        updateData.language = existingBook.language;
+      }
+      if (!updateData.average_rating && existingBook.average_rating) {
+        updateData.average_rating = existingBook.average_rating;
+      }
+      if (!updateData.ratings_count && existingBook.ratings_count) {
+        updateData.ratings_count = existingBook.ratings_count;
+      }
+      if (!updateData.subtitle && existingBook.subtitle) {
+        updateData.subtitle = existingBook.subtitle;
+      }
+      if (!updateData.print_type && existingBook.print_type) {
+        updateData.print_type = existingBook.print_type;
+      }
+      
       const { error: updateError } = await supabase
         .from('books')
-        .update(bookData)
+        .update(updateData)
         .eq('id', existingBook.id);
 
       if (updateError) {
@@ -731,7 +779,7 @@ export async function saveBookToSupabase(
       }
       
       // Successfully updated - log cover status
-      console.log(`[DB] ✅ Updated book in Supabase: "${book.title}", cover_url=${bookData.cover_url ? 'YES' : 'NO'}, google_books_id=${bookData.google_books_id ? 'YES' : 'NO'}`);
+      console.log(`[DB] ✅ Updated book in Supabase: "${book.title}", cover_url=${updateData.cover_url ? 'YES' : 'NO'}, google_books_id=${updateData.google_books_id ? 'YES' : 'NO'}`);
       return true;
     } else {
       // Insert new book - catch duplicate key errors and retry as update
