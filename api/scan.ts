@@ -55,10 +55,17 @@ async function processGeminiQueue(): Promise<void> {
       // Handle 429 errors - re-queue with delay instead of immediate retry
       if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
         if (item.retryCount < MAX_GEMINI_RETRIES) {
-          // Re-queue with exponential backoff + jitter
-          const baseDelay = Math.pow(2, item.retryCount) * 5000; // 5s, 10s
-          const jitter = Math.random() * 1000; // 0-1s random
-          const retryDelay = baseDelay + jitter;
+          // Use Retry-After header if provided, otherwise use longer backoff (30s/90s)
+          let retryDelay: number;
+          if (error?.retryAfter && typeof error.retryAfter === 'number') {
+            retryDelay = error.retryAfter * 1000; // Convert seconds to ms
+            console.log(`[API] Gemini 429: Using Retry-After header: ${error.retryAfter}s`);
+          } else {
+            // Longer backoff: 30s, 90s (more conservative)
+            retryDelay = item.retryCount === 0 ? 30000 : 90000; // 30s first retry, 90s second
+            const jitter = Math.random() * 5000; // 0-5s random
+            retryDelay += jitter;
+          }
           
           console.log(`[API] Gemini 429: re-queuing with ${Math.ceil(retryDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GEMINI_RETRIES})...`);
           
@@ -105,15 +112,59 @@ function queueGeminiRequest(imageDataURL: string, retryCount = 0): Promise<any[]
 }
 
 /**
+ * Health check for Gemini API - confirms endpoint and quota surface
+ */
+async function pingGeminiAPI(): Promise<{ success: boolean; endpoint?: string; model?: string; error?: string }> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    return { success: false, error: 'No API key' };
+  }
+  
+  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  const model = 'gemini-1.5-flash';
+  
+  try {
+    const res = await fetch(`${endpoint}?key=${key}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: 'ping' }] }],
+      }),
+    });
+    
+    return {
+      success: res.ok,
+      endpoint: 'generativelanguage.googleapis.com',
+      model,
+      error: res.ok ? undefined : `Status ${res.status}`,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      endpoint: 'generativelanguage.googleapis.com',
+      model,
+      error: error?.message || String(error),
+    };
+  }
+}
+
+/**
  * Direct Gemini API call (no queue, used by queue processor)
  */
 async function scanWithGeminiDirect(imageDataURL: string): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
   
+  // Use stable model name (gemini-1.5-flash or gemini-1.5-pro) instead of preview
+  // Preview models may have different quota buckets
+  const model = 'gemini-1.5-flash'; // Stable model, better quota allocation
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  
+  console.log(`[API] Gemini request: endpoint=generativelanguage.googleapis.com, model=${model}, client=vanilla-fetch`);
+  
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
+    `${endpoint}?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -156,6 +207,10 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
     }
   );
   
+  // Check for Retry-After header
+  const retryAfter = res.headers.get('Retry-After');
+  const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+  
   // Throw 429 errors so queue can handle them
   if (res.status === 429) {
     const errorText = await res.text();
@@ -166,9 +221,21 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
       // Error text is not JSON, that's fine
     }
     const errorMessage = errorData?.error?.message || '';
+    
+    // Log detailed 429 info for debugging
+    console.error(`[API] Gemini 429 Details:`, {
+      endpoint: 'generativelanguage.googleapis.com',
+      model,
+      retryAfter: retryAfterSeconds ? `${retryAfterSeconds}s` : 'not provided',
+      errorMessage: errorMessage.slice(0, 200),
+      quotaSurface: 'Gemini API (AI Studio)',
+      clientLibrary: 'vanilla-fetch',
+    });
+    
     const error: any = new Error(`Gemini 429: ${errorMessage}`);
     error.status = 429;
     error.statusCode = 429;
+    error.retryAfter = retryAfterSeconds; // Include Retry-After for queue handler
     throw error;
   }
   
@@ -1400,6 +1467,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     
     console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
+    
+    // Health check Gemini API on first request to confirm endpoint and quota surface
+    if (hasGeminiKey) {
+      try {
+        const healthCheck = await pingGeminiAPI();
+        console.log(`[API] Gemini health check:`, {
+          success: healthCheck.success,
+          endpoint: healthCheck.endpoint,
+          model: healthCheck.model,
+          error: healthCheck.error,
+          quotaSurface: 'Gemini API (AI Studio) - generativelanguage.googleapis.com',
+        });
+        if (!healthCheck.success) {
+          console.warn(`[API] Gemini health check failed - API may be unavailable or key invalid`);
+        }
+      } catch (error) {
+        console.warn(`[API] Gemini health check error:`, error);
+      }
+    }
     
     // HARD RULE: Gemini first, OpenAI second (sequential, not parallel)
     // This prevents burst RPM limits and ensures single-flight execution
