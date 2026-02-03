@@ -70,12 +70,46 @@ const pendingRequests = new Map<string, Promise<GoogleBooksData | GoogleBooksDat
 // Helper to check if we're in dev mode (for __DEV__ replacement)
 const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
 
-// Rate limiting: queue requests with delays
+// Log level system
+const LOG_LEVEL = process.env.LOG_LEVEL || (isDev ? 'debug' : 'info');
+
+const logLevels: Record<string, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+};
+
+function log(level: keyof typeof logLevels, ...args: any[]) {
+  const currentLevel = logLevels[LOG_LEVEL] ?? logLevels.info;
+  if (logLevels[level] <= currentLevel) {
+    console.log(`[${level.toUpperCase()}]`, ...args);
+  }
+}
+
+// Google Books API queue (single-flight execution, like Gemini)
+interface GoogleBooksQueueItem {
+  title: string;
+  author?: string;
+  googleBooksId?: string;
+  resolve: (value: GoogleBooksData) => void;
+  reject: (error: any) => void;
+  retryCount: number;
+  timestamp: number;
+}
+
+let googleBooksQueue: GoogleBooksQueueItem[] = [];
+let googleBooksProcessing = false;
+let lastGoogleBooksRequestTime = 0;
+const MIN_GOOGLE_BOOKS_INTERVAL_MS = 250; // 250ms minimum between requests (single-flight)
+const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
+
+// Rate limiting: queue requests with delays (legacy, kept for backward compatibility)
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
 
 /**
- * Wait for rate limit cooldown
+ * Wait for rate limit cooldown (legacy function, kept for backward compatibility)
  */
 async function waitForRateLimit(): Promise<void> {
   const now = Date.now();
@@ -85,6 +119,99 @@ async function waitForRateLimit(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
   lastRequestTime = Date.now();
+}
+
+/**
+ * Process Google Books queue - ensures single-flight execution
+ * Only ONE Google Books request runs at a time, globally
+ */
+async function processGoogleBooksQueue(): Promise<void> {
+  // If already processing or queue is empty, return
+  if (googleBooksProcessing || googleBooksQueue.length === 0) {
+    return;
+  }
+  
+  googleBooksProcessing = true;
+  
+  while (googleBooksQueue.length > 0) {
+    const item = googleBooksQueue.shift()!;
+    const now = Date.now();
+    
+    // Enforce minimum interval between requests
+    const timeSinceLastRequest = now - lastGoogleBooksRequestTime;
+    if (timeSinceLastRequest < MIN_GOOGLE_BOOKS_INTERVAL_MS) {
+      const waitTime = MIN_GOOGLE_BOOKS_INTERVAL_MS - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    try {
+      lastGoogleBooksRequestTime = Date.now();
+      
+      // Use the direct search function (bypassing queue to avoid recursion)
+      const result = await searchBookDirect(item.title, item.author, item.googleBooksId, item.retryCount);
+      item.resolve(result);
+    } catch (error: any) {
+      // Handle 429 errors - re-queue with delay instead of immediate retry
+      if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
+        if (item.retryCount < MAX_GOOGLE_BOOKS_RETRIES) {
+          // Wait 2-5 seconds before retry (longer than Gemini since Google Books is more sensitive)
+          const retryDelay = 2000 + (item.retryCount * 1500); // 2s, 3.5s
+          const jitter = Math.random() * 1000; // 0-1s random
+          const totalDelay = retryDelay + jitter;
+          
+          // Only log once per batch to avoid spam
+          if (item.retryCount === 0) {
+            log('warn', `[GoogleBooks] Rate limited (429), throttling cover fetch queue`);
+          }
+          log('debug', `[GoogleBooks] Re-queuing "${item.title}" with ${Math.ceil(totalDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GOOGLE_BOOKS_RETRIES})`);
+          
+          // Add back to queue with delay
+          setTimeout(() => {
+            googleBooksQueue.push({
+              ...item,
+              retryCount: item.retryCount + 1,
+              timestamp: Date.now(),
+            });
+            processGoogleBooksQueue(); // Process queue again
+          }, totalDelay);
+        } else {
+          log('warn', `[GoogleBooks] Failed after ${MAX_GOOGLE_BOOKS_RETRIES} retries for: "${item.title}"`);
+          item.resolve({}); // Return empty instead of failing
+        }
+      } else {
+        // Non-429 error - fail immediately
+        log('error', `[GoogleBooks] Non-429 error for "${item.title}":`, error?.message || error);
+        item.resolve({}); // Return empty on other errors too
+      }
+    }
+  }
+  
+  googleBooksProcessing = false;
+}
+
+/**
+ * Queue a Google Books request (single-flight execution)
+ */
+function queueGoogleBooksRequest(
+  title: string,
+  author?: string,
+  googleBooksId?: string,
+  retryCount = 0
+): Promise<GoogleBooksData> {
+  return new Promise((resolve, reject) => {
+    googleBooksQueue.push({
+      title,
+      author,
+      googleBooksId,
+      resolve,
+      reject,
+      retryCount,
+      timestamp: Date.now(),
+    });
+    
+    // Start processing if not already running
+    processGoogleBooksQueue();
+  });
 }
 
 /**
@@ -334,6 +461,25 @@ async function fetchByGoogleBooksId(
 }
 
 /**
+ * Direct search function (bypasses queue, used by queue processor)
+ * This is the actual implementation that makes the API call
+ */
+async function searchBookDirect(
+  title: string,
+  author?: string,
+  googleBooksId?: string,
+  retryCount = 0
+): Promise<GoogleBooksData> {
+  // If we have googleBooksId, use that (much more efficient - no search needed)
+  if (googleBooksId) {
+    return fetchByGoogleBooksId(googleBooksId, retryCount);
+  }
+
+  // Otherwise, search by title/author (use the existing searchBook function)
+  return searchBook(title, author, retryCount);
+}
+
+/**
  * Search for book by title and author
  */
 async function searchBook(
@@ -341,22 +487,17 @@ async function searchBook(
   author?: string,
   retryCount = 0
 ): Promise<GoogleBooksData> {
-  // Try multiple query strategies for better matching
-  // Strategy 1: Exact title with quotes (most precise)
-  const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
-  let query = author ? `intitle:"${cleanTitle}" ${author}` : `intitle:"${cleanTitle}"`;
-  const cacheKey = `search:${query}`;
+  // Normalize for cache key (aggressive caching)
+  const normalizedTitle = norm(title);
+  const normalizedAuthor = author ? norm(author) : '';
+  const cacheKey = `search:${normalizedTitle}|${normalizedAuthor}`;
   
-  // Log the query being used (for debugging)
-  if (isDev) {
-    console.log(`[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}")`);
-  }
-
-  // Check cache first
+  // Check cache first (aggressive caching - huge win)
   if (cache.has(cacheKey)) {
-    const cached = cache.get(cacheKey)!;
+    const cached = cache.get(cacheKey);
     // Cache for single book search should always be a single object, not array
-    if (!Array.isArray(cached)) {
+    if (!Array.isArray(cached) && cached) {
+      log('debug', `[GoogleBooks] ✅ Cache HIT for: "${title}"${author ? ` by ${author}` : ''}`);
       return cached;
     }
   }
@@ -369,6 +510,14 @@ async function searchBook(
       return pending;
     }
   }
+  
+  // Try multiple query strategies for better matching
+  // Strategy 1: Exact title with quotes (most precise)
+  const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
+  let query = author ? `intitle:"${cleanTitle}" ${author}` : `intitle:"${cleanTitle}"`;
+  
+  // Log the query being used (for debugging)
+  log('debug', `[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}")`);
 
   const requestPromise = (async () => {
     try {
@@ -392,20 +541,12 @@ async function searchBook(
         throw fetchError;
       }
 
-      // Handle rate limiting (429) with exponential backoff
+      // Handle rate limiting (429) - throw error so queue can handle it
       if (response.status === 429) {
-        const maxRetries = 3;
-        if (retryCount < maxRetries) {
-          const backoffDelay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
-          console.warn(
-            `Google Books API rate limited (429), retrying in ${backoffDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`
-          );
-          await new Promise(resolve => setTimeout(resolve, backoffDelay));
-          return searchBook(title, author, retryCount + 1);
-        } else {
-          console.warn(`Google Books API rate limited (429), max retries reached for: ${title}`);
-          return {};
-        }
+        const error: any = new Error(`Google Books 429: Rate limited`);
+        error.status = 429;
+        error.statusCode = 429;
+        throw error; // Let queue handle retry logic
       }
 
       if (!response.ok) {
@@ -415,16 +556,16 @@ async function searchBook(
 
       const data = await response.json() as GoogleBooksResponse;
 
-      // Logging for debugging
-      console.log(`[GB] query=`, url);
-      console.log(`[GB] totalItems=`, data.totalItems || 0, `items=`, data.items?.length ?? 0);
+      // Logging for debugging (debug level only)
+      log('debug', `[GB] query=`, url);
+      log('debug', `[GB] totalItems=`, data.totalItems || 0, `items=`, data.items?.length ?? 0);
 
       if (data.items?.length) {
-        // Log top 5 candidates
+        // Log top 5 candidates (debug level only)
         for (const [i, it] of data.items.slice(0, 5).entries()) {
           const v = it.volumeInfo || {};
           const raw = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail || "";
-          console.log(`[GB] #${i} title="${v.title}" authors="${(v.authors||[]).join(",")}" cover=${!!raw}`);
+          log('debug', `[GB] #${i} title="${v.title}" authors="${(v.authors||[]).join(",")}" cover=${!!raw}`);
         }
 
         // Pick best book with cover using scoring
@@ -435,9 +576,7 @@ async function searchBook(
           const pickedBook = data.items.find(b => b.id === picked.googleBooksId) || data.items[0];
           const volumeInfo = pickedBook.volumeInfo || {};
           
-          if (isDev) {
-            console.log(`[GoogleBooks] ✅ Picked best match: "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.googleBooksId})`);
-          }
+          log('debug', `[GoogleBooks] ✅ Picked best match: "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.googleBooksId})`);
 
           // Extract all data
           const result: GoogleBooksData = {
@@ -455,8 +594,12 @@ async function searchBook(
             description: volumeInfo.description,
           };
 
-          // Cache the result
-          cache.set(cacheKey, result);
+          // Cache the result (aggressive caching - normalize for cache key)
+          const normalizedTitle = norm(title);
+          const normalizedAuthor = author ? norm(author) : '';
+          const normalizedCacheKey = `search:${normalizedTitle}|${normalizedAuthor}`;
+          cache.set(normalizedCacheKey, result);
+          cache.set(cacheKey, result); // Also cache with original query
           // Also cache by ID for future lookups
           if (picked.googleBooksId) {
             cache.set(`id:${picked.googleBooksId}`, result);
@@ -465,9 +608,7 @@ async function searchBook(
         }
 
         // Fallback: return top item id even if no cover, for debugging/metadata
-        if (isDev) {
-          console.log(`[GoogleBooks] ⚠️ No book with valid cover found, returning top result without cover`);
-        }
+        log('debug', `[GoogleBooks] ⚠️ No book with valid cover found, returning top result without cover`);
         const topBook = data.items[0];
         const topVolumeInfo = topBook.volumeInfo || {};
         return {
@@ -530,13 +671,47 @@ export async function fetchBookData(
   author?: string,
   googleBooksId?: string
 ): Promise<GoogleBooksData> {
-  // If we have googleBooksId, use that (much more efficient - no search needed)
+  // Normalize for cache key (aggressive caching)
+  const normalizedTitle = norm(title);
+  const normalizedAuthor = author ? norm(author) : '';
+  const cacheKey = googleBooksId 
+    ? `id:${googleBooksId}` 
+    : `search:${normalizedTitle}|${normalizedAuthor}`;
+  
+  // Check cache first (aggressive caching - huge win, reduces API calls by 80-90%)
+  if (cache.has(cacheKey)) {
+    const cached = cache.get(cacheKey);
+    if (!Array.isArray(cached) && cached) {
+      if (isDev) {
+        console.log(`[GoogleBooks] ✅ Cache HIT for: "${title}"${author ? ` by ${author}` : ''}`);
+      }
+      return cached;
+    }
+  }
+  
+  // If we have googleBooksId, use that directly (no queue needed, already cached if available)
   if (googleBooksId) {
-    return fetchByGoogleBooksId(googleBooksId);
+    const result = await fetchByGoogleBooksId(googleBooksId);
+    // Cache the result
+    if (result && result.googleBooksId) {
+      cache.set(cacheKey, result);
+      cache.set(`id:${result.googleBooksId}`, result);
+    }
+    return result;
   }
 
-  // Otherwise, search by title/author
-  return searchBook(title, author);
+  // Queue the search request (single-flight execution, prevents 429 bursts)
+  const result = await queueGoogleBooksRequest(title, author, undefined, 0);
+  
+  // Cache the result (aggressive caching)
+  if (result && (result.googleBooksId || result.coverUrl)) {
+    cache.set(cacheKey, result);
+    if (result.googleBooksId) {
+      cache.set(`id:${result.googleBooksId}`, result);
+    }
+  }
+  
+  return result;
 }
 
 /**

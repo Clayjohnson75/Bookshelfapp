@@ -3,6 +3,23 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Log level system
+const LOG_LEVEL = process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug');
+
+const logLevels: Record<string, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+};
+
+function log(level: keyof typeof logLevels, ...args: any[]) {
+  const currentLevel = logLevels[LOG_LEVEL] ?? logLevels.info;
+  if (logLevels[level] <= currentLevel) {
+    console.log(`[${level.toUpperCase()}]`, ...args);
+  }
+}
+
 // Gemini rate limiter: GLOBAL queue with single-flight execution
 // HARD RULE: Only ONE Gemini request at a time, globally
 // This prevents burst RPM limits (Gemini 3 Pro = 25 RPM, but burst tolerance is lower)
@@ -1516,7 +1533,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         // First, list available models
         const modelsList = await listGeminiModels();
-        console.log(`[API] Gemini ListModels:`, {
+        log('debug', `[API] Gemini ListModels:`, {
           success: modelsList.success,
           endpoint: modelsList.endpoint,
           availableModels: modelsList.models?.slice(0, 10) || [], // Show first 10 models
@@ -1526,7 +1543,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // Then ping the model we'll use
         const modelToUse = 'gemini-3-flash-preview';
         const healthCheck = await pingGeminiAPI(modelToUse);
-        console.log(`[API] Gemini health check:`, {
+        log('debug', `[API] Gemini health check:`, {
           success: healthCheck.success,
           endpoint: healthCheck.endpoint,
           model: healthCheck.model,
@@ -1536,12 +1553,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
         
         if (!healthCheck.success) {
-          console.error(`[API] Gemini model ${modelToUse} not available - check model name and API key`);
+          log('error', `[API] Gemini model ${modelToUse} not available - check model name and API key`);
         } else {
           geminiModelVerified = true;
         }
       } catch (error) {
-        console.warn(`[API] Gemini health check error:`, error);
+        log('warn', `[API] Gemini health check error:`, error);
       }
     }
     
@@ -1552,10 +1569,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     // Try Gemini first (queued, single-flight execution)
     if (hasGeminiKey) {
-      console.log('[API] Starting Gemini scan (queued, single-flight)...');
+      log('info', '[API] Starting Gemini scan (queued, single-flight)...');
       try {
         gemini = await scanWithGemini(imageDataURL);
-        console.log(`[API] Gemini completed: ${gemini.length} books`);
+        log('info', `[API] Gemini completed: ${gemini.length} books`);
       } catch (err: any) {
         console.error('[API] Gemini scan failed:', err?.message || err);
         gemini = [];
@@ -1679,94 +1696,96 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
-    // CRITICAL: Post-validation cover fetch - fetch covers for ALL books AFTER validation
-    // This ensures covers load immediately with correct titles/authors from validation
-    console.log(`[API] Post-validation: Fetching covers for ${finalBooks.length} books...`);
+    // Return books immediately (non-blocking) - covers will be fetched asynchronously by client
+    // This prevents rate limits from delaying the entire scan response
+    const coversInResponse = finalBooks.filter(b => b.coverUrl).length;
+    log('info', `[API] Scan completed: books=${finalBooks.length} covers=${coversInResponse} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
     
-    // Helper to normalize title for better Google Books matching
-    const normalizeTitle = (title: string): string => {
-      // Convert to title case (first letter of each word capitalized)
-      return title
-        .toLowerCase()
-        .split(' ')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-    };
-    
-    // Fetch covers in parallel (but with rate limiting handled by the service)
-    const coverPromises = finalBooks.map(async (book) => {
-      try {
-        const { fetchBookData, searchMultipleBooks } = await import('../services/googleBooksService');
-        
-        // Strategy 1: Try with original title/author
-        let result = await fetchBookData(book.title || '', book.author || undefined);
-        
-        // Strategy 2: If that fails, try with normalized (title case) title
-        if (!result?.googleBooksId && book.title) {
-          const normalizedTitle = normalizeTitle(book.title);
-          if (normalizedTitle !== book.title) {
-            console.log(`[API] Post-validation cover: Trying normalized title "${normalizedTitle}" for "${book.title}"`);
-            result = await fetchBookData(normalizedTitle, book.author || undefined);
-          }
-        }
-        
-        // Strategy 3: If that fails, try title only (no author) - sometimes author names are wrong
-        if (!result?.googleBooksId && book.title) {
-          console.log(`[API] Post-validation cover: Trying title-only search for "${book.title}"`);
-          result = await fetchBookData(book.title, undefined);
-        }
-        
-        // Strategy 4: If that fails, try searchMultipleBooks and take first result
-        if (!result?.googleBooksId && book.title) {
-          console.log(`[API] Post-validation cover: Trying searchMultipleBooks for "${book.title}"`);
-          const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
-          if (multipleResults && multipleResults.length > 0) {
-            const firstResult = multipleResults[0];
-            result = {
-              googleBooksId: firstResult.googleBooksId,
-              coverUrl: firstResult.coverUrl,
-            };
-          }
-        }
-        
-        if (result && result.googleBooksId) {
-          console.log(`[API] Post-validation cover SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
-          return {
-            ...book,
-            googleBooksId: result.googleBooksId,
-            coverUrl: result.coverUrl || book.coverUrl,
+    // Start cover fetching asynchronously (fire and forget - don't block response)
+    // The client's fetchCoversForBooks will handle this, but we can also do it here as a background job
+    if (finalBooks.length > 0) {
+      // Fire and forget - don't await, let it run in background
+      (async () => {
+        try {
+          log('debug', `[API] Starting async cover fetch for ${finalBooks.length} books (non-blocking)...`);
+          
+          let successCount = 0;
+          let failedCount = 0;
+          let rateLimited = false;
+          const { fetchBookData, searchMultipleBooks } = await import('../services/googleBooksService');
+          
+          // Helper to normalize title for better Google Books matching
+          const normalizeTitle = (title: string): string => {
+            return title
+              .toLowerCase()
+              .split(' ')
+              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+              .join(' ');
           };
-        } else {
-          console.log(`[API] Post-validation cover NO MATCH for "${book.title}" by ${book.author || 'no author'} (tried multiple strategies)`);
-          return book;
-        }
+          
+          // Fetch covers one by one (queue handles rate limiting)
+          for (const book of finalBooks) {
+            // Skip if already has cover
+            if (book.coverUrl || book.googleBooksId) {
+              continue;
+            }
+            
+            try {
+              // Strategy 1: Try with original title/author
+              let result = await fetchBookData(book.title || '', book.author || undefined);
+              
+              // Strategy 2: If that fails, try with normalized (title case) title
+              if (!result?.googleBooksId && book.title) {
+                const normalizedTitle = normalizeTitle(book.title);
+                if (normalizedTitle !== book.title) {
+                  result = await fetchBookData(normalizedTitle, book.author || undefined);
+                }
+              }
+              
+              // Strategy 3: If that fails, try title only (no author)
+              if (!result?.googleBooksId && book.title) {
+                result = await fetchBookData(book.title, undefined);
+              }
+              
+              // Strategy 4: If that fails, try searchMultipleBooks
+              if (!result?.googleBooksId && book.title) {
+                const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
+                if (multipleResults && multipleResults.length > 0) {
+                  const firstResult = multipleResults[0];
+                  result = {
+                    googleBooksId: firstResult.googleBooksId,
+                    coverUrl: firstResult.coverUrl,
+                  };
+                }
+              }
+              
+              if (result && result.googleBooksId) {
+                successCount++;
+                log('debug', `[API] Async cover SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
+              } else {
+                failedCount++;
+              }
+            } catch (error: any) {
+              failedCount++;
+              // Check if it's a rate limit error
+              if (error?.status === 429 || error?.message?.includes('429')) {
+                rateLimited = true;
+              }
+              // Don't log individual errors - they're handled by the queue system
+            }
+          }
+          
+          // Log summary once per scan
+          log('info', `[COVERS] requested=${finalBooks.length} success=${successCount} failed=${failedCount}${rateLimited ? ' rateLimited=true' : ''}`);
       } catch (error) {
-        console.log(`[API] Post-validation cover ERROR for "${book.title}":`, error?.message || error);
-        return book;
+        // Don't log errors from background job - it's fire and forget
+        // Errors are handled by the queue system
       }
-    });
-    
-    const finalBooksWithCovers = await Promise.all(coverPromises);
-    
-    const coversFound = finalBooksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
-    const missingCovers = finalBooksWithCovers.length - coversFound;
-    console.log(`[COVERS] found: ${coversFound}, missing: ${missingCovers}, total: ${finalBooksWithCovers.length}`);
-    
-    // Log sample of books with cover status
-    const sample = finalBooksWithCovers.slice(0, 3).map(b => ({
-      title: b.title?.substring(0, 40),
-      hasCover: !!b.coverUrl,
-      hasGoogleBooksId: !!b.googleBooksId,
-      coverUrl: b.coverUrl ? b.coverUrl.substring(0, 60) + '...' : null,
-    }));
-    console.log(`[COVERS] Sample (first 3):`, JSON.stringify(sample, null, 2));
-    
-    // Log just before returning response
-    const coversInResponse = finalBooksWithCovers.filter(b => b.coverUrl).length;
-    console.log(`[RESP] Returning ${finalBooksWithCovers.length} books, ${coversInResponse} have coverUrl`);
+      })();
+    }
     
     return res.status(200).json({ 
-      books: finalBooksWithCovers, // Books with covers attached
+      books: finalBooks, // Return books immediately, covers will be fetched by client
       apiResults
     });
   } catch (e: any) {
