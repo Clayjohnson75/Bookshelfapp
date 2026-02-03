@@ -5,8 +5,8 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Gemini rate limiter: track requests per minute
 let geminiRequestTimes: number[] = [];
-const GEMINI_RPM_LIMIT = 15; // Conservative limit (Gemini free tier is usually 15-60 RPM)
-const GEMINI_MIN_INTERVAL = 4000; // Minimum 4 seconds between requests (15 requests per minute)
+const GEMINI_RPM_LIMIT = 10; // More conservative limit (10 RPM = 1 request every 6 seconds)
+const GEMINI_MIN_INTERVAL = 6000; // Minimum 6 seconds between requests (10 requests per minute)
 
 async function waitForGeminiRateLimit(): Promise<void> {
   const now = Date.now();
@@ -821,14 +821,8 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
  * Returns book with external_match data if found
  */
 async function earlyLookup(book: any): Promise<any> {
-  // Only lookup if ambiguous: low/medium confidence OR missing author OR very short title
-  const isAmbiguous = 
-    book.confidence === 'low' || 
-    book.confidence === 'medium' ||
-    !book.author ||
-    (book.title && book.title.length < 5);
-  
-  if (!isAmbiguous) return book;
+  // Lookup ALL books to get covers and googleBooksId, not just ambiguous ones
+  // This ensures we have googleBooksId for fast cover fetching on the client
   
   try {
     // Dynamic import to avoid circular dependencies
@@ -1296,12 +1290,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
     console.log(`[API] Cheap validator: ${cheapFiltered.length} passed, ${cheapValidated.length - cheapFiltered.length} filtered`);
     
-    // NEW PIPELINE: Step 2 - Early external lookup for ambiguous items
-    console.log(`[API] Early lookup for ambiguous items...`);
+    // NEW PIPELINE: Step 2 - Early external lookup for ALL books (to get covers and googleBooksId)
+    console.log(`[API] Early lookup for all books (to get covers and googleBooksId)...`);
     const withLookups = await Promise.all(
       cheapFiltered.map(book => earlyLookup(book))
     );
-    const lookupCount = withLookups.filter(b => b.external_match).length;
+    const lookupCount = withLookups.filter(b => b.googleBooksId || b.external_match?.googleBooksId).length;
     console.log(`[API] Early lookup: ${lookupCount} books found in Google Books`);
     
     // NEW PIPELINE: Step 3 - Batch validation (replaces per-book validation)
