@@ -73,6 +73,52 @@ const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !=
 // Log level system
 const LOG_LEVEL = process.env.LOG_LEVEL || (isDev ? 'debug' : 'info');
 
+// Google Books API key (server-side only)
+const GOOGLE_BOOKS_API_KEY = typeof process !== 'undefined' ? process.env.GOOGLE_BOOKS_API_KEY : undefined;
+
+// Startup log for API key presence (server-side only)
+if (typeof process !== 'undefined' && process.env) {
+  const hasKey = !!GOOGLE_BOOKS_API_KEY;
+  log('info', `[GoogleBooks] API key present: ${hasKey ? 'yes' : 'no'}`);
+  if (!hasKey) {
+    log('warn', '[GoogleBooks] ⚠️ GOOGLE_BOOKS_API_KEY not set - requests will use unauthenticated quota (very limited)');
+  }
+}
+
+/**
+ * Build Google Books API URL with API key if available
+ */
+function buildGoogleBooksUrl(path: string, params?: Record<string, string>): string {
+  const baseUrl = `https://www.googleapis.com/books/v1${path}`;
+  const urlParams = new URLSearchParams();
+  
+  // Add existing query params if path already has them
+  const [pathPart, existingQuery] = path.split('?');
+  if (existingQuery) {
+    existingQuery.split('&').forEach(param => {
+      const [key, value] = param.split('=');
+      if (key && value) {
+        urlParams.append(key, decodeURIComponent(value));
+      }
+    });
+  }
+  
+  // Add new params
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      urlParams.append(key, value);
+    });
+  }
+  
+  // Add API key if available (server-side only)
+  if (GOOGLE_BOOKS_API_KEY) {
+    urlParams.append('key', GOOGLE_BOOKS_API_KEY);
+  }
+  
+  const queryString = urlParams.toString();
+  return queryString ? `${baseUrl.split('?')[0]}?${queryString}` : baseUrl;
+}
+
 const logLevels: Record<string, number> = {
   error: 0,
   warn: 1,
@@ -483,10 +529,8 @@ async function fetchByGoogleBooksId(
 
       let response: Response;
       try {
-        response = await fetch(
-          `https://www.googleapis.com/books/v1/volumes/${googleBooksId}`,
-          { signal: controller.signal }
-        );
+        const url = buildGoogleBooksUrl(`/volumes/${googleBooksId}`);
+        response = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
@@ -500,11 +544,15 @@ async function fetchByGoogleBooksId(
         throw fetchError;
       }
 
-      // Handle rate limiting (429) - throw error so queue can handle it
+      // Handle rate limiting (429) with Retry-After header support
       if (response.status === 429) {
-        const error: any = new Error(`Google Books 429: Rate limited`);
+        const retryAfter = response.headers.get('Retry-After');
+        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+        
+        const error: any = new Error(`Google Books 429: Rate limited${retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : ''}`);
         error.status = 429;
         error.statusCode = 429;
+        error.retryAfter = retryAfterSeconds;
         throw error; // Let queue handle retry logic
       }
 
@@ -698,7 +746,12 @@ async function searchBook(
       // Add fields parameter to limit payload to only needed fields
       // Add projection=full to improve chances of getting description/categories
       const fields = 'items(id,volumeInfo(title,authors,pageCount,categories,publisher,publishedDate,language,averageRating,ratingsCount,subtitle,printType,description,imageLinks))';
-      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10&fields=${encodeURIComponent(fields)}&projection=full`; // Get multiple candidates for scoring
+      const url = buildGoogleBooksUrl('/volumes', {
+        q: query,
+        maxResults: '10',
+        fields: fields,
+        projection: 'full'
+      });
 
       let response: Response;
       try {
@@ -726,11 +779,15 @@ async function searchBook(
         console.log(`[DEBUG_GOOGLE_BOOKS]   URL: ${url}`);
       }
 
-      // Handle rate limiting (429) - throw error so queue can handle it
+      // Handle rate limiting (429) with Retry-After header support
       if (response.status === 429) {
-        const error: any = new Error(`Google Books 429: Rate limited`);
+        const retryAfter = response.headers.get('Retry-After');
+        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+        
+        const error: any = new Error(`Google Books 429: Rate limited${retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : ''}`);
         error.status = 429;
         error.statusCode = 429;
+        error.retryAfter = retryAfterSeconds;
         throw error; // Let queue handle retry logic
       }
 
@@ -1153,10 +1210,11 @@ export async function searchBooksByQuery(
 
       let response: Response;
       try {
-        response = await fetch(
-          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
-          { signal: controller.signal }
-        );
+        const url = buildGoogleBooksUrl('/volumes', {
+          q: query,
+          maxResults: maxResults.toString()
+        });
+        response = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
@@ -1164,6 +1222,14 @@ export async function searchBooksByQuery(
           throw new Error('Request timeout - please check your internet connection');
         }
         throw fetchError;
+      }
+
+      // Handle rate limiting (429) with Retry-After header support
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+        log('warn', `Google Books 429: Rate limited${retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : ''} - returning empty results`);
+        return [];
       }
 
       if (!response.ok) {

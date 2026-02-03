@@ -51,6 +51,9 @@ const MIN_GEMINI_INTERVAL_MS = 3000; // 3 seconds minimum between requests = 20 
 const MAX_GEMINI_RETRIES = 2; // Max retries (but with proper delays, not immediate)
 let geminiModelVerified = false; // Track if we've verified the model exists
 
+// Track finalized scans to prevent late results from updating state
+const finalizedScans = new Set<string>();
+
 /**
  * Process Gemini queue - ensures single-flight execution
  * Only ONE Gemini request runs at a time, globally
@@ -1806,11 +1809,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
             }, 30000); // 30 second delay
             
-            // If Gemini finishes before 30s, cancel OpenAI start
+            // If Gemini finishes before 30s, cancel OpenAI start (hedge timer)
             geminiPromise.then((result) => {
               if (result.length > 0 && openaiStartTimeout && !openaiStarted) {
                 clearTimeout(openaiStartTimeout);
-                console.log(`[SCAN ${scanId}] Gemini finished early (${timeBudget.getElapsedTime()}ms), cancelling OpenAI start`);
+                openaiStartTimeout = null;
+                console.log(`[SCAN ${scanId}] Gemini finished early (${timeBudget.getElapsedTime()}ms), cancelling OpenAI hedge timer`);
                 resolve([]);
               }
             }).catch(() => {
@@ -1824,6 +1828,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         geminiPromise.then((result) => ({ source: 'gemini', books: result })),
         openaiPromise.then((result) => ({ source: 'openai', books: result })),
       ]);
+      
+      // Mark scan as finalized once we have a winner
+      finalizedScans.add(scanId);
       
       // Cancel the loser
       if (results.source === 'gemini' && results.books.length > 0) {
@@ -1845,6 +1852,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           openaiPromise.catch(() => []),
         ]);
         
+        // Check if scan was already finalized by another result
+        if (finalizedScans.has(scanId)) {
+          console.log(`[SCAN ${scanId}] Scan already finalized, ignoring late results`);
+          // Return empty with default API results
+          return res.status(200).json({ 
+            books: [], 
+            apiResults: {
+              openai: { working: false, count: 0, hasKey: hasOpenAIKey, error: null },
+              gemini: { working: false, count: 0, hasKey: hasGeminiKey, error: null }
+            }
+          });
+        }
+        
         if (geminiResult.length > 0) {
           gemini = geminiResult;
           openai = [];
@@ -1859,21 +1879,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
       
-      // Cleanup timeouts
-      if (geminiTimeout) clearTimeout(geminiTimeout);
-      if (openaiTimeout) clearTimeout(openaiTimeout);
-      if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
+      // Cleanup timeouts (unified cleanup in finally block)
       
     } catch (err: any) {
       console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
       scanFailed = true;
-      
-      // Cleanup on error
-      if (geminiTimeout) clearTimeout(geminiTimeout);
-      if (openaiTimeout) clearTimeout(openaiTimeout);
-      if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
-      geminiController.abort();
-      openaiController.abort();
+      finalizedScans.add(scanId); // Mark as finalized on error to prevent late updates
+    } finally {
+      // Unified timeout cleanup - ensure all timers are cleared
+      if (geminiTimeout) {
+        clearTimeout(geminiTimeout);
+        geminiTimeout = null;
+      }
+      if (openaiTimeout) {
+        clearTimeout(openaiTimeout);
+        openaiTimeout = null;
+      }
+      if (openaiStartTimeout) {
+        clearTimeout(openaiStartTimeout);
+        openaiStartTimeout = null;
+      }
+      // Abort controllers if not already aborted
+      if (!geminiController.signal.aborted) {
+        geminiController.abort();
+      }
+      if (!openaiController.signal.aborted) {
+        openaiController.abort();
+      }
     }
     
     // Check if we've exceeded budget
