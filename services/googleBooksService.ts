@@ -67,21 +67,37 @@ declare const __DEV__: boolean;
 const cache = new Map<string, GoogleBooksData | GoogleBooksData[]>();
 const pendingRequests = new Map<string, Promise<GoogleBooksData | GoogleBooksData[]>>();
 
+// Helper to safely access process.env (works in both Node.js and React Native)
+const getEnvVar = (key: string): string | undefined => {
+  if (typeof process === 'undefined' || !process.env || typeof process.env !== 'object') {
+    return undefined;
+  }
+  try {
+    return process.env[key];
+  } catch {
+    return undefined;
+  }
+};
+
 // Helper to check if we're in dev mode (for __DEV__ replacement)
-const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
+const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : getEnvVar('NODE_ENV') !== 'production';
 
 // Log level system
-const LOG_LEVEL = process.env.LOG_LEVEL || (isDev ? 'debug' : 'info');
+const LOG_LEVEL = getEnvVar('LOG_LEVEL') || (isDev ? 'debug' : 'info');
 
 // Google Books API key (server-side only)
-const GOOGLE_BOOKS_API_KEY = typeof process !== 'undefined' ? process.env.GOOGLE_BOOKS_API_KEY : undefined;
+const GOOGLE_BOOKS_API_KEY = getEnvVar('GOOGLE_BOOKS_API_KEY');
 
-// Startup log for API key presence (server-side only)
-if (typeof process !== 'undefined' && process.env) {
-  const hasKey = !!GOOGLE_BOOKS_API_KEY;
-  log('info', `[GoogleBooks] API key present: ${hasKey ? 'yes' : 'no'}`);
-  if (!hasKey) {
-    log('warn', '[GoogleBooks] ⚠️ GOOGLE_BOOKS_API_KEY not set - requests will use unauthenticated quota (very limited)');
+// Startup log for API key presence (server-side only - only run in Node.js environment)
+if (typeof process !== 'undefined' && process.env && typeof process.env === 'object') {
+  try {
+    const hasKey = !!GOOGLE_BOOKS_API_KEY;
+    log('info', `[GoogleBooks] API key present: ${hasKey ? 'yes' : 'no'}`);
+    if (!hasKey) {
+      log('warn', '[GoogleBooks] ⚠️ GOOGLE_BOOKS_API_KEY not set - requests will use unauthenticated quota (very limited)');
+    }
+  } catch (e) {
+    // Silently fail in React Native - this is expected
   }
 }
 
@@ -104,10 +120,16 @@ function buildGoogleBooksUrl(path: string, params?: Record<string, string>): str
   }
   
   // Add new params
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      urlParams.append(key, value);
-    });
+  if (params && typeof params === 'object') {
+    try {
+      Object.entries(params).forEach(([key, value]) => {
+        if (key && value !== undefined && value !== null) {
+          urlParams.append(key, String(value));
+        }
+      });
+    } catch (e) {
+      // Silently fail if params is not iterable
+    }
   }
   
   // Add API key if available (server-side only)
