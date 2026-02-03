@@ -148,8 +148,8 @@ function dedupeBooks(books: any[]): any[] {
       
       // Exact match
       if (bookTitle === existingTitle && bookAuthor === existingAuthor) {
-        isDuplicate = true;
-        break;
+            isDuplicate = true;
+            break;
       }
       
       // Fuzzy match: similar titles, same author, nearby spine positions
@@ -300,7 +300,10 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
   if (!key) return [];
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000); // 60 seconds - increased for structured output
+  const timeout = setTimeout(() => {
+    console.warn('[API] OpenAI request timeout after 90 seconds - aborting');
+    controller.abort();
+  }, 90000); // 90 seconds - increased for large images with many books
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -473,6 +476,11 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
     console.error(`[API] OpenAI response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
     return [];
   } catch (e: any) {
+    // Handle abort errors specifically (timeouts)
+    if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('AbortError')) {
+      console.error(`[API] OpenAI request was aborted (timeout after 90 seconds)`);
+      return [];
+    }
     console.error(`[API] OpenAI scan exception:`, e?.message || String(e));
     return [];
   } finally {
@@ -480,7 +488,7 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
   }
 }
 
-async function scanWithGemini(imageDataURL: string): Promise<any[]> {
+async function scanWithGemini(imageDataURL: string, retryCount = 0): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
@@ -527,9 +535,65 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
       }),
     }
   );
+  
+  // Handle rate limiting (429) with exponential backoff
+  if (res.status === 429) {
+    const maxRetries = 2; // Only retry twice to avoid long delays
+    if (retryCount < maxRetries) {
+      const backoffDelay = Math.pow(2, retryCount) * 2000; // 2s, 4s
+      console.warn(
+        `[API] Gemini rate limited (429), retrying in ${backoffDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`
+      );
+      await delay(backoffDelay);
+      return scanWithGemini(imageDataURL, retryCount + 1);
+    } else {
+      const errorText = await res.text();
+      let errorData: any = null;
+      try {
+        errorData = errorText ? JSON.parse(errorText) : null;
+      } catch (e) {
+        // Error text is not JSON, that's fine
+      }
+      
+      // Gemini's API returns "quota" in the error message even for rate limits
+      // This is misleading - check if it's actually a burst rate limit
+      const errorMessage = errorData?.error?.message || '';
+      const mentionsQuota = errorMessage.toLowerCase().includes('quota');
+      
+      // Since user is well under quota limits, this is almost certainly a rate limit (burst)
+      if (mentionsQuota) {
+        console.error(`[API] Gemini rate limited (429) - Error message mentions "quota" but this is likely a burst rate limit, not actual quota. Message: ${errorMessage.slice(0, 200)}`);
+        console.warn(`[API] Note: Gemini API often returns "quota" errors for rate limits. Check your RPM (requests per minute) limits, not just daily quota.`);
+      } else {
+        console.error(`[API] Gemini rate limited (429) after ${maxRetries} retries - ${errorMessage.slice(0, 200)}`);
+      }
+      // Return empty array instead of throwing - let OpenAI handle it
+      return [];
+    }
+  }
+  
   if (!res.ok) {
     const errorText = await res.text();
-    console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
+    // Parse error to check message
+    let errorData: any = null;
+    try {
+      errorData = errorText ? JSON.parse(errorText) : null;
+    } catch (e) {
+      // Error text is not JSON, that's fine
+    }
+    const errorMessage = errorData?.error?.message || errorText || '';
+    
+    // Better error logging
+    if (res.status === 429) {
+      const mentionsQuota = errorMessage.toLowerCase().includes('quota');
+      if (mentionsQuota) {
+        console.error(`[API] Gemini rate limited (429) - Error mentions "quota" but this is likely a burst rate limit. Message: ${errorMessage.slice(0, 200)}`);
+      } else {
+        console.error(`[API] Gemini rate limited (429) - ${errorMessage.slice(0, 200)}`);
+      }
+    } else {
+      console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorMessage.slice(0, 200)}`);
+    }
     return [];
   }
   const data = await res.json() as any;
@@ -648,9 +712,9 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
         parsed = JSON.parse(reconstructed);
         if (Array.isArray(parsed)) {
           console.log(`[API] Gemini parsed ${parsed.length} books (reconstructed from partial)`);
-          return parsed;
-        }
-      } catch (e) {
+        return parsed;
+      }
+    } catch (e) {
         // Try JSON repair
         console.warn(`[API] Gemini reconstruction failed, attempting repair...`);
         const reconstructedForRepair = '[' + objectMatches.join(',') + ']';
@@ -835,6 +899,9 @@ Return ONLY valid JSON array (no markdown, no code blocks):
             confidence: validation.final_confidence || book.confidence,
             validationFixes: validation.fixes || [],
             validationNotes: validation.notes,
+            // Explicitly preserve googleBooksId and external_match from early lookup
+            googleBooksId: book.googleBooksId || book.external_match?.googleBooksId,
+            external_match: book.external_match,
           });
         } else {
           // Invalid book - mark for filtering
@@ -843,6 +910,8 @@ Return ONLY valid JSON array (no markdown, no code blocks):
             ...book,
             isValid: false,
             confidence: 'invalid',
+            // Preserve googleBooksId even for invalid books (might be useful for debugging)
+            googleBooksId: book.googleBooksId || book.external_match?.googleBooksId,
           });
         }
       }
@@ -1039,23 +1108,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
     
-    // Run scans in parallel - both at the same time
+    // Run scans in parallel - but add small delay for Gemini to avoid burst rate limits
     // If one fails, just use the other (no waiting, no retries)
     console.log('[API] Starting OpenAI and Gemini scans in parallel...');
     
     let openaiError: any = null;
     let geminiError: any = null;
     
-    // Start both scans immediately in parallel
+    // Start OpenAI immediately
     const openaiPromise = scanWithOpenAI(imageDataURL).catch((err) => {
       openaiError = err;
       console.error('[API] OpenAI scan failed:', err?.message || err);
       return []; // Return empty array on failure
     });
     
-    const geminiPromise = scanWithGemini(imageDataURL).catch((err) => {
+    // Add small delay for Gemini to avoid burst rate limits (500ms delay)
+    const geminiPromise = delay(500).then(() => scanWithGemini(imageDataURL)).catch((err) => {
       geminiError = err;
-      console.error('[API] Gemini scan failed:', err?.message || err);
+      // scanWithGemini should handle its own errors and return [], but log unexpected errors
+      if (err && !err.message?.includes('429')) {
+        console.error('[API] Gemini scan failed with unexpected error:', err?.message || err);
+      }
       return []; // Return empty array on failure
     });
     
