@@ -187,7 +187,7 @@ function dedupeBooks(books: any[]): any[] {
       if (bookTitle === existingTitle && bookAuthor === existingAuthor) {
             isDuplicate = true;
             break;
-      }
+          }
       
       // Fuzzy match: similar titles, same author, nearby spine positions
       const authorsMatch = bookAuthor === existingAuthor || 
@@ -332,10 +332,11 @@ async function repairJSON(invalidJSON: string, schema: string): Promise<any> {
   }
 }
 
-async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
+async function scanWithOpenAI(imageDataURL: string, retryCount = 0): Promise<any[]> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return [];
 
+  const startTime = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     console.warn('[API] OpenAI request timeout after 60 seconds - aborting');
@@ -384,14 +385,25 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
             ],
           },
         ],
-        max_tokens: 4000, // Increased for structured output with spine_text, spine_index, etc.
+        max_tokens: 3000, // Reduced from 4000 to speed up response time
       }),
     });
     if (!res.ok) {
       const errorText = await res.text();
-      console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)}`);
+      const elapsed = Date.now() - startTime;
+      
+      // Handle rate limiting (429) or server errors (500-599) with retry
+      if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && retryCount < 2) {
+        const backoffDelay = Math.pow(2, retryCount) * 3000; // 3s, 6s
+        console.warn(`[API] OpenAI ${res.status} error, retrying in ${backoffDelay/1000}s... (attempt ${retryCount + 1}/2) after ${elapsed}ms`);
+        await delay(backoffDelay);
+        return scanWithOpenAI(imageDataURL, retryCount + 1);
+      }
+      
+      console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)} (after ${elapsed}ms)`);
       return [];
     }
+      const requestTime = Date.now() - startTime;
       const data = await res.json() as {
         choices?: Array<{ 
           message?: { content?: string; text?: string }; 
@@ -403,6 +415,9 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
         model?: string;
         usage?: { completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } };
       };
+      
+      // Log request timing
+      console.log(`[API] OpenAI request completed in ${requestTime}ms`);
       
       // Log full response structure for debugging
       console.log(`[API] OpenAI response structure:`, JSON.stringify({
@@ -513,12 +528,29 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
     console.error(`[API] OpenAI response doesn't contain valid JSON array. Content: ${content.slice(0, 500)}`);
     return [];
   } catch (e: any) {
+    const elapsed = Date.now() - startTime;
+    
     // Handle abort errors specifically (timeouts)
     if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('AbortError')) {
-      console.error(`[API] OpenAI request was aborted (timeout after 60 seconds)`);
+      // Retry on timeout if we haven't retried yet
+      if (retryCount < 1) {
+        console.warn(`[API] OpenAI request timeout after ${elapsed}ms, retrying once...`);
+        await delay(5000); // Wait 5s before retry
+        return scanWithOpenAI(imageDataURL, retryCount + 1);
+      }
+      console.error(`[API] OpenAI request was aborted (timeout after 60 seconds, ${elapsed}ms elapsed)`);
       return [];
     }
-    console.error(`[API] OpenAI scan exception:`, e?.message || String(e));
+    
+    // Retry on network errors
+    const errorMessage = e?.message || String(e);
+    if ((errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('ECONNRESET')) && retryCount < 1) {
+      console.warn(`[API] OpenAI network error after ${elapsed}ms, retrying once...`);
+      await delay(3000);
+      return scanWithOpenAI(imageDataURL, retryCount + 1);
+    }
+    
+    console.error(`[API] OpenAI scan exception after ${elapsed}ms:`, errorMessage);
     return [];
   } finally {
     clearTimeout(timeout);
