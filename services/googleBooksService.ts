@@ -280,8 +280,13 @@ function pickBestBookWithCover(
 function isValidBookCover(coverUrl: string): boolean {
   if (!coverUrl) return false;
   
-  // Must be from Google Books API
-  if (!coverUrl.includes('books.google.com') && !coverUrl.includes('googleapis.com')) {
+  // Must be from Google Books API (allow all Google domains)
+  if (
+    !coverUrl.includes('books.google.com') &&
+    !coverUrl.includes('googleapis.com') &&
+    !coverUrl.includes('googleusercontent.com') &&
+    !coverUrl.includes('gstatic.com')
+  ) {
     return false;
   }
   

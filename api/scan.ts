@@ -1696,22 +1696,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
     
-    // Return books immediately (non-blocking) - covers will be fetched asynchronously by client
-    // This prevents rate limits from delaying the entire scan response
-    const coversInResponse = finalBooks.filter(b => b.coverUrl).length;
-    log('info', `[API] Scan completed: books=${finalBooks.length} covers=${coversInResponse} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
+    // CRITICAL: Fetch covers BEFORE returning (queue handles rate limiting)
+    log('info', `[COVERS] starting: books=${finalBooks.length}`);
     
-    // Start cover fetching asynchronously (fire and forget - don't block response)
-    // The client's fetchCoversForBooks will handle this, but we can also do it here as a background job
-    if (finalBooks.length > 0) {
-      // Fire and forget - don't await, let it run in background
-      (async () => {
+    const booksWithCovers = await Promise.all(
+      finalBooks.map(async (book) => {
+        // Skip if already has cover
+        if (book.coverUrl || book.googleBooksId) {
+          return book;
+        }
+        
         try {
-          log('debug', `[API] Starting async cover fetch for ${finalBooks.length} books (non-blocking)...`);
-          
-          let successCount = 0;
-          let failedCount = 0;
-          let rateLimited = false;
           const { fetchBookData, searchMultipleBooks } = await import('../services/googleBooksService');
           
           // Helper to normalize title for better Google Books matching
@@ -1723,69 +1718,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               .join(' ');
           };
           
-          // Fetch covers one by one (queue handles rate limiting)
-          for (const book of finalBooks) {
-            // Skip if already has cover
-            if (book.coverUrl || book.googleBooksId) {
-              continue;
-            }
-            
-            try {
-              // Strategy 1: Try with original title/author
-              let result = await fetchBookData(book.title || '', book.author || undefined);
-              
-              // Strategy 2: If that fails, try with normalized (title case) title
-              if (!result?.googleBooksId && book.title) {
-                const normalizedTitle = normalizeTitle(book.title);
-                if (normalizedTitle !== book.title) {
-                  result = await fetchBookData(normalizedTitle, book.author || undefined);
-                }
-              }
-              
-              // Strategy 3: If that fails, try title only (no author)
-              if (!result?.googleBooksId && book.title) {
-                result = await fetchBookData(book.title, undefined);
-              }
-              
-              // Strategy 4: If that fails, try searchMultipleBooks
-              if (!result?.googleBooksId && book.title) {
-                const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
-                if (multipleResults && multipleResults.length > 0) {
-                  const firstResult = multipleResults[0];
-                  result = {
-                    googleBooksId: firstResult.googleBooksId,
-                    coverUrl: firstResult.coverUrl,
-                  };
-                }
-              }
-              
-              if (result && result.googleBooksId) {
-                successCount++;
-                log('debug', `[API] Async cover SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
-              } else {
-                failedCount++;
-              }
-            } catch (error: any) {
-              failedCount++;
-              // Check if it's a rate limit error
-              if (error?.status === 429 || error?.message?.includes('429')) {
-                rateLimited = true;
-              }
-              // Don't log individual errors - they're handled by the queue system
+          // Strategy 1: Try with original title/author
+          let result = await fetchBookData(book.title || '', book.author || undefined);
+          
+          // Strategy 2: If that fails, try with normalized (title case) title
+          if (!result?.googleBooksId && book.title) {
+            const normalizedTitle = normalizeTitle(book.title);
+            if (normalizedTitle !== book.title) {
+              result = await fetchBookData(normalizedTitle, book.author || undefined);
             }
           }
           
-          // Log summary once per scan
-          log('info', `[COVERS] requested=${finalBooks.length} success=${successCount} failed=${failedCount}${rateLimited ? ' rateLimited=true' : ''}`);
-      } catch (error) {
-        // Don't log errors from background job - it's fire and forget
-        // Errors are handled by the queue system
-      }
-      })();
+          // Strategy 3: If that fails, try title only (no author)
+          if (!result?.googleBooksId && book.title) {
+            result = await fetchBookData(book.title, undefined);
+          }
+          
+          // Strategy 4: If that fails, try searchMultipleBooks
+          if (!result?.googleBooksId && book.title) {
+            const multipleResults = await searchMultipleBooks(book.title, book.author, 5);
+            if (multipleResults && multipleResults.length > 0) {
+              const firstResult = multipleResults[0];
+              result = {
+                googleBooksId: firstResult.googleBooksId,
+                coverUrl: firstResult.coverUrl,
+              };
+            }
+          }
+          
+          if (result && result.googleBooksId) {
+            // Ensure HTTPS (iOS ATS requirement)
+            let coverUrl = result.coverUrl;
+            if (coverUrl && coverUrl.startsWith('http:')) {
+              coverUrl = coverUrl.replace('http:', 'https:');
+            }
+            
+            return {
+              ...book,
+              googleBooksId: result.googleBooksId,
+              coverUrl: coverUrl || book.coverUrl,
+            };
+          }
+          
+          return book;
+        } catch (error: any) {
+          // Silently continue - covers are optional
+          return book;
+        }
+      })
+    );
+    
+    const withCoversCount = booksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
+    log('info', `[COVERS] done: withCovers=${withCoversCount}/${finalBooks.length}`);
+    
+    // Log sample book to verify covers are in response
+    if (booksWithCovers.length > 0) {
+      const sample = booksWithCovers[0];
+      log('info', `[COVERS] sampleBook=`, JSON.stringify({
+        title: sample.title?.substring(0, 40),
+        hasCover: !!sample.coverUrl,
+        hasGoogleBooksId: !!sample.googleBooksId,
+        coverUrl: sample.coverUrl ? sample.coverUrl.substring(0, 80) + '...' : null,
+      }, null, 2));
     }
     
+    const coversInResponse = booksWithCovers.filter(b => b.coverUrl).length;
+    log('info', `[API] Scan completed: books=${booksWithCovers.length} covers=${coversInResponse} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
+    
     return res.status(200).json({ 
-      books: finalBooks, // Return books immediately, covers will be fetched by client
+      books: booksWithCovers, // Return books WITH covers attached
       apiResults
     });
   } catch (e: any) {
