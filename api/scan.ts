@@ -290,21 +290,21 @@ Return only a JSON array like:
               responseMimeType: "application/json",
               temperature: 0,
               maxOutputTokens: 8000,
-            },
-            responseSchema: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  title: { type: "string" },
-                  author: { type: "string" },
-                  confidence: { type: "string", enum: ["high", "medium", "low"] },
-                  spine_text: { type: "string" },
-                  language: { type: "string", enum: ["en", "es", "fr", "unknown"] },
-                  reason: { type: "string" },
-                  spine_index: { type: "number" },
+              responseJsonSchema: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    author: { type: "string" },
+                    confidence: { type: "string", enum: ["high", "medium", "low"] },
+                    spine_text: { type: "string" },
+                    language: { type: "string", enum: ["en", "es", "fr", "unknown"] },
+                    reason: { type: "string" },
+                    spine_index: { type: "number" },
+                  },
+                  required: ["title", "confidence", "spine_index"],
                 },
-                required: ["title", "confidence", "spine_index"],
               },
             },
           }),
