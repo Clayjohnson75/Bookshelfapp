@@ -143,12 +143,20 @@ async function fetchByGoogleBooksId(
   
   // Check cache first
   if (cache.has(cacheKey)) {
-    return cache.get(cacheKey)!;
+    const cached = cache.get(cacheKey)!;
+    // Cache for ID lookup should always be a single object, not array
+    if (!Array.isArray(cached)) {
+      return cached;
+    }
   }
 
   // Check if there's already a pending request for this ID
   if (pendingRequests.has(cacheKey)) {
-    return pendingRequests.get(cacheKey)!;
+    const pending = await pendingRequests.get(cacheKey)!;
+    // Pending request for ID lookup should always be a single object, not array
+    if (!Array.isArray(pending)) {
+      return pending;
+    }
   }
 
   const requestPromise = (async () => {
@@ -271,12 +279,20 @@ async function searchBook(
 
   // Check cache first
   if (cache.has(cacheKey)) {
-    return cache.get(cacheKey)!;
+    const cached = cache.get(cacheKey)!;
+    // Cache for single book search should always be a single object, not array
+    if (!Array.isArray(cached)) {
+      return cached;
+    }
   }
 
   // Check if there's already a pending request for this search
   if (pendingRequests.has(cacheKey)) {
-    return pendingRequests.get(cacheKey)!;
+    const pending = await pendingRequests.get(cacheKey)!;
+    // Pending request for single book search should always be a single object, not array
+    if (!Array.isArray(pending)) {
+      return pending;
+    }
   }
 
   const requestPromise = (async () => {
@@ -564,7 +580,15 @@ export async function searchBooksByQuery(
   if (cache.has(cacheKey)) {
     const cached = cache.get(cacheKey);
     if (Array.isArray(cached)) {
-      return cached;
+      // Cast to return type - cached results have title property (from searchBooksByQuery)
+      return cached as Array<{
+        googleBooksId: string;
+        title: string;
+        author?: string;
+        coverUrl?: string;
+        subtitle?: string;
+        publishedDate?: string;
+      }>;
     }
   }
 
@@ -572,7 +596,15 @@ export async function searchBooksByQuery(
   if (pendingRequests.has(cacheKey)) {
     const pending = await pendingRequests.get(cacheKey)!;
     if (Array.isArray(pending)) {
-      return pending;
+      // Cast to return type - pending results have title property (from searchBooksByQuery)
+      return pending as Array<{
+        googleBooksId: string;
+        title: string;
+        author?: string;
+        coverUrl?: string;
+        subtitle?: string;
+        publishedDate?: string;
+      }>;
     }
   }
 
@@ -622,8 +654,8 @@ export async function searchBooksByQuery(
           };
         });
 
-        // Cache the results
-        cache.set(cacheKey, results);
+        // Cache the results (cast to satisfy cache type which expects GoogleBooksData | GoogleBooksData[])
+        cache.set(cacheKey, results as any);
         return results;
       }
 
