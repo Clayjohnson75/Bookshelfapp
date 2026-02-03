@@ -126,6 +126,9 @@ export const ScansTab: React.FC = () => {
   // Ref to track if screen is active/mounted (prevents background updates)
   const isActiveRef = useRef(true);
   
+  // Ref to prevent multiple cover fetch operations from running simultaneously
+  const coverFetchInProgressRef = useRef(false);
+  
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
   const [approvedBooks, setApprovedBooks] = useState<Book[]>([]);
@@ -1384,11 +1387,20 @@ export const ScansTab: React.FC = () => {
   };
 
   const fetchCoversForBooks = async (books: Book[]) => {
-    // Import the centralized service
-    const { fetchBookData } = await import('../services/googleBooksService');
+    // Prevent multiple cover fetch operations from running simultaneously
+    if (coverFetchInProgressRef.current) {
+      console.log('⏸️ Cover fetch already in progress, skipping duplicate call');
+      return;
+    }
     
-    // Filter out books that already have covers
-    const booksNeedingCovers = books.filter(book => {
+    coverFetchInProgressRef.current = true;
+    
+    try {
+      // Import the centralized service
+      const { fetchBookData } = await import('../services/googleBooksService');
+      
+      // Filter out books that already have covers
+      const booksNeedingCovers = books.filter(book => {
       // Skip if already has cover and local cache
       if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
         // We'll check file existence in parallel, but skip if we already have cover URL
@@ -1426,49 +1438,77 @@ export const ScansTab: React.FC = () => {
       if (!isActiveRef.current) return;
       
       // Update pendingBooks (always flush)
+      // Use a more efficient approach: only create new array if there are actual changes
       setPendingBooks(prev => {
         if (!isActiveRef.current) return prev; // Don't update if inactive
-        let updated = prev;
-        for (const [bookId, patch] of patches) {
-          updated = updated.map(pendingBook =>
-            pendingBook.id === bookId
-              ? { ...pendingBook, ...patch }
-              : pendingBook
-          );
-        }
-        return updated;
+        
+        const patchMap = new Map(patches);
+        let hasChanges = false;
+        const updated = prev.map(pendingBook => {
+          const patch = patchMap.get(pendingBook.id);
+          if (patch) {
+            hasChanges = true;
+            return { ...pendingBook, ...patch };
+          }
+          return pendingBook;
+        });
+        
+        // Only return new array if there were actual changes (prevents unnecessary re-renders)
+        return hasChanges ? updated : prev;
       });
       
-      // Update photos and approvedBooks (on demand - only if needed)
-      // We'll update these when the component actually needs them, or in the same flush
-      if (isActiveRef.current) {
-        setPhotos(prev =>
-          prev.map(photo => ({
-            ...photo,
-            books: photo.books.map(photoBook => {
-              const patch = patches.find(([id]) => id === photoBook.id)?.[1];
-              return patch ? { ...photoBook, ...patch } : photoBook;
-            })
-          }))
-        );
+      // Update photos and approvedBooks only if there are actual patches
+      // Use a more efficient approach: only update if we have patches
+      if (isActiveRef.current && patches.length > 0) {
+        // Batch these updates together to reduce re-renders
+        setPhotos(prev => {
+          const patchMap = new Map(patches);
+          let hasChanges = false;
+          const updated = prev.map(photo => {
+            const updatedBooks = photo.books.map(photoBook => {
+              const patch = patchMap.get(photoBook.id);
+              if (patch) {
+                hasChanges = true;
+                return { ...photoBook, ...patch };
+              }
+              return photoBook;
+            });
+            return hasChanges ? { ...photo, books: updatedBooks } : photo;
+          });
+          return hasChanges ? updated : prev;
+        });
 
-        setApprovedBooks(prev =>
-          prev.map(approvedBook => {
-            const patch = patches.find(([id]) => id === approvedBook.id)?.[1];
-            return patch ? { ...approvedBook, ...patch } : approvedBook;
-          })
-        );
+        setApprovedBooks(prev => {
+          const patchMap = new Map(patches);
+          let hasChanges = false;
+          const updated = prev.map(approvedBook => {
+            const patch = patchMap.get(approvedBook.id);
+            if (patch) {
+              hasChanges = true;
+              return { ...approvedBook, ...patch };
+            }
+            return approvedBook;
+          });
+          return hasChanges ? updated : prev;
+        });
       }
       
       lastFlushTime = Date.now();
     };
 
     const scheduleFlush = () => {
+      // Don't schedule if screen is not active
+      if (!isActiveRef.current) {
+        return;
+      }
+      
       const now = Date.now();
       const timeSinceLastFlush = now - lastFlushTime;
       
+      // Clear any existing timer
       if (flushTimer) {
         clearTimeout(flushTimer);
+        flushTimer = null;
       }
       
       if (timeSinceLastFlush >= FLUSH_INTERVAL_MS) {
@@ -1476,7 +1516,10 @@ export const ScansTab: React.FC = () => {
         flushUpdates();
       } else {
         // Schedule flush for remaining time
-        flushTimer = setTimeout(flushUpdates, FLUSH_INTERVAL_MS - timeSinceLastFlush);
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushUpdates();
+        }, FLUSH_INTERVAL_MS - timeSinceLastFlush);
       }
     };
 
@@ -1587,6 +1630,10 @@ export const ScansTab: React.FC = () => {
       clearTimeout(flushTimer);
     }
     flushUpdates();
+    } finally {
+      // Always reset the in-progress flag, even if there was an error
+      coverFetchInProgressRef.current = false;
+    }
 
     // Note: Descriptions and stats are now saved to Supabase immediately when fetched
     // This ensures data persists even if the app is closed before the next user action
