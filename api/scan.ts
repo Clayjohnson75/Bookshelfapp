@@ -1018,16 +1018,22 @@ async function earlyLookup(book: any): Promise<any> {
     // Dynamic import to avoid circular dependencies
     const { fetchBookData } = await import('../services/googleBooksService');
     
-    const query = book.title || book.spine_text || '';
-    if (!query || query.length < 2) return book;
+    const title = book.title || book.spine_text || '';
+    if (!title || title.length < 2) {
+      console.log(`[API] Early lookup SKIP for "${book.title}": title too short or missing`);
+      return book;
+    }
     
-    const result = await fetchBookData(query, book.author || undefined);
+    const author = book.author || undefined;
+    console.log(`[API] Early lookup trying: "${title}" by ${author || 'no author'}`);
+    
+    const result = await fetchBookData(title, author);
     
     // Log lookup result for debugging
     if (result && result.googleBooksId) {
-      console.log(`[API] Early lookup SUCCESS for "${book.title}": found googleBooksId=${result.googleBooksId.substring(0, 20)}...`);
+      console.log(`[API] Early lookup SUCCESS for "${title}": found googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
     } else {
-      console.log(`[API] Early lookup NO MATCH for "${book.title}" by ${book.author || 'no author'}`);
+      console.log(`[API] Early lookup NO MATCH for "${title}" by ${author || 'no author'}`);
     }
     
     // GoogleBooksData doesn't have title/author directly, but fetchBookData returns data with googleBooksId
