@@ -79,6 +79,26 @@ const getEnvVar = (key: string): string | undefined => {
   }
 };
 
+// Detect if we're running in React Native (client-side)
+const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
+const isClientSide = isReactNative || (typeof window !== 'undefined' && typeof process === 'undefined');
+
+// Get API base URL for proxy (client-side only)
+const getApiBaseUrl = (): string => {
+  if (isClientSide) {
+    // Try to get from Constants (Expo) or fallback to default
+    try {
+      const Constants = require('expo-constants');
+      return Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+             Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+             'https://bookshelfscan.app';
+    } catch {
+      return 'https://bookshelfscan.app';
+    }
+  }
+  return '';
+};
+
 // Helper to check if we're in dev mode (for __DEV__ replacement)
 const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : getEnvVar('NODE_ENV') !== 'production';
 
@@ -102,9 +122,35 @@ if (typeof process !== 'undefined' && process.env && typeof process.env === 'obj
 }
 
 /**
- * Build Google Books API URL with API key if available
+ * Build Google Books API URL
+ * If client-side, uses proxy API route. If server-side, uses direct API with key.
  */
 function buildGoogleBooksUrl(path: string, params?: Record<string, string>): string {
+  // If client-side, use proxy API route
+  if (isClientSide) {
+    const apiBaseUrl = getApiBaseUrl();
+    const urlParams = new URLSearchParams();
+    
+    // Add path as query param
+    urlParams.append('path', path);
+    
+    // Add all params
+    if (params && typeof params === 'object') {
+      try {
+        Object.entries(params).forEach(([key, value]) => {
+          if (key && value !== undefined && value !== null) {
+            urlParams.append(key, String(value));
+          }
+        });
+      } catch (e) {
+        // Silently fail if params is not iterable
+      }
+    }
+    
+    return `${apiBaseUrl}/api/google-books?${urlParams.toString()}`;
+  }
+  
+  // Server-side: use direct Google Books API with key
   const baseUrl = `https://www.googleapis.com/books/v1${path}`;
   const urlParams = new URLSearchParams();
   

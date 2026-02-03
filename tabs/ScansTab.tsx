@@ -242,8 +242,10 @@ export const ScansTab: React.FC = () => {
     const handle = setTimeout(async () => {
       try {
         setIsSearching(true);
+        // Use proxy API route to get API key and rate limiting
+        const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
         const response = await fetch(
-          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10`
+          `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=10`
         );
         const data = await response.json();
         setSearchResults(data.items || []);
@@ -4256,8 +4258,10 @@ export const ScansTab: React.FC = () => {
                     if (!q) return;
                     setIsSearching(true);
                     try {
+                      // Use proxy API route to get API key and rate limiting
+                      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
                       const response = await fetch(
-                        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10`
+                        `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=10`
                       );
                       const data = await response.json();
                       setSearchResults(data.items || []);

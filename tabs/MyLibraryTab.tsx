@@ -2246,7 +2246,11 @@ export const MyLibraryTab: React.FC = () => {
                       if (!q) return;
                       try {
                         setBookSearchLoading(true);
-                        const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=8`);
+                        // Use proxy API route to get API key and rate limiting
+                        const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+                                       Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+                                       'https://bookshelfscan.app';
+                        const response = await fetch(`${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=8`);
                         const data = await response.json();
                         setBookSearchResults(data.items || []);
                       } catch (e) {

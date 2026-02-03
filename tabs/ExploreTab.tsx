@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import Constants from 'expo-constants';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
 import { Ionicons } from '@expo/vector-icons';
@@ -86,8 +87,12 @@ export const ExploreTab: React.FC = () => {
       // Use 'newest' orderBy first to get more complete/popular editions, 
       // but we'll also try 'relevance' as a fallback
       // Actually, 'relevance' should work better for popular books, but let's add langRestrict for English
+      // Use proxy API route to get API key and rate limiting
+      const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+                     Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+                     'https://bookshelfscan.app';
       const response = await fetch(
-        `https://www.googleapis.com/books/v1/volumes?q=${queryParam}&maxResults=20&startIndex=${startIndex}&orderBy=relevance&langRestrict=en`
+        `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(queryParam)}&maxResults=20&startIndex=${startIndex}&orderBy=relevance&langRestrict=en`
       );
       
       if (!response.ok) {
