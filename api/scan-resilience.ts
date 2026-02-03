@@ -206,17 +206,17 @@ export async function retryWithBackoff<T>(
  */
 export class ScanTimeBudget {
   private startTime: number;
-  private totalBudget: number;
+  public totalBudget: number;
   private geminiBudget: number;
   private openaiBudget: number;
   private scanId: string;
   
-  constructor(scanId: string, totalBudgetMs: number = 75000, geminiBudgetMs: number = 20000) {
+  constructor(scanId: string, totalBudgetMs: number = 75000, geminiPrimaryWindowMs: number = 30000) {
     this.scanId = scanId;
     this.startTime = Date.now();
     this.totalBudget = totalBudgetMs;
-    this.geminiBudget = geminiBudgetMs;
-    this.openaiBudget = totalBudgetMs - geminiBudgetMs; // Remaining time for OpenAI
+    this.geminiBudget = geminiPrimaryWindowMs; // Primary window: start OpenAI after this if Gemini not done
+    this.openaiBudget = totalBudgetMs - geminiPrimaryWindowMs; // Remaining time for OpenAI
   }
   
   /**

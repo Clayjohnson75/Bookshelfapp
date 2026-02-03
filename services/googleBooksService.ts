@@ -670,15 +670,22 @@ async function searchBook(
   }
   
   // Try multiple query strategies for better matching
-  // Strategy 1: Exact title with quotes, author with quotes (most precise)
+  // Strategy 1: Exact title with quotes, author with quotes (preserve hyphens/apostrophes)
   const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
-  const cleanAuthor = author ? author.replace(/[^\w\s]/g, '').trim() : '';
+  
+  // Normalize author: preserve hyphens and apostrophes for first attempt
+  // Remove other punctuation but keep hyphens/apostrophes
+  const authorWithHyphens = author ? author.replace(/[^\w\s\-']/g, '').trim() : '';
+  // Also create a version without punctuation for fallback
+  const authorNormalized = author ? author.replace(/[^\w\s]/g, '').trim() : '';
+  
+  // Try with original author first (preserves hyphens/apostrophes)
   let query = author 
-    ? `intitle:"${cleanTitle}" inauthor:"${cleanAuthor}"` 
+    ? `intitle:"${cleanTitle}" inauthor:"${authorWithHyphens}"` 
     : `intitle:"${cleanTitle}"`;
   
   // Log the query being used (for debugging)
-  log('debug', `[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}")`);
+  log('debug', `[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}", normalized: "${authorWithHyphens}")`);
 
   const requestPromise = (async () => {
     try {
@@ -709,6 +716,16 @@ async function searchBook(
         throw fetchError;
       }
 
+      // DEBUG: Log response status and URL
+      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+      if (DEBUG_GOOGLE_BOOKS) {
+        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+        console.log(`[DEBUG_GOOGLE_BOOKS] Response Debug:`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Status: ${response.status}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   OK: ${response.ok}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   URL: ${url}`);
+      }
+
       // Handle rate limiting (429) - throw error so queue can handle it
       if (response.status === 429) {
         const error: any = new Error(`Google Books 429: Rate limited`);
@@ -718,11 +735,39 @@ async function searchBook(
       }
 
       if (!response.ok) {
+        const errorText = await response.text();
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Response not OK - Error text (first 500 chars): ${errorText.substring(0, 500)}`);
+        }
         console.warn(`Google Books API request failed: ${response.status} ${response.statusText}`);
         return {};
       }
 
       const data = await response.json() as GoogleBooksResponse;
+      
+      // DEBUG: Log items count and top 3 candidates
+      if (DEBUG_GOOGLE_BOOKS) {
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Items exists: ${!!data.items}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Items length: ${data.items?.length || 0}`);
+        
+        if (data.items && data.items.length > 0) {
+          console.log(`[DEBUG_GOOGLE_BOOKS]   Top 3 Candidates:`);
+          for (const [i, item] of data.items.slice(0, 3).entries()) {
+            const v = item.volumeInfo || {};
+            const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
+            const hasDescription = !!v.description;
+            const hasCategories = !!(v.categories && v.categories.length > 0);
+            
+            console.log(`[DEBUG_GOOGLE_BOOKS]     Candidate #${i}:`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       ID: ${item.id}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       Title: "${v.title || 'NO TITLE'}"`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       hasDescription: ${hasDescription ? `YES (${v.description.length} chars)` : 'NO'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]       hasCategories: ${hasCategories ? `YES [${v.categories.join(', ')}]` : 'NO'}`);
+          }
+        }
+      }
 
       // Enhanced DEBUG_GOOGLE_BOOKS logging
       const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
@@ -744,7 +789,28 @@ async function searchBook(
         // This function includes detailed debug logging for top 3 candidates
         const picked = pickBestVolume(data.items, title, author);
         
+        // DEBUG: Log selection result
         if (DEBUG_GOOGLE_BOOKS) {
+          if (picked) {
+            const v = picked.volumeInfo || {};
+            const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
+            const rawCoverUrl = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail;
+            const coverUrl = rawCoverUrl ? rawCoverUrl.replace('http:', 'https:') : '';
+            const isValidCover = coverUrl ? isValidBookCover(coverUrl) : false;
+            
+            console.log(`[DEBUG_GOOGLE_BOOKS]   ✅ Selected Item:`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     ID: ${picked.id}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     Title: "${v.title || 'NO TITLE'}"`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     isValidCover: ${isValidCover ? 'YES' : 'NO'}`);
+            if (!isValidCover && hasImageLinks) {
+              console.log(`[DEBUG_GOOGLE_BOOKS]     ⚠️ Cover URL rejected by validation: ${coverUrl.substring(0, 100)}...`);
+            }
+          } else {
+            console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ No candidate selected`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]     Reason: pickBestVolume returned null (no items or all scored 0)`);
+          }
           console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
         }
 

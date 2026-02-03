@@ -1651,12 +1651,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     
-    // Initialize time budget (75s total, 20s for Gemini, rest for OpenAI)
-    const timeBudget = new ScanTimeBudget(scanId, 75000, 20000);
+    // Initialize time budget (75s total, 30s Gemini primary window)
+    const timeBudget = new ScanTimeBudget(scanId, 75000, 30000);
     timeBudget.logStatus();
     
-    // HARD RULE: Gemini first, OpenAI second (sequential, not parallel)
-    // This prevents burst RPM limits and ensures single-flight execution
+    // HEDGED REQUEST PATTERN: Start Gemini, if not done by 30s, start OpenAI in parallel
+    // Whichever finishes first wins, cancel the loser
     let gemini: any[] = [];
     let openai: any[] = [];
     let scanFailed = false;
@@ -1666,89 +1666,159 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const geminiInCooldown = isGeminiInCooldown();
     
     if (geminiQuotaExceeded) {
-      console.log(`[SCAN ${scanId}] 🔴 Gemini QUOTA EXCEEDED - skipping and using OpenAI immediately`);
+      console.log(`[SCAN ${scanId}] 🔴 Gemini QUOTA EXCEEDED - using OpenAI only`);
     } else if (geminiInCooldown) {
-      console.log(`[SCAN ${scanId}] 🔴 Gemini in cooldown, skipping and using OpenAI`);
+      console.log(`[SCAN ${scanId}] 🔴 Gemini in cooldown, using OpenAI only`);
     }
     
-    // Try Gemini first (queued, single-flight execution) if not in cooldown/quota exceeded
-    if (hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()) {
-      log('info', `[SCAN ${scanId}] Starting Gemini scan (queued, single-flight)...`);
-      try {
-        // Create abort controller with time budget
-        const { controller, timeout } = timeBudget.createAbortController('gemini');
-        
-        try {
-          gemini = await Promise.race([
-            scanWithGemini(imageDataURL, scanId),
-            new Promise<any[]>((_, reject) => {
-              controller.signal.addEventListener('abort', () => {
-                clearTimeout(timeout);
-                reject(new Error('Gemini timeout - exceeded time budget'));
-              });
-            }),
-          ]);
-          clearTimeout(timeout);
-          log('info', `[SCAN ${scanId}] Gemini completed: ${gemini.length} books in ${timeBudget.getElapsedTime()}ms`);
-        } catch (timeoutError: any) {
-          clearTimeout(timeout);
-          if (timeoutError?.message?.includes('timeout')) {
-            console.warn(`[SCAN ${scanId}] Gemini exceeded time budget, falling back to OpenAI`);
-          } else {
-            throw timeoutError;
-          }
-        }
-      } catch (err: any) {
-        console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
+    // AbortControllers for cancellation
+    const geminiController = new AbortController();
+    const openaiController = new AbortController();
+    let geminiTimeout: NodeJS.Timeout | null = null;
+    let openaiTimeout: NodeJS.Timeout | null = null;
+    let openaiStartTimeout: NodeJS.Timeout | null = null;
+    
+    try {
+      // Start Gemini if available and not in cooldown/quota exceeded
+      const geminiPromise = hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()
+        ? (async () => {
+            log('info', `[SCAN ${scanId}] Starting Gemini scan (t=0s)...`);
+            try {
+              // Set timeout for total budget
+              geminiTimeout = setTimeout(() => {
+                geminiController.abort();
+              }, timeBudget.totalBudget);
+              
+              const result = await scanWithGemini(imageDataURL, scanId);
+              if (geminiTimeout) clearTimeout(geminiTimeout);
+              log('info', `[SCAN ${scanId}] Gemini completed: ${result.length} books in ${timeBudget.getElapsedTime()}ms`);
+              return result;
+            } catch (err: any) {
+              if (geminiTimeout) clearTimeout(geminiTimeout);
+              if (err?.isQuotaError) {
+                console.log(`[SCAN ${scanId}] Gemini quota exceeded`);
+              } else if (err?.name !== 'AbortError') {
+                console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
+              }
+              return [];
+            }
+          })()
+        : Promise.resolve([]);
+      
+      // Start OpenAI after 30s if Gemini hasn't finished (hedged request)
+      let openaiStarted = false;
+      const openaiPromise = hasOpenAIKey && !timeBudget.hasExceededBudget()
+        ? new Promise<any[]>(async (resolve) => {
+            // Wait 30s, then start OpenAI if Gemini is still running
+            openaiStartTimeout = setTimeout(async () => {
+              // Check if Gemini already finished
+              const geminiResult = await geminiPromise.catch(() => []);
+              if (geminiResult.length > 0) {
+                console.log(`[SCAN ${scanId}] Gemini finished before 30s, skipping OpenAI`);
+                resolve([]);
+                return;
+              }
+              
+              if (!geminiController.signal.aborted && !openaiStarted) {
+                openaiStarted = true;
+                console.log(`[SCAN ${scanId}] t=30s: Gemini still running, starting OpenAI in parallel (hedged request)...`);
+                
+                try {
+                  // Set timeout for remaining budget
+                  const remainingTime = Math.max(0, timeBudget.totalBudget - timeBudget.getElapsedTime());
+                  openaiTimeout = setTimeout(() => {
+                    openaiController.abort();
+                  }, remainingTime);
+                  
+                  const result = await scanWithOpenAI(imageDataURL, 0, openaiController);
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
+                  console.log(`[SCAN ${scanId}] OpenAI completed: ${result.length} books in ${timeBudget.getElapsedTime()}ms`);
+                  resolve(result);
+                } catch (err: any) {
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
+                  if (err?.name !== 'AbortError') {
+                    console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
+                  }
+                  resolve([]);
+                }
+              } else {
+                resolve([]);
+              }
+            }, 30000); // 30 second delay
+            
+            // If Gemini finishes before 30s, cancel OpenAI start
+            geminiPromise.then((result) => {
+              if (result.length > 0 && openaiStartTimeout && !openaiStarted) {
+                clearTimeout(openaiStartTimeout);
+                console.log(`[SCAN ${scanId}] Gemini finished early (${timeBudget.getElapsedTime()}ms), cancelling OpenAI start`);
+                resolve([]);
+              }
+            }).catch(() => {
+              // Gemini failed, let OpenAI start
+            });
+          })
+        : Promise.resolve([]);
+      
+      // Race: whichever finishes first wins
+      const results = await Promise.race([
+        geminiPromise.then((result) => ({ source: 'gemini', books: result })),
+        openaiPromise.then((result) => ({ source: 'openai', books: result })),
+      ]);
+      
+      // Cancel the loser
+      if (results.source === 'gemini' && results.books.length > 0) {
+        console.log(`[SCAN ${scanId}] ✅ Gemini won the race (${results.books.length} books), cancelling OpenAI`);
+        if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
+        openaiController.abort();
+        gemini = results.books;
+        openai = [];
+      } else if (results.source === 'openai' && results.books.length > 0) {
+        console.log(`[SCAN ${scanId}] ✅ OpenAI won the race (${results.books.length} books), cancelling Gemini`);
+        geminiController.abort();
+        if (geminiTimeout) clearTimeout(geminiTimeout);
+        openai = results.books;
         gemini = [];
+      } else {
+        // Both failed or returned empty - wait for both to finish to see if either has results
+        const [geminiResult, openaiResult] = await Promise.all([
+          geminiPromise.catch(() => []),
+          openaiPromise.catch(() => []),
+        ]);
+        
+        if (geminiResult.length > 0) {
+          gemini = geminiResult;
+          openai = [];
+          console.log(`[SCAN ${scanId}] Using Gemini results (${gemini.length} books)`);
+        } else if (openaiResult.length > 0) {
+          openai = openaiResult;
+          gemini = [];
+          console.log(`[SCAN ${scanId}] Using OpenAI results (${openai.length} books)`);
+        } else {
+          console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
+          scanFailed = true;
+        }
       }
       
-      // Check if we've exceeded budget
-      if (timeBudget.hasExceededBudget()) {
-        console.warn(`[SCAN ${scanId}] Time budget exceeded after Gemini, will queue as background job`);
-        scanFailed = true;
-      }
+      // Cleanup timeouts
+      if (geminiTimeout) clearTimeout(geminiTimeout);
+      if (openaiTimeout) clearTimeout(openaiTimeout);
+      if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
+      
+    } catch (err: any) {
+      console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
+      scanFailed = true;
+      
+      // Cleanup on error
+      if (geminiTimeout) clearTimeout(geminiTimeout);
+      if (openaiTimeout) clearTimeout(openaiTimeout);
+      if (openaiStartTimeout) clearTimeout(openaiStartTimeout);
+      geminiController.abort();
+      openaiController.abort();
     }
     
-    // If Gemini succeeded, use it. Otherwise fallback to OpenAI
-    if (gemini.length > 0) {
-      console.log(`[SCAN ${scanId}] Using Gemini results (${gemini.length} books), skipping OpenAI`);
-      openai = [];
-    } else if (hasOpenAIKey && !scanFailed && !timeBudget.hasExceededBudget()) {
-      console.log(`[SCAN ${scanId}] Gemini returned no results, falling back to OpenAI...`);
-      try {
-        // Create abort controller with remaining time budget
-        const { controller, timeout } = timeBudget.createAbortController('openai');
-        const remainingTime = timeBudget.getRemainingOpenAITime();
-        
-        try {
-          openai = await Promise.race([
-            scanWithOpenAI(imageDataURL, 0, controller),
-            new Promise<any[]>((_, reject) => {
-              controller.signal.addEventListener('abort', () => {
-                clearTimeout(timeout);
-                reject(new Error('OpenAI timeout - exceeded time budget'));
-              });
-            }),
-          ]);
-          clearTimeout(timeout);
-          console.log(`[SCAN ${scanId}] OpenAI completed: ${openai.length} books in ${timeBudget.getElapsedTime()}ms`);
-        } catch (timeoutError: any) {
-          clearTimeout(timeout);
-          if (timeoutError?.message?.includes('timeout')) {
-            console.warn(`[SCAN ${scanId}] OpenAI exceeded time budget`);
-            scanFailed = true;
-          } else {
-            throw timeoutError;
-          }
-        }
-      } catch (err: any) {
-        console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
-        openai = [];
-        scanFailed = true;
-      }
-    } else if (scanFailed || timeBudget.hasExceededBudget()) {
-      console.warn(`[SCAN ${scanId}] Scan exceeded time budget or failed, will queue as background job`);
+    // Check if we've exceeded budget
+    if (timeBudget.hasExceededBudget()) {
+      console.warn(`[SCAN ${scanId}] Time budget exceeded, will queue as background job`);
       scanFailed = true;
     }
     
