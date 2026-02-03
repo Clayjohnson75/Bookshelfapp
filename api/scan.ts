@@ -1,4 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import {
+  generateScanId,
+  retryWithBackoff,
+  isGeminiInCooldown,
+  isGeminiQuotaExceeded,
+  recordGemini503,
+  recordGeminiQuotaError,
+  recordGeminiSuccess,
+  ScanTimeBudget,
+} from './scan-resilience';
 
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -30,6 +40,7 @@ interface GeminiQueueItem {
   reject: (error: any) => void;
   retryCount: number;
   timestamp: number;
+  scanId?: string; // Add scanId to queue items
 }
 
 let geminiQueue: GeminiQueueItem[] = [];
@@ -64,14 +75,30 @@ async function processGeminiQueue(): Promise<void> {
       await delay(waitTime);
     }
     
+    const logPrefix = item.scanId ? `[SCAN ${item.scanId}]` : '[API]';
+    
+    // CRITICAL: Check if quota exceeded - don't even try, resolve empty immediately
+    if (isGeminiQuotaExceeded()) {
+      console.log(`${logPrefix} Gemini quota exceeded - skipping request, returning empty (will use OpenAI)`);
+      item.resolve([]);
+      continue; // Skip to next item
+    }
+    
     try {
-      console.log(`[API] Gemini queue: processing request (${geminiQueue.length} remaining, retry ${item.retryCount})...`);
+      console.log(`${logPrefix} Gemini queue: processing request (${geminiQueue.length} remaining, retry ${item.retryCount})...`);
       lastGeminiRequestTime = Date.now();
       
-      const result = await scanWithGeminiDirect(item.imageDataURL);
+      const result = await scanWithGeminiDirect(item.imageDataURL, item.scanId);
       item.resolve(result);
     } catch (error: any) {
-      // Handle 429 errors - re-queue with delay instead of immediate retry
+      // CRITICAL: If quota error, don't retry - resolve empty immediately
+      if (error?.isQuotaError || (error?.status === 429 && error?.message?.toLowerCase().includes('quota'))) {
+        console.error(`${logPrefix} Gemini quota error - not retrying, returning empty (will use OpenAI)`);
+        item.resolve([]); // Return empty, will fallback to OpenAI
+        continue; // Skip to next item
+      }
+      
+      // Handle 429 errors (rate limit, not quota) - re-queue with delay
       if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
         if (item.retryCount < MAX_GEMINI_RETRIES) {
           // Use Retry-After header if provided, otherwise use longer backoff (30s/90s)
@@ -115,7 +142,7 @@ async function processGeminiQueue(): Promise<void> {
 /**
  * Queue a Gemini request (single-flight execution)
  */
-function queueGeminiRequest(imageDataURL: string, retryCount = 0): Promise<any[]> {
+function queueGeminiRequest(imageDataURL: string, retryCount = 0, scanId?: string): Promise<any[]> {
   return new Promise((resolve, reject) => {
     geminiQueue.push({
       imageDataURL,
@@ -123,6 +150,7 @@ function queueGeminiRequest(imageDataURL: string, retryCount = 0): Promise<any[]
       reject,
       retryCount,
       timestamp: Date.now(),
+      scanId,
     });
     
     // Start processing if not already running
@@ -210,30 +238,37 @@ async function pingGeminiAPI(model: string): Promise<{ success: boolean; endpoin
 
 /**
  * Direct Gemini API call (no queue, used by queue processor)
+ * Now includes retry logic for 503 and 429 errors
  */
-async function scanWithGeminiDirect(imageDataURL: string): Promise<any[]> {
+async function scanWithGeminiDirect(imageDataURL: string, scanId?: string): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
+  
+  const logPrefix = scanId ? `[SCAN ${scanId}]` : '[API]';
   
   // Use valid model name - gemini-3-flash-preview (as per Google docs)
   // Verify model exists via ListModels call on startup
   const model = 'gemini-3-flash-preview'; // Valid model for generateContent
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   
-  console.log(`[API] Gemini request: endpoint=generativelanguage.googleapis.com, model=${model}, client=vanilla-fetch, URL=POST /v1beta/models/${model}:generateContent`);
+  console.log(`${logPrefix} Gemini request: endpoint=generativelanguage.googleapis.com, model=${model}, client=vanilla-fetch, URL=POST /v1beta/models/${model}:generateContent`);
   
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
-  const res = await fetch(
-    `${endpoint}?key=${key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
+  
+  // Wrap fetch in retry logic for 503 and 429
+  try {
+    const result = await retryWithBackoff(async () => {
+      const res = await fetch(
+        `${endpoint}?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
               {
-                text: `Scan book spines in this image and return ONLY a strict JSON array.
+                parts: [
+                  {
+                    text: `Scan book spines in this image and return ONLY a strict JSON array.
 
 CRITICAL RULES:
 - TITLE is the book name (usually larger text on spine)
@@ -254,104 +289,154 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
   "reason": "brief reason for confidence",
   "spine_index": 0
 }]`,
+                  },
+                  { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
+                ],
               },
-              { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
             ],
-          },
-        ],
-        generationConfig: { 
-          temperature: 0.1, 
-          maxOutputTokens: 8000,
-        },
-      }),
-    }
-  );
-  
-  // Check for Retry-After header
-  const retryAfter = res.headers.get('Retry-After');
-  const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
-  
-  // Throw 429 errors so queue can handle them
-  if (res.status === 429) {
-    const errorText = await res.text();
-    let errorData: any = null;
-    try {
-      errorData = errorText ? JSON.parse(errorText) : null;
-    } catch (e) {
-      // Error text is not JSON, that's fine
-    }
-    const errorMessage = errorData?.error?.message || '';
-    
-    // Log detailed 429 info for debugging
-    console.error(`[API] Gemini 429 Details:`, {
-      endpoint: 'generativelanguage.googleapis.com',
-      model,
-      retryAfter: retryAfterSeconds ? `${retryAfterSeconds}s` : 'not provided',
-      errorMessage: errorMessage.slice(0, 200),
-      quotaSurface: 'Gemini API (AI Studio)',
-      clientLibrary: 'vanilla-fetch',
-    });
-    
-    const error: any = new Error(`Gemini 429: ${errorMessage}`);
-    error.status = 429;
-    error.statusCode = 429;
-    error.retryAfter = retryAfterSeconds; // Include Retry-After for queue handler
-    throw error;
-  }
-  
-  if (!res.ok) {
-    const errorText = await res.text();
-    let errorData: any = null;
-    try {
-      errorData = errorText ? JSON.parse(errorText) : null;
-    } catch (e) {
-      // Error text is not JSON, that's fine
-    }
-    const errorMessage = errorData?.error?.message || errorText || '';
-    console.error(`[API] Gemini scan failed: ${res.status} ${res.statusText} - ${errorMessage.slice(0, 200)}`);
-    return [];
-  }
-  
-  // Parse response (same as before)
-  const data = await res.json() as any;
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  
-  if (!content) {
-    console.error(`[API] Gemini returned empty content`);
-    return [];
-  }
-  
-  // Remove markdown code blocks
-  let cleaned = content;
-  if (cleaned.includes('```')) {
-    cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  }
-  
-  // Try to parse JSON
-  try {
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) {
-      console.log(`[API] Gemini parsed ${parsed.length} books`);
-      return parsed;
-    }
-  } catch (e) {
-    // Try to extract JSON array
-    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-    if (arrayMatch) {
-      try {
-        const parsed = JSON.parse(arrayMatch[0]);
-        if (Array.isArray(parsed)) {
-          console.log(`[API] Gemini parsed ${parsed.length} books (extracted)`);
-          return parsed;
+            generationConfig: { 
+              temperature: 0.1, 
+              maxOutputTokens: 8000,
+            },
+          }),
         }
-      } catch (e2) {
-        console.error(`[API] Gemini failed to parse JSON:`, e2);
+      );
+      
+      // Check for Retry-After header
+      const retryAfter = res.headers.get('Retry-After');
+      const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
+      
+      // Handle 429 errors FIRST - check if it's quota/billing (most serious)
+      if (res.status === 429) {
+        const errorText = await res.text();
+        let errorData: any = null;
+        try {
+          errorData = errorText ? JSON.parse(errorText) : null;
+        } catch (e) {
+          // Error text is not JSON, that's fine
+        }
+        const errorMessage = (errorData?.error?.message || errorText || '').toLowerCase();
+        
+        // CRITICAL: Detect quota/billing errors - don't retry, fallback immediately
+        if (errorMessage.includes('quota') || errorMessage.includes('billing') || errorMessage.includes('exceeded')) {
+          if (scanId) {
+            // Set long cooldown (30-60 minutes) for quota errors
+            const cooldownMinutes = errorMessage.includes('daily') ? 60 : 30;
+            recordGeminiQuotaError(scanId, cooldownMinutes);
+          }
+          
+          const error: any = new Error(`Gemini 429 QUOTA EXCEEDED: ${errorData?.error?.message || errorText}`);
+          error.status = 429;
+          error.statusCode = 429;
+          error.isQuotaError = true; // Mark as quota error - don't retry
+          throw error;
+        }
+        
+        // Regular 429 (rate limit) - can retry
+        console.error(`${logPrefix} Gemini 429 Rate Limit:`, {
+          endpoint: 'generativelanguage.googleapis.com',
+          model,
+          retryAfter: retryAfterSeconds ? `${retryAfterSeconds}s` : 'not provided',
+          errorMessage: errorData?.error?.message?.slice(0, 200) || '',
+          quotaSurface: 'Gemini API (AI Studio)',
+          clientLibrary: 'vanilla-fetch',
+        });
+        
+        const error: any = new Error(`Gemini 429: ${errorData?.error?.message || errorText}`);
+        error.status = 429;
+        error.statusCode = 429;
+        error.retryAfter = retryAfterSeconds; // Include Retry-After for queue handler
+        error.isQuotaError = false; // Regular rate limit, can retry
+        throw error;
+      }
+      
+      // Handle 503 (model overloaded) - record for circuit breaker
+      if (res.status === 503) {
+        if (scanId) recordGemini503(scanId);
+        const errorText = await res.text();
+        let errorData: any = null;
+        try {
+          errorData = errorText ? JSON.parse(errorText) : null;
+        } catch (e) {
+          // Error text is not JSON, that's fine
+        }
+        const errorMessage = errorData?.error?.message || '';
+        
+        const error: any = new Error(`Gemini 503: ${errorMessage}`);
+        error.status = 503;
+        error.statusCode = 503;
+        error.retryAfter = retryAfterSeconds;
+        throw error;
+      }
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        let errorData: any = null;
+        try {
+          errorData = errorText ? JSON.parse(errorText) : null;
+        } catch (e) {
+          // Error text is not JSON, that's fine
+        }
+        const errorMessage = errorData?.error?.message || errorText || '';
+        console.error(`${logPrefix} Gemini scan failed: ${res.status} ${res.statusText} - ${errorMessage.slice(0, 200)}`);
+        return [];
+      }
+      
+      // Success - record for circuit breaker
+      if (scanId) recordGeminiSuccess(scanId);
+      
+      // Parse response
+      const data = await res.json() as any;
+      return data;
+    }, 2, scanId || 'unknown', false);
+    
+    // Parse response from result
+    const data = result;
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    
+    if (!content) {
+      console.error(`${logPrefix} Gemini returned empty content`);
+      return [];
+    }
+    
+    // Remove markdown code blocks
+    let cleaned = content;
+    if (cleaned.includes('```')) {
+      cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    }
+    
+    // Try to parse JSON
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        console.log(`${logPrefix} Gemini parsed ${parsed.length} books`);
+        return parsed;
+      }
+    } catch (e) {
+      // Try to extract JSON array
+      const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        try {
+          const parsed = JSON.parse(arrayMatch[0]);
+          if (Array.isArray(parsed)) {
+            console.log(`${logPrefix} Gemini parsed ${parsed.length} books (extracted)`);
+            return parsed;
+          }
+        } catch (e2) {
+          console.error(`${logPrefix} Gemini failed to parse JSON:`, e2);
+        }
       }
     }
+    
+    console.error(`${logPrefix} Gemini response doesn't contain valid JSON array`);
+    return [];
+  } catch (error: any) {
+    // If retries exhausted, return empty array (fallback to OpenAI)
+    if (error?.status === 503 || error?.status === 429) {
+      console.error(`${logPrefix} Gemini failed after retries (${error.status}), falling back to OpenAI`);
+    }
+    return [];
   }
-  
-  console.error(`[API] Gemini response doesn't contain valid JSON array`);
-  return [];
 }
 
 /**
@@ -646,13 +731,14 @@ async function repairJSON(invalidJSON: string, schema: string): Promise<any> {
   }
 }
 
-async function scanWithOpenAI(imageDataURL: string, retryCount = 0): Promise<any[]> {
+async function scanWithOpenAI(imageDataURL: string, retryCount = 0, abortController?: AbortController): Promise<any[]> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return [];
 
   const startTime = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
+  // Use provided abort controller or create new one
+  const controller = abortController || new AbortController();
+  const timeout = abortController ? null : setTimeout(() => {
     console.warn('[API] OpenAI request timeout after 60 seconds - aborting');
     controller.abort();
   }, 60000); // 60 seconds - reduced to fail faster and avoid long waits
@@ -707,11 +793,11 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
       const elapsed = Date.now() - startTime;
       
       // Handle rate limiting (429) or server errors (500-599) with retry
-      if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && retryCount < 2) {
+      if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && retryCount < 2 && !controller.signal.aborted) {
         const backoffDelay = Math.pow(2, retryCount) * 3000; // 3s, 6s
         console.warn(`[API] OpenAI ${res.status} error, retrying in ${backoffDelay/1000}s... (attempt ${retryCount + 1}/2) after ${elapsed}ms`);
         await delay(backoffDelay);
-        return scanWithOpenAI(imageDataURL, retryCount + 1);
+        return scanWithOpenAI(imageDataURL, retryCount + 1, controller);
       }
       
       console.error(`[API] OpenAI scan failed: ${res.status} ${res.statusText} - ${errorText.slice(0, 200)} (after ${elapsed}ms)`);
@@ -880,9 +966,9 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
 /**
  * Public interface for Gemini scanning - uses queue for single-flight execution
  */
-async function scanWithGemini(imageDataURL: string): Promise<any[]> {
+async function scanWithGemini(imageDataURL: string, scanId?: string): Promise<any[]> {
   // Queue the request - ensures single-flight execution globally
-  return queueGeminiRequest(imageDataURL, 0);
+  return queueGeminiRequest(imageDataURL, 0, scanId);
 }
 
 /**
@@ -1509,24 +1595,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
   try {
-    const { imageDataURL } = req.body || {};
+    const { imageDataURL, userId } = req.body || {};
     if (!imageDataURL || typeof imageDataURL !== 'string') {
       return res.status(400).json({ error: 'imageDataURL required' });
     }
+
+    // Generate scanId for tracking this scan session (used in all logs)
+    const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     // Check if API keys are configured
     const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
     const hasGeminiKey = !!process.env.GEMINI_API_KEY;
     
     if (!hasOpenAIKey && !hasGeminiKey) {
-      console.error('[API] ERROR: No API keys configured! OPENAI_API_KEY and GEMINI_API_KEY are both missing.');
+      console.error(`[API] [SCAN ${scanId}] ERROR: No API keys configured! OPENAI_API_KEY and GEMINI_API_KEY are both missing.`);
       return res.status(500).json({ 
         error: 'API keys not configured',
         message: 'Server is missing required API keys for scanning'
       });
     }
     
-    console.log(`[API] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
+    console.log(`[API] [SCAN ${scanId}] API keys status: OpenAI=${hasOpenAIKey ? '✅' : '❌'}, Gemini=${hasGeminiKey ? '✅' : '❌'}`);
     
     // Verify Gemini model availability on first request
     if (hasGeminiKey && !geminiModelVerified) {
@@ -1562,37 +1651,138 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     
+    // Initialize time budget (75s total, 20s for Gemini, rest for OpenAI)
+    const timeBudget = new ScanTimeBudget(scanId, 75000, 20000);
+    timeBudget.logStatus();
+    
     // HARD RULE: Gemini first, OpenAI second (sequential, not parallel)
     // This prevents burst RPM limits and ensures single-flight execution
     let gemini: any[] = [];
     let openai: any[] = [];
+    let scanFailed = false;
     
-    // Try Gemini first (queued, single-flight execution)
-    if (hasGeminiKey) {
-      log('info', '[API] Starting Gemini scan (queued, single-flight)...');
+    // Check circuit breaker before trying Gemini
+    const geminiQuotaExceeded = isGeminiQuotaExceeded();
+    const geminiInCooldown = isGeminiInCooldown();
+    
+    if (geminiQuotaExceeded) {
+      console.log(`[SCAN ${scanId}] 🔴 Gemini QUOTA EXCEEDED - skipping and using OpenAI immediately`);
+    } else if (geminiInCooldown) {
+      console.log(`[SCAN ${scanId}] 🔴 Gemini in cooldown, skipping and using OpenAI`);
+    }
+    
+    // Try Gemini first (queued, single-flight execution) if not in cooldown/quota exceeded
+    if (hasGeminiKey && !geminiQuotaExceeded && !geminiInCooldown && !timeBudget.hasExceededBudget()) {
+      log('info', `[SCAN ${scanId}] Starting Gemini scan (queued, single-flight)...`);
       try {
-        gemini = await scanWithGemini(imageDataURL);
-        log('info', `[API] Gemini completed: ${gemini.length} books`);
+        // Create abort controller with time budget
+        const { controller, timeout } = timeBudget.createAbortController('gemini');
+        
+        try {
+          gemini = await Promise.race([
+            scanWithGemini(imageDataURL, scanId),
+            new Promise<any[]>((_, reject) => {
+              controller.signal.addEventListener('abort', () => {
+                clearTimeout(timeout);
+                reject(new Error('Gemini timeout - exceeded time budget'));
+              });
+            }),
+          ]);
+          clearTimeout(timeout);
+          log('info', `[SCAN ${scanId}] Gemini completed: ${gemini.length} books in ${timeBudget.getElapsedTime()}ms`);
+        } catch (timeoutError: any) {
+          clearTimeout(timeout);
+          if (timeoutError?.message?.includes('timeout')) {
+            console.warn(`[SCAN ${scanId}] Gemini exceeded time budget, falling back to OpenAI`);
+          } else {
+            throw timeoutError;
+          }
+        }
       } catch (err: any) {
-        console.error('[API] Gemini scan failed:', err?.message || err);
+        console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
         gemini = [];
+      }
+      
+      // Check if we've exceeded budget
+      if (timeBudget.hasExceededBudget()) {
+        console.warn(`[SCAN ${scanId}] Time budget exceeded after Gemini, will queue as background job`);
+        scanFailed = true;
       }
     }
     
     // If Gemini succeeded, use it. Otherwise fallback to OpenAI
     if (gemini.length > 0) {
-      console.log(`[API] Using Gemini results (${gemini.length} books), skipping OpenAI`);
+      console.log(`[SCAN ${scanId}] Using Gemini results (${gemini.length} books), skipping OpenAI`);
       openai = [];
-    } else if (hasOpenAIKey) {
-      console.log('[API] Gemini returned no results, falling back to OpenAI...');
+    } else if (hasOpenAIKey && !scanFailed && !timeBudget.hasExceededBudget()) {
+      console.log(`[SCAN ${scanId}] Gemini returned no results, falling back to OpenAI...`);
       try {
-        openai = await scanWithOpenAI(imageDataURL);
-        console.log(`[API] OpenAI completed: ${openai.length} books`);
+        // Create abort controller with remaining time budget
+        const { controller, timeout } = timeBudget.createAbortController('openai');
+        const remainingTime = timeBudget.getRemainingOpenAITime();
+        
+        try {
+          openai = await Promise.race([
+            scanWithOpenAI(imageDataURL, 0, controller),
+            new Promise<any[]>((_, reject) => {
+              controller.signal.addEventListener('abort', () => {
+                clearTimeout(timeout);
+                reject(new Error('OpenAI timeout - exceeded time budget'));
+              });
+            }),
+          ]);
+          clearTimeout(timeout);
+          console.log(`[SCAN ${scanId}] OpenAI completed: ${openai.length} books in ${timeBudget.getElapsedTime()}ms`);
+        } catch (timeoutError: any) {
+          clearTimeout(timeout);
+          if (timeoutError?.message?.includes('timeout')) {
+            console.warn(`[SCAN ${scanId}] OpenAI exceeded time budget`);
+            scanFailed = true;
+          } else {
+            throw timeoutError;
+          }
+        }
       } catch (err: any) {
-        console.error('[API] OpenAI scan failed:', err?.message || err);
+        console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
         openai = [];
+        scanFailed = true;
+      }
+    } else if (scanFailed || timeBudget.hasExceededBudget()) {
+      console.warn(`[SCAN ${scanId}] Scan exceeded time budget or failed, will queue as background job`);
+      scanFailed = true;
+    }
+    
+    // If both providers failed or exceeded budget, create a scan job for background processing
+    if (scanFailed && gemini.length === 0 && openai.length === 0) {
+      try {
+        const baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfscan.app';
+        const jobResponse = await fetch(`${baseUrl}/api/scan-job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageDataURL,
+            userId: userId || undefined,
+            jobId: scanId,
+          }),
+        });
+        
+        if (jobResponse.ok) {
+          const jobData = await jobResponse.json() as { jobId?: string; status?: string };
+          console.log(`[SCAN ${scanId}] Queued as background job: ${jobData.jobId || scanId}`);
+          return res.status(202).json({
+            status: 'queued',
+            jobId: jobData.jobId || scanId,
+            scanId,
+            message: 'Scan queued for background processing',
+          });
+        } else {
+          console.error(`[SCAN ${scanId}] Failed to create scan job: ${jobResponse.status}`);
+        }
+      } catch (jobError: any) {
+        console.error(`[SCAN ${scanId}] Error creating scan job:`, jobError?.message || jobError);
       }
     }
+    
     const openaiCount = openai?.length || 0;
     const geminiCount = gemini?.length || 0;
     const totalBeforeDedup = openaiCount + geminiCount;
@@ -1701,56 +1891,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     log('info', `[API] Scan completed: books=${finalBooks.length} source=${geminiCount > 0 ? 'Gemini' : 'OpenAI'}`);
     
     // Start cover fetching asynchronously (fire and forget - don't block response)
-    // Covers will be fetched slowly in background and stored when ready
-    if (finalBooks.length > 0) {
-      // Fire and forget - don't await, let it run in background
-      (async () => {
-        try {
-          log('info', `[COVERS] Starting async fetch for ${finalBooks.length} books (background, non-blocking)...`);
-          
-          const { fetchBookData } = await import('../services/googleBooksService');
-          let successCount = 0;
-          let failedCount = 0;
-          
-          // Fetch covers one by one sequentially (queue handles rate limiting)
-          for (const book of finalBooks) {
-            // Skip if already has cover
-            if (book.coverUrl || book.googleBooksId) {
-              continue;
-            }
-            
-            try {
-              // Try with original title/author (queue handles rate limiting and retries)
-              const result = await fetchBookData(book.title || '', book.author || undefined);
-              
-              if (result && result.googleBooksId) {
-                // Ensure HTTPS (iOS ATS requirement)
-                let coverUrl = result.coverUrl;
-                if (coverUrl && coverUrl.startsWith('http:')) {
-                  coverUrl = coverUrl.replace('http:', 'https:');
-                }
-                
-                // Update book with cover (this would normally save to DB, but for now just log)
-                log('debug', `[COVERS] Found cover for "${book.title}": ${coverUrl ? 'YES' : 'NO'}`);
-                successCount++;
-              } else {
-                failedCount++;
-              }
-            } catch (error: any) {
-              failedCount++;
-              // Silently continue - covers are optional
-              // Queue handles retries automatically
-            }
-          }
-          
-          // Log summary
-          log('info', `[COVERS] Background fetch complete: success=${successCount} failed=${failedCount} total=${finalBooks.length}`);
-        } catch (error) {
-          // Don't log errors from background job - it's fire and forget
-          log('debug', `[COVERS] Background fetch error (non-critical):`, error);
-        }
-      })();
-    }
+    // NOTE: Server-side cover fetching is DISABLED because:
+    // 1. Client-side already fetches covers and persists to Supabase
+    // 2. Running both causes duplicate API calls and rate limiting
+    // 3. Server-side can't easily identify books for persistence without userId/book IDs
+    // 
+    // If you need server-side covers, you would need to:
+    // - Pass userId and book IDs in the request
+    // - Use saveBookToSupabase to persist results
+    // - Add scanId tracking to all logs
+    // - Coordinate with client to avoid duplicate fetching
+    //
+    // For now, let the client handle all cover fetching (it's already set up correctly)
     
     return res.status(200).json({ 
       books: finalBooks, // Return books immediately, covers will load asynchronously

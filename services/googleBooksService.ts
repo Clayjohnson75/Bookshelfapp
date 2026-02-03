@@ -109,11 +109,16 @@ const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
  * Called when screen loses focus or component unmounts
  */
 export function clearGoogleBooksQueue() {
-  log('info', '[GoogleBooks] Clearing queue, cancelling all pending requests');
+  log('debug', '[GoogleBooks] Clearing queue, cancelling all pending requests');
   
-  // Reject all pending queue items
+  // Resolve all pending queue items with empty result (don't reject - that causes errors)
+  // This silently cancels them without throwing errors
   for (const item of googleBooksQueue) {
-    item.reject(new Error('Queue cleared - screen inactive'));
+    try {
+      item.resolve({}); // Resolve with empty object instead of rejecting
+    } catch (error) {
+      // Ignore errors from resolving (item might already be resolved)
+    }
   }
   
   // Clear the queue
@@ -284,41 +289,103 @@ function tokenOverlapScore(a: string, b: string): number {
 }
 
 /**
- * Pick the best matching book from Google Books results that has a valid cover
+ * Pick the best matching volume from Google Books results
+ * Scores all items by title/author similarity, then adds bonuses for rich metadata
+ * Returns the full item (or null if no items)
  */
-function pickBestBookWithCover(
+function pickBestVolume(
   items: any[],
   inputTitle: string,
   inputAuthor?: string
-): { googleBooksId?: string; coverUrl?: string } {
-  let best: { id?: string; coverUrl?: string; score: number } | null = null;
+): { id: string; volumeInfo: any } | null {
+  const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+  const candidates: Array<{ item: any; score: number; titleScore: number; authorScore: number; bonuses: { imageLinks: number; description: number; categories: number } }> = [];
 
   for (const book of items || []) {
     const v = book.volumeInfo || {};
     const title = v.title || "";
     const authors: string[] = v.authors || [];
 
-    const titleScore = tokenOverlapScore(inputTitle, title); // 0..1
+    // Base similarity scores (0..1)
+    const titleScore = tokenOverlapScore(inputTitle, title);
     const authorScore = inputAuthor
       ? Math.max(0, ...authors.map(a => tokenOverlapScore(inputAuthor, a)))
       : 0;
 
-    const links = v.imageLinks || {};
-    const raw = links.thumbnail || links.smallThumbnail;
-    const coverUrl = raw ? raw.replace("http:", "https:") : "";
+    // Base weighted score (title 75%, author 25%)
+    let score = (titleScore * 0.75) + (authorScore * 0.25);
 
-    // Require a cover to win
-    if (!coverUrl || !isValidBookCover(coverUrl)) continue;
+    // Bonuses for rich metadata (small bonuses to prefer richer items)
+    const bonuses = {
+      imageLinks: 0,
+      description: 0,
+      categories: 0,
+    };
 
-    // Weighted score (title 75%, author 25%)
-    const score = (titleScore * 0.75) + (authorScore * 0.25);
+    // Bonus for having imageLinks (0.05 bonus)
+    if (v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail)) {
+      bonuses.imageLinks = 0.05;
+      score += 0.05;
+    }
 
-    if (!best || score > best.score) {
-      best = { id: book.id, coverUrl, score };
+    // Bonus for having description (0.03 bonus, more if longer)
+    if (v.description) {
+      bonuses.description = 0.03;
+      if (v.description.length > 200) {
+        bonuses.description = 0.05; // Longer descriptions get bigger bonus
+      }
+      score += bonuses.description;
+    }
+
+    // Bonus for having categories (0.02 bonus)
+    if (v.categories && v.categories.length > 0) {
+      bonuses.categories = 0.02;
+      score += 0.02;
+    }
+
+    candidates.push({
+      item: book,
+      score,
+      titleScore,
+      authorScore,
+      bonuses,
+    });
+  }
+
+  // Sort by score (highest first)
+  candidates.sort((a, b) => b.score - a.score);
+
+  // Debug logging for top 3 candidates
+  if (DEBUG_GOOGLE_BOOKS) {
+    console.log(`[DEBUG_GOOGLE_BOOKS] Scoring Results (top ${Math.min(3, candidates.length)} candidates):`);
+    for (const [i, candidate] of candidates.slice(0, 3).entries()) {
+      const v = candidate.item.volumeInfo || {};
+      const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
+      console.log(`[DEBUG_GOOGLE_BOOKS]   Candidate #${i}:`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     ID: ${candidate.item.id}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     Title: "${v.title || 'NO TITLE'}"`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     titleScore: ${candidate.titleScore.toFixed(3)}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     authorScore: ${candidate.authorScore.toFixed(3)}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     hasDescription: ${v.description ? `YES (${v.description.length} chars)` : 'NO'}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     hasCategories: ${v.categories ? `YES [${v.categories.join(', ')}]` : 'NO'}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     Bonuses: imageLinks=+${candidate.bonuses.imageLinks.toFixed(3)}, description=+${candidate.bonuses.description.toFixed(3)}, categories=+${candidate.bonuses.categories.toFixed(3)}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     finalScore: ${candidate.score.toFixed(3)}`);
+      console.log(`[DEBUG_GOOGLE_BOOKS]     ${i === 0 ? '✅ WINNER' : ''}`);
     }
   }
 
-  return best ? { googleBooksId: best.id, coverUrl: best.coverUrl } : {};
+  // Return the best item (or null if no candidates)
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const best = candidates[0];
+  return {
+    id: best.item.id,
+    volumeInfo: best.item.volumeInfo,
+  };
 }
 
 /**
@@ -449,6 +516,19 @@ async function fetchByGoogleBooksId(
       const data = await response.json() as GoogleBooksVolumeResponse;
       const volumeInfo = data.volumeInfo || {};
 
+      // Enhanced DEBUG_GOOGLE_BOOKS logging for direct ID lookup
+      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+      
+      if (DEBUG_GOOGLE_BOOKS) {
+        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+        console.log(`[DEBUG_GOOGLE_BOOKS] Direct ID Lookup:`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Google Books ID: ${googleBooksId}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Full URL: https://www.googleapis.com/books/v1/volumes/${googleBooksId}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Response Status: ${response.status} ${response.statusText}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Title: "${volumeInfo.title || 'NO TITLE'}"`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Authors: ${(volumeInfo.authors || []).join(', ') || 'NO AUTHORS'}`);
+      }
+
       // Extract all data
       const result: GoogleBooksData = {
         googleBooksId: data.id || undefined,
@@ -469,13 +549,43 @@ async function fetchByGoogleBooksId(
         const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
         if (rawCoverUrl) {
           const coverUrl = rawCoverUrl.replace('http:', 'https:');
+          
+          if (DEBUG_GOOGLE_BOOKS) {
+            console.log(`[DEBUG_GOOGLE_BOOKS]   imageLinks.thumbnail: ${volumeInfo.imageLinks.thumbnail ? 'YES' : 'NO'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]   imageLinks.smallThumbnail: ${volumeInfo.imageLinks.smallThumbnail ? 'YES' : 'NO'}`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]   Raw Cover URL: ${rawCoverUrl.substring(0, 100)}...`);
+            console.log(`[DEBUG_GOOGLE_BOOKS]   Valid Cover: ${isValidBookCover(coverUrl) ? 'YES' : 'NO'}`);
+          }
+          
           // Validate that it's a real book cover (not placeholder/default image)
           if (isValidBookCover(coverUrl)) {
             result.coverUrl = coverUrl;
+            if (DEBUG_GOOGLE_BOOKS) {
+              console.log(`[DEBUG_GOOGLE_BOOKS]   ✅ Cover URL accepted: ${coverUrl.substring(0, 100)}...`);
+            }
           } else {
-            console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+            if (DEBUG_GOOGLE_BOOKS) {
+              console.log(`[DEBUG_GOOGLE_BOOKS]   ⚠️ Skipping invalid cover URL: ${coverUrl.substring(0, 100)}...`);
+            } else {
+              console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+            }
+          }
+        } else {
+          if (DEBUG_GOOGLE_BOOKS) {
+            console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ No cover URL in imageLinks`);
           }
         }
+      } else {
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ No imageLinks in volumeInfo`);
+        }
+      }
+      
+      if (DEBUG_GOOGLE_BOOKS) {
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Description: ${volumeInfo.description ? `YES (${volumeInfo.description.length} chars)` : 'NO'}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Categories: ${volumeInfo.categories ? `YES [${volumeInfo.categories.join(', ')}]` : 'NO'}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Result: ${result.coverUrl ? '✅ SUCCESS (has cover)' : '❌ FAILED (no cover)'}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
       }
 
       // Cache the result
@@ -560,9 +670,12 @@ async function searchBook(
   }
   
   // Try multiple query strategies for better matching
-  // Strategy 1: Exact title with quotes (most precise)
+  // Strategy 1: Exact title with quotes, author with quotes (most precise)
   const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
-  let query = author ? `intitle:"${cleanTitle}" ${author}` : `intitle:"${cleanTitle}"`;
+  const cleanAuthor = author ? author.replace(/[^\w\s]/g, '').trim() : '';
+  let query = author 
+    ? `intitle:"${cleanTitle}" inauthor:"${cleanAuthor}"` 
+    : `intitle:"${cleanTitle}"`;
   
   // Log the query being used (for debugging)
   log('debug', `[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}")`);
@@ -576,9 +689,10 @@ async function searchBook(
       const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
 
       // Add fields parameter to limit payload to only needed fields
+      // Add projection=full to improve chances of getting description/categories
       const fields = 'items(id,volumeInfo(title,authors,pageCount,categories,publisher,publishedDate,language,averageRating,ratingsCount,subtitle,printType,description,imageLinks))';
-      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10&fields=${encodeURIComponent(fields)}`; // Get multiple candidates for scoring
-      
+      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10&fields=${encodeURIComponent(fields)}&projection=full`; // Get multiple candidates for scoring
+
       let response: Response;
       try {
         response = await fetch(url, { signal: controller.signal });
@@ -610,32 +724,54 @@ async function searchBook(
 
       const data = await response.json() as GoogleBooksResponse;
 
-      // Logging for debugging (debug level only)
-      log('debug', `[GB] query=`, url);
-      log('debug', `[GB] totalItems=`, data.totalItems || 0, `items=`, data.items?.length ?? 0);
+      // Enhanced DEBUG_GOOGLE_BOOKS logging
+      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+      
+      if (DEBUG_GOOGLE_BOOKS) {
+        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+        console.log(`[DEBUG_GOOGLE_BOOKS] Search Request:`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Title: "${title}"`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Author: "${author || 'none'}"`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Query: "${query}"`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Full URL: ${url}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Response Status: ${response.status} ${response.statusText}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Total Items: ${data.totalItems || 0}`);
+        console.log(`[DEBUG_GOOGLE_BOOKS]   Items Returned: ${data.items?.length || 0}`);
+      }
 
       if (data.items?.length) {
-        // Log top 5 candidates (debug level only)
-        for (const [i, it] of data.items.slice(0, 5).entries()) {
-          const v = it.volumeInfo || {};
-          const raw = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail || "";
-          log('debug', `[GB] #${i} title="${v.title}" authors="${(v.authors||[]).join(",")}" cover=${!!raw}`);
+        // Pick best volume using improved scoring (no hard cover requirement)
+        // This function includes detailed debug logging for top 3 candidates
+        const picked = pickBestVolume(data.items, title, author);
+        
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
         }
 
-        // Pick best book with cover using scoring
-        const picked = pickBestBookWithCover(data.items, title, author);
-
-        if (picked.coverUrl && picked.googleBooksId) {
-          // Get full volume info for the picked book
-          const pickedBook = data.items.find(b => b.id === picked.googleBooksId) || data.items[0];
-          const volumeInfo = pickedBook.volumeInfo || {};
+        if (picked) {
+          const volumeInfo = picked.volumeInfo || {};
           
-          log('debug', `[GoogleBooks] ✅ Picked best match: "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.googleBooksId})`);
+          log('debug', `[GoogleBooks] ✅ Picked best match: "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.id})`);
 
-          // Extract all data
+          // Extract cover URL - only set if valid
+          let coverUrl: string | undefined = undefined;
+          if (volumeInfo.imageLinks) {
+            const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+            if (rawCoverUrl) {
+              const normalizedCoverUrl = rawCoverUrl.replace('http:', 'https:');
+              // Only set coverUrl if it passes validation
+              if (isValidBookCover(normalizedCoverUrl)) {
+                coverUrl = normalizedCoverUrl;
+              } else if (DEBUG_GOOGLE_BOOKS) {
+                console.log(`[DEBUG_GOOGLE_BOOKS] ⚠️ Cover URL failed validation: ${normalizedCoverUrl.substring(0, 100)}...`);
+              }
+            }
+          }
+
+          // Extract all data from the best volume
           const result: GoogleBooksData = {
-            googleBooksId: picked.googleBooksId,
-            coverUrl: picked.coverUrl,
+            googleBooksId: picked.id,
+            coverUrl, // Only set if valid, otherwise undefined
             pageCount: volumeInfo.pageCount,
             categories: volumeInfo.categories,
             publisher: volumeInfo.publisher,
@@ -655,18 +791,32 @@ async function searchBook(
           cache.set(normalizedCacheKey, result);
           cache.set(cacheKey, result); // Also cache with original query
           // Also cache by ID for future lookups
-          if (picked.googleBooksId) {
-            cache.set(`id:${picked.googleBooksId}`, result);
+          if (picked.id) {
+            cache.set(`id:${picked.id}`, result);
           }
           return result;
         }
 
-        // Fallback: return top item id even if no cover, for debugging/metadata
-        log('debug', `[GoogleBooks] ⚠️ No book with valid cover found, returning top result without cover`);
+        // Fallback: if pickBestVolume returned null (shouldn't happen if items.length > 0)
+        log('debug', `[GoogleBooks] ⚠️ No volume selected, returning top result`);
         const topBook = data.items[0];
         const topVolumeInfo = topBook.volumeInfo || {};
+        
+        // Extract cover URL if valid
+        let coverUrl: string | undefined = undefined;
+        if (topVolumeInfo.imageLinks) {
+          const rawCoverUrl = topVolumeInfo.imageLinks.thumbnail || topVolumeInfo.imageLinks.smallThumbnail;
+          if (rawCoverUrl) {
+            const normalizedCoverUrl = rawCoverUrl.replace('http:', 'https:');
+            if (isValidBookCover(normalizedCoverUrl)) {
+              coverUrl = normalizedCoverUrl;
+            }
+          }
+        }
+        
         return {
           googleBooksId: topBook.id,
+          coverUrl,
           pageCount: topVolumeInfo.pageCount,
           categories: topVolumeInfo.categories,
           publisher: topVolumeInfo.publisher,
