@@ -3,6 +3,43 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Gemini rate limiter: track requests per minute
+let geminiRequestTimes: number[] = [];
+const GEMINI_RPM_LIMIT = 15; // Conservative limit (Gemini free tier is usually 15-60 RPM)
+const GEMINI_MIN_INTERVAL = 4000; // Minimum 4 seconds between requests (15 requests per minute)
+
+async function waitForGeminiRateLimit(): Promise<void> {
+  const now = Date.now();
+  
+  // Remove requests older than 1 minute
+  geminiRequestTimes = geminiRequestTimes.filter(time => now - time < 60000);
+  
+  // If we're at the limit, wait until we can make another request
+  if (geminiRequestTimes.length >= GEMINI_RPM_LIMIT) {
+    const oldestRequest = Math.min(...geminiRequestTimes);
+    const waitTime = 60000 - (now - oldestRequest) + 1000; // Wait until oldest request is 1 minute old, plus 1s buffer
+    console.log(`[API] Gemini rate limit: ${geminiRequestTimes.length}/${GEMINI_RPM_LIMIT} requests in last minute, waiting ${Math.ceil(waitTime/1000)}s...`);
+    await delay(waitTime);
+    // Clean up again after waiting
+    const newNow = Date.now();
+    geminiRequestTimes = geminiRequestTimes.filter(time => newNow - time < 60000);
+  }
+  
+  // Ensure minimum interval between requests
+  if (geminiRequestTimes.length > 0) {
+    const lastRequest = Math.max(...geminiRequestTimes);
+    const timeSinceLastRequest = now - lastRequest;
+    if (timeSinceLastRequest < GEMINI_MIN_INTERVAL) {
+      const waitTime = GEMINI_MIN_INTERVAL - timeSinceLastRequest;
+      console.log(`[API] Gemini rate limit: waiting ${Math.ceil(waitTime/1000)}s between requests...`);
+      await delay(waitTime);
+    }
+  }
+  
+  // Record this request
+  geminiRequestTimes.push(Date.now());
+}
+
 /**
  * Enhanced normalization: trim, collapse spaces, normalize quotes/dashes, strip punctuation
  */
@@ -301,9 +338,9 @@ async function scanWithOpenAI(imageDataURL: string): Promise<any[]> {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => {
-    console.warn('[API] OpenAI request timeout after 90 seconds - aborting');
+    console.warn('[API] OpenAI request timeout after 60 seconds - aborting');
     controller.abort();
-  }, 90000); // 90 seconds - increased for large images with many books
+  }, 60000); // 60 seconds - reduced to fail faster and avoid long waits
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -478,7 +515,7 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
   } catch (e: any) {
     // Handle abort errors specifically (timeouts)
     if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('AbortError')) {
-      console.error(`[API] OpenAI request was aborted (timeout after 90 seconds)`);
+      console.error(`[API] OpenAI request was aborted (timeout after 60 seconds)`);
       return [];
     }
     console.error(`[API] OpenAI scan exception:`, e?.message || String(e));
@@ -491,6 +528,10 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
 async function scanWithGemini(imageDataURL: string, retryCount = 0): Promise<any[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
+  
+  // Wait for rate limit before making request
+  await waitForGeminiRateLimit();
+  
   const base64Data = imageDataURL.replace(/^data:image\/[a-z]+;base64,/, '');
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${key}`,
@@ -538,13 +579,16 @@ Return ONLY valid JSON array (no markdown, no code blocks, no explanations):
   
   // Handle rate limiting (429) with exponential backoff
   if (res.status === 429) {
-    const maxRetries = 2; // Only retry twice to avoid long delays
+    const maxRetries = 3; // Retry up to 3 times
     if (retryCount < maxRetries) {
-      const backoffDelay = Math.pow(2, retryCount) * 2000; // 2s, 4s
+      // Longer backoff: 5s, 10s, 20s (more conservative for rate limits)
+      const backoffDelay = Math.pow(2, retryCount) * 5000; // 5s, 10s, 20s
       console.warn(
-        `[API] Gemini rate limited (429), retrying in ${backoffDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`
+        `[API] Gemini rate limited (429), retrying in ${backoffDelay/1000}s... (attempt ${retryCount + 1}/${maxRetries})`
       );
       await delay(backoffDelay);
+      // Reset rate limiter before retry to allow the request
+      geminiRequestTimes = geminiRequestTimes.slice(0, -1); // Remove the failed request from tracking
       return scanWithGemini(imageDataURL, retryCount + 1);
     } else {
       const errorText = await res.text();
@@ -1122,8 +1166,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return []; // Return empty array on failure
     });
     
-    // Add small delay for Gemini to avoid burst rate limits (500ms delay)
-    const geminiPromise = delay(500).then(() => scanWithGemini(imageDataURL)).catch((err) => {
+    // Add longer delay for Gemini to avoid burst rate limits (3 second delay)
+    // The waitForGeminiRateLimit() function will handle additional rate limiting
+    const geminiPromise = delay(3000).then(() => scanWithGemini(imageDataURL)).catch((err) => {
       geminiError = err;
       // scanWithGemini should handle its own errors and return [], but log unexpected errors
       if (err && !err.message?.includes('429')) {
