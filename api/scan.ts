@@ -1027,7 +1027,23 @@ async function earlyLookup(book: any): Promise<any> {
     const author = book.author || undefined;
     console.log(`[API] Early lookup trying: "${title}" by ${author || 'no author'}`);
     
-    const result = await fetchBookData(title, author);
+    // Try fetchBookData first (most accurate)
+    let result = await fetchBookData(title, author);
+    
+    // If that fails, try searchMultipleBooks and take the first result (more flexible)
+    if (!result || !result.googleBooksId) {
+      try {
+        const { searchMultipleBooks } = await import('../services/googleBooksService');
+        const multipleResults = await searchMultipleBooks(title, author, 5);
+        if (multipleResults && multipleResults.length > 0) {
+          // Take the first result
+          result = multipleResults[0];
+          console.log(`[API] Early lookup found via searchMultipleBooks: "${title}"`);
+        }
+      } catch (error) {
+        // Ignore errors from searchMultipleBooks
+      }
+    }
     
     // Log lookup result for debugging
     if (result && result.googleBooksId) {
@@ -1525,6 +1541,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const finalBooks = dedupeBooks(validBooks);
     
     console.log(`[API] After post-validation deduplication: ${finalBooks.length} unique books (removed ${validBooks.length - finalBooks.length} duplicates)`);
+    
+    // CRITICAL: Post-validation cover fetch - fetch covers for books that don't have them yet
+    // This ensures covers load immediately even if early lookup failed
+    const booksNeedingCovers = finalBooks.filter(book => !book.coverUrl && !book.googleBooksId);
+    if (booksNeedingCovers.length > 0) {
+      console.log(`[API] Post-validation: Fetching covers for ${booksNeedingCovers.length} books without covers...`);
+      
+      // Fetch covers in parallel (but with rate limiting handled by the service)
+      const coverPromises = booksNeedingCovers.map(async (book) => {
+        try {
+          const { fetchBookData } = await import('../services/googleBooksService');
+          const result = await fetchBookData(book.title || '', book.author || undefined);
+          
+          if (result && result.googleBooksId) {
+            console.log(`[API] Post-validation cover fetch SUCCESS for "${book.title}": googleBooksId=${result.googleBooksId.substring(0, 20)}..., coverUrl=${result.coverUrl ? 'yes' : 'no'}`);
+            return {
+              ...book,
+              googleBooksId: result.googleBooksId,
+              coverUrl: result.coverUrl || book.coverUrl,
+            };
+          } else {
+            console.log(`[API] Post-validation cover fetch NO MATCH for "${book.title}"`);
+            return book;
+          }
+        } catch (error) {
+          console.log(`[API] Post-validation cover fetch ERROR for "${book.title}":`, error?.message || error);
+          return book;
+        }
+      });
+      
+      const booksWithCovers = await Promise.all(coverPromises);
+      
+      // Update finalBooks with cover data
+      const coverMap = new Map(booksWithCovers.map(b => [b.title + '|' + (b.author || ''), b]));
+      const finalBooksWithCovers = finalBooks.map(book => {
+        const key = book.title + '|' + (book.author || '');
+        const withCover = coverMap.get(key);
+        if (withCover && (withCover.coverUrl || withCover.googleBooksId)) {
+          return {
+            ...book,
+            googleBooksId: withCover.googleBooksId || book.googleBooksId,
+            coverUrl: withCover.coverUrl || book.coverUrl,
+          };
+        }
+        return book;
+      });
+      
+      const coversFound = finalBooksWithCovers.filter(b => b.coverUrl || b.googleBooksId).length;
+      console.log(`[API] Post-validation: ${coversFound}/${finalBooksWithCovers.length} books now have covers/googleBooksId`);
+    
+    return res.status(200).json({ 
+        books: finalBooksWithCovers, // Books with covers attached
+        apiResults
+      });
+    }
     
     return res.status(200).json({ 
       books: finalBooks, // Only return deduplicated valid books
