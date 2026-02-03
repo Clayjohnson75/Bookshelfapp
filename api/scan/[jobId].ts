@@ -10,6 +10,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Content-Type', 'application/json');
+  
+  // CRITICAL: Make this endpoint explicitly non-cacheable
+  // Prevent 304 Not Modified responses that break polling
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  // Remove ETag to prevent conditional GET / 304 responses
+  res.removeHeader('ETag');
+  res.removeHeader('Last-Modified');
 
   // Handle OPTIONS preflight request
   if (req.method === 'OPTIONS') {
@@ -53,7 +63,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .single();
 
     if (error || !data) {
-      return res.status(404).json({ error: 'Job not found' });
+      // Always return 200 with JSON, never 304
+      return res.status(200).json({ 
+        status: 'not_found',
+        books: [],
+        error: { code: 'job_not_found', message: 'Job not found' }
+      });
     }
 
     // Return job status - only status, books, and error
@@ -68,6 +83,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     
+    // Always return 200 with JSON body - never 304 Not Modified
+    // This ensures the client always gets a response body to parse
     return res.status(200).json({
       status: data.status, // 'pending' | 'processing' | 'completed' | 'failed'
       books: data.status === 'completed' ? (data.books || []) : [],

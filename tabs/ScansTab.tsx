@@ -2060,18 +2060,32 @@ export const ScansTab: React.FC = () => {
         
         try {
           // Use same canonical baseUrl - never use different host
-          const pollUrl = `${baseUrl}/api/scan/${jobId}`;
+          // Add cache-buster query parameter to prevent 304 responses
+          const cacheBuster = Date.now();
+          const pollUrl = `${baseUrl}/api/scan/${jobId}?t=${cacheBuster}`;
           console.log(`🔄 Polling job status: ${pollUrl} [JOB ${jobId}] [SCAN ${scanId || 'new'}]`);
           const statusResp = await fetch(pollUrl, {
             method: 'GET',
-            headers: { 'Accept': 'application/json' }
+            headers: { 
+              'Accept': 'application/json',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            },
+            cache: 'no-store' // Explicitly disable caching
           });
+          
+          // Handle 304 Not Modified (shouldn't happen with cache headers, but handle gracefully)
+          if (statusResp.status === 304) {
+            console.warn(`⚠️ Received 304 Not Modified for job ${jobId} - skipping this poll`);
+            continue; // Skip this poll iteration, try again next time
+          }
           
           if (!statusResp.ok) {
             console.error(`❌ Failed to check job status: ${statusResp.status}`);
             break;
           }
           
+          // Only call json() if status is 200 (not 304)
           const statusData = await statusResp.json();
           const currentStatus = statusData.status;
           
