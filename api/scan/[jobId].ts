@@ -84,23 +84,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     
-    // CRITICAL: Always return jobId, status, books (from books column, NOT results), and error
-    // Books are ALWAYS included (empty array if not completed or null)
-    // This ensures client can always parse the response and get books when status='completed'
+    // CRITICAL: Return books when status is 'completed'
+    // This is the key fix - frontend needs books when status='completed'
     const booksArray = Array.isArray(data.books) ? data.books : [];
+    
+    // Log what we're reading from DB
+    console.log(`[API] [JOB ${jobId}] DB data: status=${data.status}, books type=${typeof data.books}, books isArray=${Array.isArray(data.books)}, books.length=${booksArray.length}`);
+    
+    // CRITICAL: When status is 'completed', return status and books explicitly
+    if (data.status === 'completed') {
+      const response = {
+        status: 'completed',
+        books: booksArray // Return books from books column
+      };
+      console.log(`[API] [JOB ${jobId}] ✅ Returning completed status with ${booksArray.length} books`);
+      if (booksArray.length === 0) {
+        console.warn(`[API] [JOB ${jobId}] ⚠️ WARNING: Status is 'completed' but books.length is 0!`);
+      }
+      return res.status(200).json(response);
+    }
+    
+    // For other statuses, return full response
     const response = {
-      jobId: data.id, // Include jobId in response for correlation
-      status: data.status, // 'pending' | 'processing' | 'completed' | 'failed'
-      books: booksArray, // Always array, never null/undefined - from books column (not results)
+      jobId: data.id,
+      status: data.status, // 'pending' | 'processing' | 'failed'
+      books: [], // Empty array for non-completed statuses
       error: errorObj
     };
     
-    // Log what we're returning - confirm books.length > 0 when completed
-    console.log(`[API] [JOB ${jobId}] ✅ Returning status: ${response.status}, books.length=${booksArray.length}, books.length>0=${booksArray.length > 0 ? 'YES' : 'NO'}`);
-    if (response.status === 'completed' && booksArray.length === 0) {
-      console.warn(`[API] [JOB ${jobId}] ⚠️ WARNING: Status is 'completed' but books.length is 0! This may indicate a data issue.`);
-    }
-    
+    console.log(`[API] [JOB ${jobId}] Returning status: ${response.status}`);
     return res.status(200).json(response);
 
   } catch (e: any) {

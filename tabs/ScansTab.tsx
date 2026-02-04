@@ -2091,7 +2091,14 @@ export const ScansTab: React.FC = () => {
           
           // CRITICAL: Stop polling and return results when status is 'completed' or 'failed'
           if (currentStatus === 'completed') {
+            // CRITICAL: Extract books from response - endpoint returns { status: 'completed', books: [...] }
             const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
+            
+            console.log(`✅ Scan job completed: status=${currentStatus}, books.length=${serverBooks.length} [JOB ${jobId}]`);
+            
+            if (serverBooks.length === 0) {
+              console.warn(`⚠️ WARNING: Status is 'completed' but received 0 books [JOB ${jobId}]`);
+            }
             
             // Track scan (skip for guest users)
             if (user && !isGuestUser(user)) {
@@ -2100,7 +2107,6 @@ export const ScansTab: React.FC = () => {
               });
             }
             
-            console.log(`✅ Scan job completed: ${serverBooks.length} books found [JOB ${jobId}]`);
             // STOP POLLING - return results immediately (covers can load in background)
             return { books: serverBooks, fromVercel: true, jobId };
           }
