@@ -116,6 +116,8 @@ export const ScansTab: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [scanQueue, setScanQueue] = useState<ScanQueueItem[]>([]);
   const [currentScan, setCurrentScan] = useState<{id: string, uri: string, progress: {current: number, total: number}} | null>(null);
+  // Track if scanning is in progress to disable button immediately after first tap
+  const [isScanning, setIsScanning] = useState(false);
   
   // Ref to track latest totalScans to avoid stale closure issues
   const totalScansRef = useRef<number>(0);
@@ -219,6 +221,9 @@ export const ScansTab: React.FC = () => {
     setPendingImageUri(uri);
     currentScanIdRef.current = scanId;
     setCaptionText('');
+    
+    // Disable scan button immediately to prevent duplicate requests
+    setIsScanning(true);
     
     // Start scanning IMMEDIATELY - this will trigger the notification
     addImageToQueue(uri, undefined, scanId);

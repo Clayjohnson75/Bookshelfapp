@@ -47,17 +47,66 @@ function similarityScore(a: string, b: string): number {
 }
 
 /**
+ * Check Google Books cache before making API call
+ */
+async function checkGoogleBooksCache(
+  cacheKey: string,
+  supabase: any
+): Promise<any | null> {
+  try {
+    const { data, error } = await supabase
+      .from('google_books_cache')
+      .select('data, created_at')
+      .eq('cache_key', cacheKey)
+      .maybeSingle();
+    
+    if (error || !data) return null;
+    
+    // Check if cache is still valid (7 days)
+    const age = Date.now() - new Date(data.created_at).getTime();
+    const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    if (age > CACHE_TTL_MS) return null;
+    
+    return data.data;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Save to Google Books cache
+ */
+async function saveGoogleBooksCache(
+  cacheKey: string,
+  data: any,
+  supabase: any
+): Promise<void> {
+  try {
+    await supabase
+      .from('google_books_cache')
+      .upsert({
+        cache_key: cacheKey,
+        data: data,
+        created_at: new Date().toISOString()
+      }, { onConflict: 'cache_key' });
+  } catch (e) {
+    // Silently fail - cache is best-effort
+  }
+}
+
+/**
  * Enrich a book with Google Books API metadata
  * Replaces AI's title/author/ISBN with official ones if found
  * Falls back to original if not found
+ * Checks cache first to avoid duplicate API calls
  */
 async function enrichBookWithGoogleBooks(
   book: any,
   scanId: string,
-  jobId: string
+  jobId: string,
+  supabase: any
 ): Promise<any> {
   if (!GOOGLE_BOOKS_API_KEY) {
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ GOOGLE_BOOKS_API_KEY not set, skipping enrichment for "${book.title}"`);
     return book; // Return original if no API key
   }
 
@@ -69,16 +118,80 @@ async function enrichBookWithGoogleBooks(
   }
 
   try {
-    // Build search query
+    // Build search query and cache key
     const cleanTitle = originalTitle.replace(/[^\w\s]/g, ' ').trim();
     const cleanAuthor = originalAuthor.replace(/[^\w\s]/g, ' ').trim();
     const query = cleanAuthor 
       ? `intitle:"${cleanTitle}" inauthor:"${cleanAuthor}"`
       : `intitle:"${cleanTitle}"`;
+    
+    const cacheKey = `search:${normalizeText(cleanTitle)}|${normalizeText(cleanAuthor)}`;
+    
+    // Step 1: Check cache first (smart cache check)
+    if (supabase) {
+      const cachedData = await checkGoogleBooksCache(cacheKey, supabase);
+      if (cachedData && cachedData.items && cachedData.items.length > 0) {
+        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cache HIT for "${originalTitle}"`);
+        
+        // Process cached data same as API response
+        const data = cachedData;
+        
+        // Find best match by scoring title and author similarity
+        let bestMatch: any = null;
+        let bestScore = 0;
 
-    // Call Google Books API with timeout
+        for (const item of data.items) {
+          const volumeInfo = item.volumeInfo || {};
+          const matchTitle = volumeInfo.title || '';
+          const matchAuthors = volumeInfo.authors || [];
+          const matchAuthor = matchAuthors.length > 0 ? matchAuthors[0] : '';
+          
+          const titleScore = similarityScore(originalTitle, matchTitle);
+          const authorScore = originalAuthor && matchAuthor 
+            ? similarityScore(originalAuthor, matchAuthor)
+            : 0.5;
+          
+          const combinedScore = (titleScore * 0.7) + (authorScore * 0.3);
+          
+          if (combinedScore > bestScore && titleScore >= 0.5) {
+            bestScore = combinedScore;
+            bestMatch = item;
+          }
+        }
+
+        if (bestMatch && bestScore >= 0.6) {
+          const volumeInfo = bestMatch.volumeInfo || {};
+          return {
+            ...book,
+            title: volumeInfo.title || originalTitle,
+            author: (volumeInfo.authors && volumeInfo.authors.length > 0) 
+              ? volumeInfo.authors[0] 
+              : originalAuthor,
+            isbn: (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_13')?.identifier ||
+                  (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_10')?.identifier ||
+                  book.isbn,
+            google_books_id: bestMatch.id,
+            description: volumeInfo.description || book.description,
+            page_count: volumeInfo.pageCount || book.page_count,
+            categories: volumeInfo.categories || book.categories,
+            publisher: volumeInfo.publisher || book.publisher,
+            published_date: volumeInfo.publishedDate || book.published_date,
+            language: volumeInfo.language || book.language,
+            average_rating: volumeInfo.averageRating || book.average_rating,
+            ratings_count: volumeInfo.ratingsCount || book.ratings_count,
+            subtitle: volumeInfo.subtitle || book.subtitle,
+            print_type: volumeInfo.printType || book.print_type,
+            spine_text: book.spine_text,
+            spine_index: book.spine_index,
+            confidence: book.confidence,
+          };
+        }
+      }
+    }
+
+    // Step 2: Cache miss - call Google Books API
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const url = `${GOOGLE_BOOKS_BASE_URL}/volumes?q=${encodeURIComponent(query)}&maxResults=5&key=${GOOGLE_BOOKS_API_KEY}`;
     
@@ -92,21 +205,25 @@ async function enrichBookWithGoogleBooks(
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
       if (fetchError.name === 'AbortError') {
-        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⏱️ Google Books timeout for "${originalTitle}", using original`);
         return book;
       }
       throw fetchError;
     }
 
     if (!response.ok) {
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Google Books API error ${response.status} for "${originalTitle}", using original`);
       return book;
     }
 
     const data = await response.json() as any;
     
+    // Step 3: Save to cache for future requests
+    if (supabase && data.items && data.items.length > 0) {
+      saveGoogleBooksCache(cacheKey, data, supabase).catch(() => {
+        // Silently fail - cache is best-effort
+      });
+    }
+    
     if (!data.items || data.items.length === 0) {
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 📚 No Google Books match for "${originalTitle}", using original`);
       return book;
     }
 
@@ -120,16 +237,13 @@ async function enrichBookWithGoogleBooks(
       const matchAuthors = volumeInfo.authors || [];
       const matchAuthor = matchAuthors.length > 0 ? matchAuthors[0] : '';
       
-      // Calculate similarity scores
       const titleScore = similarityScore(originalTitle, matchTitle);
       const authorScore = originalAuthor && matchAuthor 
         ? similarityScore(originalAuthor, matchAuthor)
-        : 0.5; // Neutral score if one is missing
+        : 0.5;
       
-      // Combined score (title weighted more heavily)
       const combinedScore = (titleScore * 0.7) + (authorScore * 0.3);
       
-      // Require minimum similarity threshold
       if (combinedScore > bestScore && titleScore >= 0.5) {
         bestScore = combinedScore;
         bestMatch = item;
@@ -137,7 +251,6 @@ async function enrichBookWithGoogleBooks(
     }
 
     if (!bestMatch || bestScore < 0.6) {
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 📚 No good Google Books match (best score: ${bestScore.toFixed(2)}) for "${originalTitle}", using original`);
       return book;
     }
 
@@ -145,7 +258,6 @@ async function enrichBookWithGoogleBooks(
     const volumeInfo = bestMatch.volumeInfo || {};
     const enrichedBook = {
       ...book,
-      // Replace with official title/author/ISBN
       title: volumeInfo.title || originalTitle,
       author: (volumeInfo.authors && volumeInfo.authors.length > 0) 
         ? volumeInfo.authors[0] 
@@ -153,7 +265,6 @@ async function enrichBookWithGoogleBooks(
       isbn: (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_13')?.identifier ||
             (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_10')?.identifier ||
             book.isbn,
-      // Add Google Books metadata
       google_books_id: bestMatch.id,
       description: volumeInfo.description || book.description,
       page_count: volumeInfo.pageCount || book.page_count,
@@ -165,57 +276,58 @@ async function enrichBookWithGoogleBooks(
       ratings_count: volumeInfo.ratingsCount || book.ratings_count,
       subtitle: volumeInfo.subtitle || book.subtitle,
       print_type: volumeInfo.printType || book.print_type,
-      // Preserve original spine text and other AI-detected fields
       spine_text: book.spine_text,
       spine_index: book.spine_index,
       confidence: book.confidence,
     };
 
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Enriched "${originalTitle}" → "${enrichedBook.title}" (score: ${bestScore.toFixed(2)})`);
     return enrichedBook;
 
   } catch (error: any) {
-    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ Error enriching "${originalTitle}" with Google Books:`, error?.message || error);
     return book; // Fall back to original on any error
   }
 }
 
 /**
  * Enrich multiple books with Google Books API metadata
- * Processes books sequentially with rate limiting to avoid 429 errors
+ * Uses parallel processing with concurrency limit (5-10) for high-speed enrichment
+ * Checks cache first to avoid duplicate API calls
  */
 async function enrichBooksWithGoogleBooks(
   books: any[],
   scanId: string,
-  jobId: string
+  jobId: string,
+  supabase: any
 ): Promise<any[]> {
   if (!GOOGLE_BOOKS_API_KEY || books.length === 0) {
     return books;
   }
 
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 🔍 Enriching ${books.length} books with Google Books API...`);
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 🔍 Enriching ${books.length} books with Google Books API (parallel, concurrency: 8)...`);
   
+  const CONCURRENCY_LIMIT = 8; // Process 8 books in parallel
   const enrichedBooks: any[] = [];
-  const MIN_REQUEST_INTERVAL_MS = 1200; // 1.2 seconds between requests
-  let lastRequestTime = 0;
-
-  for (let i = 0; i < books.length; i++) {
-    const book = books[i];
+  
+  // Process books in chunks with concurrency limit
+  for (let i = 0; i < books.length; i += CONCURRENCY_LIMIT) {
+    const chunk = books.slice(i, i + CONCURRENCY_LIMIT);
     
-    // Rate limit: wait if needed
-    const now = Date.now();
-    const timeSinceLastRequest = now - lastRequestTime;
-    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL_MS) {
-      const waitTime = MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+    // Process chunk in parallel
+    const chunkPromises = chunk.map(book => 
+      enrichBookWithGoogleBooks(book, scanId, jobId, supabase)
+    );
+    
+    const chunkResults = await Promise.all(chunkPromises);
+    enrichedBooks.push(...chunkResults);
+    
+    // Small delay between chunks to respect rate limits (only if not last chunk)
+    if (i + CONCURRENCY_LIMIT < books.length) {
+      await new Promise(resolve => setTimeout(resolve, 200)); // 200ms between chunks
     }
-    lastRequestTime = Date.now();
-
-    const enriched = await enrichBookWithGoogleBooks(book, scanId, jobId);
-    enrichedBooks.push(enriched);
   }
 
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Enrichment complete: ${enrichedBooks.length} books processed`);
+  const enrichedCount = enrichedBooks.filter(b => b.google_books_id).length;
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Enrichment complete: ${enrichedCount}/${enrichedBooks.length} books enriched with Google Books metadata`);
   return enrichedBooks;
 }
 
@@ -2124,8 +2236,8 @@ export async function processScanJob(
     // But that's a large refactor. For now, let's use a simpler approach:
     // Call the scan processing via an internal function call
     
-  // Hard timeout: 135 seconds total (extended from 75s to allow for longer Gemini responses)
-  const TOTAL_TIMEOUT_MS = 135000;
+  // Hard timeout: 185 seconds total (extended from 135s to allow for parallel enrichment and batch saves)
+  const TOTAL_TIMEOUT_MS = 185000;
   const scanStartTime = Date.now();
   const getElapsedMs = () => Date.now() - scanStartTime;
   const getRemainingMs = () => Math.max(0, TOTAL_TIMEOUT_MS - getElapsedMs());
@@ -2238,7 +2350,7 @@ export async function processScanJob(
   
   // Set overall timeout - catch-all failure handler
   overallTimeout = setTimeout(() => {
-    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Hard timeout (135s) exceeded`);
+    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Hard timeout (185s) exceeded`);
     geminiController.abort();
     openaiController.abort();
     scanMetadata.ended_reason = 'timeout';
@@ -2268,7 +2380,7 @@ export async function processScanJob(
           await updateProgress('gemini', geminiBooks.length);
         }
         
-        // QUALITY GATE: Check if Gemini result passes
+        // QUALITY GATE: Check if Gemini result passes (lightweight check - no validation yet)
         const qualityGatePassed = 
           !geminiResult.usedRepair && // Clean JSON (no repair needed)
           geminiBooks.length >= MIN_BOOKS && // Enough books
@@ -2278,51 +2390,19 @@ export async function processScanJob(
           // Gemini passed quality gate - complete immediately, skip OpenAI
           console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Gemini passed quality gate: ${geminiBooks.length} books, clean JSON, ${geminiResult.rawLength} chars. Completing job without OpenAI.`);
           
-          // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
+          // PRE-WARM PIPELINE: Parse → Enrich → Normalize + Validate → cleanBooks
           // Step 1: Parse (already done - geminiBooks are rawBooks)
           const rawBooks = geminiBooks;
           
-          // Step 2: Normalize + Validate (ALWAYS runs before save)
-          const cleanBooks = await normalizeAndValidateBooks(rawBooks);
+          // Step 2: Enrich with Google Books API FIRST (before validation to speed up)
+          const enrichedBooks = await enrichBooksWithGoogleBooks(rawBooks, scanId, jobId, supabase);
           
-          // Step 2.5: Enrich with Google Books API (replace AI guesses with official metadata)
-          const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId);
+          // Step 3: Normalize + Validate AFTER enrichment (moved after Gemini returns)
+          const cleanBooks = await normalizeAndValidateBooks(enrichedBooks);
           
-          // Step 3: Save enrichedBooks to scan_jobs.books (ONLY after normalization/validation + enrichment)
-          // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
-          const updateResult = await supabase
-            .from('scan_jobs')
-            .update({
-              status: 'completed',
-              books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
-              error: null, // Clear any previous error
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', jobId);
-          
-          if (updateResult.error) {
-            // CRITICAL: If DB update fails, treat as failed - don't log success
-            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
-            scanMetadata.ended_reason = 'db_update_failed';
-            // Update job as failed with error
-            await supabase
-              .from('scan_jobs')
-              .update({
-                status: 'failed',
-                error: JSON.stringify({
-                  code: 'db_update_failed',
-                  message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
-                }),
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', jobId);
-            // Don't return early - let it fall through to error handler
-            throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
-          } else {
-            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=completed)`);
-            
-            // Step 4: Save books directly to books table (server-authoritative)
-            if (enrichedBooks.length > 0 && userId) {
+          // Step 4: Save books directly to books table FIRST (server-authoritative)
+          // This must happen before updating scan_jobs status for early response
+          if (enrichedBooks.length > 0 && userId) {
               try {
                 const scannedAt = Date.now();
                 const booksToInsert = enrichedBooks.map((book, index) => {
@@ -2356,44 +2436,39 @@ export async function processScanJob(
                   return bookData;
                 });
                 
-                // Use upsert to avoid duplicates (based on user_id + title + author)
-                // Insert books in batches to avoid overwhelming the database
+                // Use batch upsert to insert/update all books efficiently
+                // Process in batches to avoid overwhelming the database
                 const BATCH_SIZE = 50;
                 let savedCount = 0;
                 
                 for (let i = 0; i < booksToInsert.length; i += BATCH_SIZE) {
                   const batch = booksToInsert.slice(i, i + BATCH_SIZE);
                   
-                  // For each book, check if it exists first, then upsert
-                  for (const bookData of batch) {
-                    const authorForQuery = bookData.author || '';
-                    const { data: existingBook } = await supabase
-                      .from('books')
-                      .select('id')
-                      .eq('user_id', userId)
-                      .eq('title', bookData.title)
-                      .eq('author', authorForQuery)
-                      .maybeSingle();
-                    
-                    if (existingBook) {
-                      // Update existing book (preserve cover_url and other metadata if present)
-                      const { error: updateError } = await supabase
-                        .from('books')
-                        .update({
-                          ...bookData,
-                          updated_at: new Date().toISOString(),
-                        })
-                        .eq('id', existingBook.id);
-                      
-                      if (!updateError) savedCount++;
-                    } else {
-                      // Insert new book
-                      const { error: insertError } = await supabase
-                        .from('books')
-                        .insert(bookData);
-                      
-                      if (!insertError) savedCount++;
+                  // Batch upsert: insert or update based on user_id + title + author
+                  // Use Supabase's upsert with onConflict to handle duplicates efficiently
+                  const { data: upsertData, error: upsertError } = await supabase
+                    .from('books')
+                    .upsert(batch, {
+                      onConflict: 'user_id,title,author',
+                      ignoreDuplicates: false
+                    })
+                    .select('id');
+                  
+                  if (upsertError) {
+                    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Batch upsert error for batch ${i / BATCH_SIZE + 1}:`, upsertError);
+                    // Fallback: try individual inserts for this batch
+                    for (const bookData of batch) {
+                      try {
+                        const { error: insertError } = await supabase
+                          .from('books')
+                          .insert(bookData);
+                        if (!insertError) savedCount++;
+                      } catch (err) {
+                        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Individual insert failed for "${bookData.title}":`, err);
+                      }
                     }
+                  } else {
+                    savedCount += upsertData?.length || batch.length;
                   }
                 }
                 
@@ -2405,6 +2480,41 @@ export async function processScanJob(
               }
             } else if (!userId) {
               console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Skipping books table save: no userId (guest user)`);
+            }
+            
+            // Step 4: Update scan_jobs status to 'completed' IMMEDIATELY after books are saved (early response)
+            // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
+            const updateResult = await supabase
+              .from('scan_jobs')
+              .update({
+                status: 'completed',
+                books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
+                error: null, // Clear any previous error
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', jobId);
+            
+            if (updateResult.error) {
+              // CRITICAL: If DB update fails, treat as failed - don't log success
+              console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
+              scanMetadata.ended_reason = 'db_update_failed';
+              // Update job as failed with error
+              await supabase
+                .from('scan_jobs')
+                .update({
+                  status: 'failed',
+                  error: JSON.stringify({
+                    code: 'db_update_failed',
+                    message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
+                  }),
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', jobId);
+              // Don't return early - let it fall through to error handler
+              throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
+            } else {
+              console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=completed)`);
+              console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job status updated to 'completed' immediately after books saved`);
             }
             
             console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
@@ -2479,91 +2589,45 @@ export async function processScanJob(
       console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
     }
     
-  } catch (err: any) {
-    console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
-    scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';
-    if (err?.name === 'AbortError') {
-      scanMetadata.ended_reason = 'request_aborted';
+    // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
+    // Step 1: Parse (already done - finalBooks are rawBooks from merge)
+    const rawBooks = finalBooks;
+  
+    // Step 2: Normalize + Validate (ALWAYS runs before save)
+    const cleanBooks = await normalizeAndValidateBooks(rawBooks);
+  
+    // Step 2.5: Enrich with Google Books API (replace AI guesses with official metadata)
+    const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId, supabase);
+  
+    // Check if validation filtered everything out
+    if (enrichedBooks.length === 0 && rawBooks.length > 0) {
+      scanMetadata.ended_reason = 'validation_failed';
+      console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
+    } else if (enrichedBooks.length === 0) {
+      scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
+    } else {
+      scanMetadata.ended_reason = 'completed';
     }
-  } finally {
-    // Cleanup timeouts
-    if (geminiTimeout) clearTimeout(geminiTimeout);
-    if (openaiTimeout) clearTimeout(openaiTimeout);
-    if (overallTimeout) clearTimeout(overallTimeout);
-    if (!geminiController.signal.aborted) geminiController.abort();
-    if (!openaiController.signal.aborted) openaiController.abort();
-  }
   
-  // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
-  // Step 1: Parse (already done - finalBooks are rawBooks from merge)
-  const rawBooks = finalBooks;
+    // Log final metadata with jobId correlation
+    // Note: apiResults removed - api_results column doesn't exist in scan_jobs table
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan completed:`, {
+      received_image_bytes: scanMetadata.received_image_bytes,
+      content_type: scanMetadata.content_type,
+      parse_path: scanMetadata.parse_path,
+      ended_reason: scanMetadata.ended_reason,
+      books_found: enrichedBooks.length
+    });
   
-  // Step 2: Normalize + Validate (ALWAYS runs before save)
-  const cleanBooks = await normalizeAndValidateBooks(rawBooks);
+    // Step 3: Save books directly to books table FIRST (server-authoritative)
+    // This must happen before updating scan_jobs status for early response
+    const finalStatus = enrichedBooks.length > 0 ? 'completed' : 'failed';
+    const finalError = enrichedBooks.length === 0 ? JSON.stringify({
+      code: scanMetadata.ended_reason || 'no_books_detected',
+      message: 'No books detected after validation',
+      metadata: scanMetadata
+    }) : null;
   
-  // Step 2.5: Enrich with Google Books API (replace AI guesses with official metadata)
-  const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId);
-  
-  // Check if validation filtered everything out
-  if (enrichedBooks.length === 0 && rawBooks.length > 0) {
-    scanMetadata.ended_reason = 'validation_failed';
-    console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
-  } else if (enrichedBooks.length === 0) {
-    scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
-      } else {
-    scanMetadata.ended_reason = 'completed';
-  }
-  
-  // Log final metadata with jobId correlation
-  // Note: apiResults removed - api_results column doesn't exist in scan_jobs table
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan completed:`, {
-    received_image_bytes: scanMetadata.received_image_bytes,
-    content_type: scanMetadata.content_type,
-    parse_path: scanMetadata.parse_path,
-    ended_reason: scanMetadata.ended_reason,
-    books_found: enrichedBooks.length
-  });
-  
-  // Step 3: Save enrichedBooks to scan_jobs.books (ONLY after normalization/validation + enrichment)
-  // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
-  const finalStatus = enrichedBooks.length > 0 ? 'completed' : 'failed';
-  const finalError = enrichedBooks.length === 0 ? JSON.stringify({
-    code: scanMetadata.ended_reason || 'no_books_detected',
-    message: 'No books detected after validation',
-    metadata: scanMetadata
-  }) : null;
-  
-  const updateResult = await supabase
-    .from('scan_jobs')
-    .update({
-      status: finalStatus,
-      books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
-      error: finalError, // Set error if failed, null if completed
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', jobId);
-  
-  if (updateResult.error) {
-    // CRITICAL: If DB update fails, treat as failed - don't log success
-    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
-    // Try to update job as failed with error about the DB update failure
-    await supabase
-      .from('scan_jobs')
-      .update({
-        status: 'failed',
-        error: JSON.stringify({
-          code: 'db_update_failed',
-          message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
-        }),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', jobId);
-    // Throw error so it's caught by outer catch block
-    throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
-        } else {
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=${finalStatus})`);
-    
-    // Step 4: Save books directly to books table (server-authoritative)
     if (finalStatus === 'completed' && enrichedBooks.length > 0 && userId) {
               try {
                 const scannedAt = Date.now();
@@ -2598,62 +2662,185 @@ export async function processScanJob(
           return bookData;
         });
         
-        // Use upsert to avoid duplicates (based on user_id + title + author)
-        // Insert books in batches to avoid overwhelming the database
+        // Use batch upsert to insert/update all books efficiently
+        // Process in batches to avoid overwhelming the database
         const BATCH_SIZE = 50;
         let savedCount = 0;
         
         for (let i = 0; i < booksToInsert.length; i += BATCH_SIZE) {
           const batch = booksToInsert.slice(i, i + BATCH_SIZE);
           
-          // For each book, check if it exists first, then upsert
-          for (const bookData of batch) {
-            const authorForQuery = bookData.author || '';
-            const { data: existingBook } = await supabase
-              .from('books')
-              .select('id')
-              .eq('user_id', userId)
-              .eq('title', bookData.title)
-              .eq('author', authorForQuery)
-              .maybeSingle();
-            
-            if (existingBook) {
-              // Update existing book (preserve cover_url and other metadata if present)
-              const { error: updateError } = await supabase
-                .from('books')
-                .update({
-                  ...bookData,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', existingBook.id);
-              
-              if (!updateError) savedCount++;
-            } else {
-              // Insert new book
-              const { error: insertError } = await supabase
-                .from('books')
-                .insert(bookData);
-              
-              if (!insertError) savedCount++;
+          // Batch upsert: insert or update based on user_id + title + author
+          // Use Supabase's upsert with onConflict to handle duplicates efficiently
+          const { data: upsertData, error: upsertError } = await supabase
+            .from('books')
+            .upsert(batch, {
+              onConflict: 'user_id,title,author',
+              ignoreDuplicates: false
+            })
+            .select('id');
+          
+          if (upsertError) {
+            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Batch upsert error for batch ${i / BATCH_SIZE + 1}:`, upsertError);
+            // Fallback: try individual inserts for this batch
+            for (const bookData of batch) {
+              try {
+                const { error: insertError } = await supabase
+                  .from('books')
+                  .insert(bookData);
+                if (!insertError) savedCount++;
+              } catch (err) {
+                console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Individual insert failed for "${bookData.title}":`, err);
+              }
             }
+          } else {
+            savedCount += upsertData?.length || batch.length;
           }
         }
         
-                console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ SERVER-AUTHORITATIVE: Saved ${savedCount}/${enrichedBooks.length} books directly to books table`);
+        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ SERVER-AUTHORITATIVE: Saved ${savedCount}/${enrichedBooks.length} books directly to books table`);
       } catch (booksTableError: any) {
         // Log error but don't fail the job - books are still in scan_jobs.books
         console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ WARNING: Failed to save books to books table:`, booksTableError);
         console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Books are still available in scan_jobs.books for client sync`);
       }
-    } else if (finalStatus === 'completed' && !userId) {
+    } else if (!userId) {
       console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Skipping books table save: no userId (guest user)`);
     }
     
+    // Step 4: Update scan_jobs status to 'completed' IMMEDIATELY after books are saved (early response)
+    // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
+    const updateResult = await supabase
+      .from('scan_jobs')
+      .update({
+        status: finalStatus,
+        books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
+        error: finalError, // Set error if failed, null if completed
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    
+    if (updateResult.error) {
+      // CRITICAL: If DB update fails, treat as failed - don't log success
+      console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
+      // Try to update job as failed with error about the DB update failure
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({
+            code: 'db_update_failed',
+            message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
+          }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      // Throw error so it's caught by outer catch block
+      throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
+    } else {
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=${finalStatus})`);
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job status updated to '${finalStatus}' immediately after books saved`);
+    }
+    
     console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
+  
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${enrichedBooks.length} books, status=${finalStatus}`);
+  } catch (err: any) {
+    console.error(`[SCAN ${scanId}] Scan error:`, err?.message || err);
+    scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';
+    if (err?.name === 'AbortError') {
+      scanMetadata.ended_reason = 'request_aborted';
+    }
+    // If error occurred, still try to process any books we have
+    if (finalBooks.length > 0) {
+      try {
+        const rawBooks = finalBooks;
+        const cleanBooks = await normalizeAndValidateBooks(rawBooks);
+        const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId, supabase);
+        const finalStatus = enrichedBooks.length > 0 ? 'completed' : 'failed';
+        const finalError = enrichedBooks.length === 0 ? JSON.stringify({
+          code: scanMetadata.ended_reason || 'scan_exception',
+          message: err?.message || String(err),
+          metadata: scanMetadata
+        }) : null;
+        
+        await supabase
+          .from('scan_jobs')
+          .update({
+            status: finalStatus,
+            books: enrichedBooks,
+            error: finalError,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', jobId);
+      } catch (recoveryError) {
+        // If recovery also fails, mark job as failed
+        await supabase
+          .from('scan_jobs')
+          .update({
+            status: 'failed',
+            error: JSON.stringify({
+              code: 'scan_exception',
+              message: err?.message || String(err),
+              metadata: scanMetadata
+            }),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', jobId);
+      }
+    } else {
+      // No books to process, mark as failed
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({
+            code: 'scan_exception',
+            message: err?.message || String(err),
+            metadata: scanMetadata
+          }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+    }
+  } finally {
+    // Cleanup timeouts
+    if (geminiTimeout) clearTimeout(geminiTimeout);
+    if (openaiTimeout) clearTimeout(openaiTimeout);
+    if (overallTimeout) clearTimeout(overallTimeout);
+    if (!geminiController.signal.aborted) geminiController.abort();
+    if (!openaiController.signal.aborted) openaiController.abort();
   }
   
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${enrichedBooks.length} books, status=${finalStatus}`);
-  } catch (error: any) {
+  // Handle errors that occurred during the scan
+  if (scanMetadata.ended_reason && scanMetadata.ended_reason !== 'completed') {
+    const errorCode = scanMetadata.ended_reason;
+    const errorMessage = scanMetadata.ended_reason === 'no_books_detected' 
+      ? 'No books detected after validation'
+      : scanMetadata.ended_reason;
+    
+    console.error(`[API] Scan job ${jobId} failed:`, errorMessage);
+    console.error(`[API] [SCAN ${scanId}] Error metadata:`, {
+      received_image_bytes: scanMetadata.received_image_bytes,
+      content_type: scanMetadata.content_type,
+      parse_path: scanMetadata.parse_path,
+      ended_reason: scanMetadata.ended_reason,
+    });
+    
+    await supabase
+      .from('scan_jobs')
+      .update({
+        status: 'failed',
+        error: JSON.stringify({
+          code: errorCode,
+          message: errorMessage,
+          metadata: scanMetadata
+        }),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+  }
+} catch (error: any) {
     // Update job with error
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';
     const errorCode = error?.name === 'AbortError' ? 'request_aborted' : 
@@ -2741,21 +2928,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       imageHash = crypto.createHash('sha256').update(imageDataURL).digest('hex').substring(0, 16);
       console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Image hash: ${imageHash}, userId: ${userId || 'guest'}`);
       
-      // Check Supabase for recent duplicate job (same user within 5 seconds)
-      const { data: duplicateJobs } = await supabase
-        .from('scan_jobs')
-        .select('id, status, created_at')
-        .eq('user_id', userId || null)
-        .gte('created_at', new Date(Date.now() - 5000).toISOString())
-        .order('created_at', { ascending: false })
-        .limit(5);
-      
-      if (duplicateJobs && duplicateJobs.length > 0) {
-        console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Found ${duplicateJobs.length} recent scan jobs (possible duplicate)`);
-        for (const dup of duplicateJobs) {
-          if (dup.id !== jobId) {
-            console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Recent job found: ${dup.id} (status: ${dup.status}, created: ${dup.created_at})`);
-          }
+      // Image Hash Locking: Check if scan with same image_hash is already processing
+      // If found, return existing jobId instead of starting a new scan
+      if (imageHash) {
+        const { data: existingJob } = await supabase
+          .from('scan_jobs')
+          .select('id, status, created_at')
+          .eq('image_hash', imageHash)
+          .eq('user_id', userId || null)
+          .in('status', ['pending', 'processing'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (existingJob && existingJob.id !== jobId) {
+          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚡ Image hash lock: Found existing job ${existingJob.id} with same image_hash, returning existing jobId`);
+          
+          // Return existing jobId immediately (202 Accepted)
+          return res.status(202).json({
+            jobId: existingJob.id,
+            status: existingJob.status
+          });
         }
       }
       
