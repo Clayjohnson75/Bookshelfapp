@@ -1,6 +1,56 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 /**
+ * Optimize image for AI processing:
+ * - Resize to max 2000px on longest side (AI models prefer this size)
+ * - Convert to WebP format for lower latency and smaller file size
+ * - Maintain aspect ratio
+ * - Return optimized image as base64 data URL
+ */
+async function optimizeImageForAI(
+  imageBuffer: Buffer,
+  originalMimeType: string,
+  jobId: string
+): Promise<string> {
+  try {
+    const sharp = (await import('sharp')).default;
+    
+    console.log(`[API] [WORKER] [JOB ${jobId}] Optimizing image: ${imageBuffer.length} bytes, format: ${originalMimeType}`);
+    
+    // Process image with sharp
+    const optimizedBuffer = await sharp(imageBuffer)
+      .resize(2000, 2000, {
+        fit: 'inside', // Maintain aspect ratio, fit within 2000x2000
+        withoutEnlargement: true, // Don't enlarge if already smaller
+      })
+      .webp({
+        quality: 85, // Good balance between quality and file size
+        effort: 4, // Moderate compression effort (0-6, higher = slower but better compression)
+      })
+      .toBuffer();
+    
+    const originalSize = imageBuffer.length;
+    const optimizedSize = optimizedBuffer.length;
+    const sizeReduction = ((originalSize - optimizedSize) / originalSize * 100).toFixed(1);
+    
+    console.log(`[API] [WORKER] [JOB ${jobId}] ✅ Image optimized: ${originalSize} bytes → ${optimizedSize} bytes (${sizeReduction}% reduction)`);
+    
+    // Convert to base64 data URL
+    const base64 = optimizedBuffer.toString('base64');
+    return `data:image/webp;base64,${base64}`;
+    
+  } catch (error: any) {
+    // If sharp fails, fall back to original image
+    console.error(`[API] [WORKER] [JOB ${jobId}] ⚠️ Image optimization failed:`, error?.message || error);
+    console.log(`[API] [WORKER] [JOB ${jobId}] Falling back to original image format`);
+    
+    // Convert original buffer to base64 data URL
+    const base64 = imageBuffer.toString('base64');
+    return `data:${originalMimeType};base64,${base64}`;
+  }
+}
+
+/**
  * POST /api/scan-worker
  * Worker endpoint that processes scan jobs
  * Called by QStash (or directly for testing)
@@ -99,14 +149,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'Failed to download image from storage' });
     }
     
-    // Convert blob to base64 data URL for processScanJob
+    // Convert blob to buffer
     const arrayBuffer = await imageData.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const base64 = buffer.toString('base64');
-    const mimeType = image_path.endsWith('.png') ? 'image/png' : image_path.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
-    const imageDataURL = `data:${mimeType};base64,${base64}`;
+    const originalMimeType = image_path.endsWith('.png') ? 'image/png' : image_path.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
     
-    console.log(`[API] [WORKER] [JOB ${jobId}] Image downloaded from storage (${buffer.length} bytes)`);
+    console.log(`[API] [WORKER] [JOB ${jobId}] Image downloaded from storage (${buffer.length} bytes, format: ${originalMimeType})`);
+    
+    // Optimize image for AI processing (resize to max 2000px, convert to WebP)
+    const imageDataURL = await optimizeImageForAI(buffer, originalMimeType, jobId);
     
     // Update job status to 'processing' before starting
     await supabase

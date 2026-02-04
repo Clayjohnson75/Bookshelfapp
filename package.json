@@ -41,6 +41,7 @@
     "react-native-screens": "~4.16.0",
     "react-native-web": "^0.21.0",
     "resend": "^6.6.0",
+    "sharp": "^0.33.0",
     "typescript": "~5.9.2"
   },
   "devDependencies": {

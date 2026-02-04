@@ -10,6 +10,215 @@ import {
   ScanTimeBudget,
 } from './scan-resilience';
 
+// Google Books API helper functions for server-side enrichment
+const GOOGLE_BOOKS_API_KEY = process.env.GOOGLE_BOOKS_API_KEY;
+const GOOGLE_BOOKS_BASE_URL = 'https://www.googleapis.com/books/v1';
+
+/**
+ * Normalize text for comparison (lowercase, remove special chars, collapse whitespace)
+ */
+function normalizeText(text: string): string {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Calculate similarity score between two strings (0..1)
+ */
+function similarityScore(a: string, b: string): number {
+  const normA = normalizeText(a);
+  const normB = normalizeText(b);
+  if (!normA || !normB) return 0;
+  if (normA === normB) return 1;
+  
+  // Token overlap
+  const tokensA = new Set(normA.split(' ').filter(Boolean));
+  const tokensB = new Set(normB.split(' ').filter(Boolean));
+  if (!tokensA.size || !tokensB.size) return 0;
+  
+  let intersection = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) intersection++;
+  }
+  return intersection / Math.max(tokensA.size, tokensB.size);
+}
+
+/**
+ * Enrich a book with Google Books API metadata
+ * Replaces AI's title/author/ISBN with official ones if found
+ * Falls back to original if not found
+ */
+async function enrichBookWithGoogleBooks(
+  book: any,
+  scanId: string,
+  jobId: string
+): Promise<any> {
+  if (!GOOGLE_BOOKS_API_KEY) {
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ GOOGLE_BOOKS_API_KEY not set, skipping enrichment for "${book.title}"`);
+    return book; // Return original if no API key
+  }
+
+  const originalTitle = book.title || '';
+  const originalAuthor = book.author || '';
+  
+  if (!originalTitle || originalTitle.length < 2) {
+    return book; // Skip enrichment if title is too short
+  }
+
+  try {
+    // Build search query
+    const cleanTitle = originalTitle.replace(/[^\w\s]/g, ' ').trim();
+    const cleanAuthor = originalAuthor.replace(/[^\w\s]/g, ' ').trim();
+    const query = cleanAuthor 
+      ? `intitle:"${cleanTitle}" inauthor:"${cleanAuthor}"`
+      : `intitle:"${cleanTitle}"`;
+
+    // Call Google Books API with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+
+    const url = `${GOOGLE_BOOKS_BASE_URL}/volumes?q=${encodeURIComponent(query)}&maxResults=5&key=${GOOGLE_BOOKS_API_KEY}`;
+    
+    let response: Response;
+    try {
+      response = await fetch(url, { 
+        signal: controller.signal,
+        headers: { 'User-Agent': 'BookshelfScanner/1.0' }
+      });
+      clearTimeout(timeoutId);
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === 'AbortError') {
+        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⏱️ Google Books timeout for "${originalTitle}", using original`);
+        return book;
+      }
+      throw fetchError;
+    }
+
+    if (!response.ok) {
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Google Books API error ${response.status} for "${originalTitle}", using original`);
+      return book;
+    }
+
+    const data = await response.json() as any;
+    
+    if (!data.items || data.items.length === 0) {
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 📚 No Google Books match for "${originalTitle}", using original`);
+      return book;
+    }
+
+    // Find best match by scoring title and author similarity
+    let bestMatch: any = null;
+    let bestScore = 0;
+
+    for (const item of data.items) {
+      const volumeInfo = item.volumeInfo || {};
+      const matchTitle = volumeInfo.title || '';
+      const matchAuthors = volumeInfo.authors || [];
+      const matchAuthor = matchAuthors.length > 0 ? matchAuthors[0] : '';
+      
+      // Calculate similarity scores
+      const titleScore = similarityScore(originalTitle, matchTitle);
+      const authorScore = originalAuthor && matchAuthor 
+        ? similarityScore(originalAuthor, matchAuthor)
+        : 0.5; // Neutral score if one is missing
+      
+      // Combined score (title weighted more heavily)
+      const combinedScore = (titleScore * 0.7) + (authorScore * 0.3);
+      
+      // Require minimum similarity threshold
+      if (combinedScore > bestScore && titleScore >= 0.5) {
+        bestScore = combinedScore;
+        bestMatch = item;
+      }
+    }
+
+    if (!bestMatch || bestScore < 0.6) {
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 📚 No good Google Books match (best score: ${bestScore.toFixed(2)}) for "${originalTitle}", using original`);
+      return book;
+    }
+
+    // Enrich book with official metadata
+    const volumeInfo = bestMatch.volumeInfo || {};
+    const enrichedBook = {
+      ...book,
+      // Replace with official title/author/ISBN
+      title: volumeInfo.title || originalTitle,
+      author: (volumeInfo.authors && volumeInfo.authors.length > 0) 
+        ? volumeInfo.authors[0] 
+        : originalAuthor,
+      isbn: (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_13')?.identifier ||
+            (volumeInfo.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_10')?.identifier ||
+            book.isbn,
+      // Add Google Books metadata
+      google_books_id: bestMatch.id,
+      description: volumeInfo.description || book.description,
+      page_count: volumeInfo.pageCount || book.page_count,
+      categories: volumeInfo.categories || book.categories,
+      publisher: volumeInfo.publisher || book.publisher,
+      published_date: volumeInfo.publishedDate || book.published_date,
+      language: volumeInfo.language || book.language,
+      average_rating: volumeInfo.averageRating || book.average_rating,
+      ratings_count: volumeInfo.ratingsCount || book.ratings_count,
+      subtitle: volumeInfo.subtitle || book.subtitle,
+      print_type: volumeInfo.printType || book.print_type,
+      // Preserve original spine text and other AI-detected fields
+      spine_text: book.spine_text,
+      spine_index: book.spine_index,
+      confidence: book.confidence,
+    };
+
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Enriched "${originalTitle}" → "${enrichedBook.title}" (score: ${bestScore.toFixed(2)})`);
+    return enrichedBook;
+
+  } catch (error: any) {
+    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ Error enriching "${originalTitle}" with Google Books:`, error?.message || error);
+    return book; // Fall back to original on any error
+  }
+}
+
+/**
+ * Enrich multiple books with Google Books API metadata
+ * Processes books sequentially with rate limiting to avoid 429 errors
+ */
+async function enrichBooksWithGoogleBooks(
+  books: any[],
+  scanId: string,
+  jobId: string
+): Promise<any[]> {
+  if (!GOOGLE_BOOKS_API_KEY || books.length === 0) {
+    return books;
+  }
+
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 🔍 Enriching ${books.length} books with Google Books API...`);
+  
+  const enrichedBooks: any[] = [];
+  const MIN_REQUEST_INTERVAL_MS = 1200; // 1.2 seconds between requests
+  let lastRequestTime = 0;
+
+  for (let i = 0; i < books.length; i++) {
+    const book = books[i];
+    
+    // Rate limit: wait if needed
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequestTime;
+    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL_MS) {
+      const waitTime = MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    lastRequestTime = Date.now();
+
+    const enriched = await enrichBookWithGoogleBooks(book, scanId, jobId);
+    enrichedBooks.push(enriched);
+  }
+
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Enrichment complete: ${enrichedBooks.length} books processed`);
+  return enrichedBooks;
+}
+
 // Basic helpers
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -2076,13 +2285,16 @@ export async function processScanJob(
           // Step 2: Normalize + Validate (ALWAYS runs before save)
           const cleanBooks = await normalizeAndValidateBooks(rawBooks);
           
-          // Step 3: Save cleanBooks to scan_jobs.books (ONLY after normalization/validation)
+          // Step 2.5: Enrich with Google Books API (replace AI guesses with official metadata)
+          const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId);
+          
+          // Step 3: Save enrichedBooks to scan_jobs.books (ONLY after normalization/validation + enrichment)
           // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
           const updateResult = await supabase
             .from('scan_jobs')
             .update({
               status: 'completed',
-              books: cleanBooks, // Write cleanBooks (normalized + validated) to books column
+              books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
               error: null, // Clear any previous error
               updated_at: new Date().toISOString()
             })
@@ -2107,12 +2319,99 @@ export async function processScanJob(
             // Don't return early - let it fall through to error handler
             throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
           } else {
-            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${cleanBooks.length} clean books to scan_jobs.books (status=completed)`);
+            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=completed)`);
+            
+            // Step 4: Save books directly to books table (server-authoritative)
+            if (enrichedBooks.length > 0 && userId) {
+              try {
+                const scannedAt = Date.now();
+                const booksToInsert = enrichedBooks.map((book, index) => {
+                  const bookData: any = {
+                    user_id: userId,
+                    title: book.title || '',
+                    author: book.author || null,
+                    isbn: book.isbn || null,
+                    confidence: book.confidence || 'medium',
+                    status: 'pending', // New books start as pending
+                    scanned_at: scannedAt,
+                    spine_text: book.spine_text || null,
+                    spine_index: book.spine_index !== undefined ? book.spine_index : index,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                  };
+                  
+                  // Only include optional fields if they have values
+                  if (book.google_books_id) bookData.google_books_id = book.google_books_id;
+                  if (book.description) bookData.description = book.description;
+                  if (book.page_count) bookData.page_count = book.page_count;
+                  if (book.categories) bookData.categories = book.categories;
+                  if (book.publisher) bookData.publisher = book.publisher;
+                  if (book.published_date) bookData.published_date = book.published_date;
+                  if (book.language) bookData.language = book.language;
+                  if (book.average_rating) bookData.average_rating = book.average_rating;
+                  if (book.ratings_count) bookData.ratings_count = book.ratings_count;
+                  if (book.subtitle) bookData.subtitle = book.subtitle;
+                  if (book.print_type) bookData.print_type = book.print_type;
+                  
+                  return bookData;
+                });
+                
+                // Use upsert to avoid duplicates (based on user_id + title + author)
+                // Insert books in batches to avoid overwhelming the database
+                const BATCH_SIZE = 50;
+                let savedCount = 0;
+                
+                for (let i = 0; i < booksToInsert.length; i += BATCH_SIZE) {
+                  const batch = booksToInsert.slice(i, i + BATCH_SIZE);
+                  
+                  // For each book, check if it exists first, then upsert
+                  for (const bookData of batch) {
+                    const authorForQuery = bookData.author || '';
+                    const { data: existingBook } = await supabase
+                      .from('books')
+                      .select('id')
+                      .eq('user_id', userId)
+                      .eq('title', bookData.title)
+                      .eq('author', authorForQuery)
+                      .maybeSingle();
+                    
+                    if (existingBook) {
+                      // Update existing book (preserve cover_url and other metadata if present)
+                      const { error: updateError } = await supabase
+                        .from('books')
+                        .update({
+                          ...bookData,
+                          updated_at: new Date().toISOString(),
+                        })
+                        .eq('id', existingBook.id);
+                      
+                      if (!updateError) savedCount++;
+                    } else {
+                      // Insert new book
+                      const { error: insertError } = await supabase
+                        .from('books')
+                        .insert(bookData);
+                      
+                      if (!insertError) savedCount++;
+                    }
+                  }
+                }
+                
+                console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ SERVER-AUTHORITATIVE: Saved ${savedCount}/${enrichedBooks.length} books directly to books table`);
+              } catch (booksTableError: any) {
+                // Log error but don't fail the job - books are still in scan_jobs.books
+                console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ WARNING: Failed to save books to books table:`, booksTableError);
+                console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Books are still available in scan_jobs.books for client sync`);
+              }
+            } else if (!userId) {
+              console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Skipping books table save: no userId (guest user)`);
+            }
+            
             console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
           }
           
           scanMetadata.ended_reason = 'completed';
-          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job completed with Gemini results: ${cleanBooks.length} books`);
+          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job completed with Gemini results: ${enrichedBooks.length} books`);
           
           // Cleanup and return early
           // Step 4: Cover fetching happens on client side when it receives status='completed'
@@ -2202,11 +2501,14 @@ export async function processScanJob(
   // Step 2: Normalize + Validate (ALWAYS runs before save)
   const cleanBooks = await normalizeAndValidateBooks(rawBooks);
   
+  // Step 2.5: Enrich with Google Books API (replace AI guesses with official metadata)
+  const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId);
+  
   // Check if validation filtered everything out
-  if (cleanBooks.length === 0 && rawBooks.length > 0) {
+  if (enrichedBooks.length === 0 && rawBooks.length > 0) {
     scanMetadata.ended_reason = 'validation_failed';
     console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
-  } else if (cleanBooks.length === 0) {
+  } else if (enrichedBooks.length === 0) {
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
       } else {
     scanMetadata.ended_reason = 'completed';
@@ -2219,13 +2521,13 @@ export async function processScanJob(
     content_type: scanMetadata.content_type,
     parse_path: scanMetadata.parse_path,
     ended_reason: scanMetadata.ended_reason,
-    books_found: cleanBooks.length
+    books_found: enrichedBooks.length
   });
   
-  // Step 3: Save cleanBooks to scan_jobs.books (ONLY after normalization/validation)
+  // Step 3: Save enrichedBooks to scan_jobs.books (ONLY after normalization/validation + enrichment)
   // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
-  const finalStatus = cleanBooks.length > 0 ? 'completed' : 'failed';
-  const finalError = cleanBooks.length === 0 ? JSON.stringify({
+  const finalStatus = enrichedBooks.length > 0 ? 'completed' : 'failed';
+  const finalError = enrichedBooks.length === 0 ? JSON.stringify({
     code: scanMetadata.ended_reason || 'no_books_detected',
     message: 'No books detected after validation',
     metadata: scanMetadata
@@ -2235,7 +2537,7 @@ export async function processScanJob(
     .from('scan_jobs')
     .update({
       status: finalStatus,
-      books: cleanBooks, // Write cleanBooks (normalized + validated) to books column
+      books: enrichedBooks, // Write enrichedBooks (normalized + validated + enriched) to books column
       error: finalError, // Set error if failed, null if completed
       updated_at: new Date().toISOString()
     })
@@ -2259,11 +2561,98 @@ export async function processScanJob(
     // Throw error so it's caught by outer catch block
     throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
         } else {
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${cleanBooks.length} clean books to scan_jobs.books (status=${finalStatus})`);
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${enrichedBooks.length} enriched books to scan_jobs.books (status=${finalStatus})`);
+    
+    // Step 4: Save books directly to books table (server-authoritative)
+    if (finalStatus === 'completed' && enrichedBooks.length > 0 && userId) {
+              try {
+                const scannedAt = Date.now();
+                const booksToInsert = enrichedBooks.map((book, index) => {
+          const bookData: any = {
+            user_id: userId,
+            title: book.title || '',
+            author: book.author || null,
+            isbn: book.isbn || null,
+            confidence: book.confidence || 'medium',
+            status: 'pending', // New books start as pending
+            scanned_at: scannedAt,
+            spine_text: book.spine_text || null,
+            spine_index: book.spine_index !== undefined ? book.spine_index : index,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          
+          // Only include optional fields if they have values
+          if (book.google_books_id) bookData.google_books_id = book.google_books_id;
+          if (book.description) bookData.description = book.description;
+          if (book.page_count) bookData.page_count = book.page_count;
+          if (book.categories) bookData.categories = book.categories;
+          if (book.publisher) bookData.publisher = book.publisher;
+          if (book.published_date) bookData.published_date = book.published_date;
+          if (book.language) bookData.language = book.language;
+          if (book.average_rating) bookData.average_rating = book.average_rating;
+          if (book.ratings_count) bookData.ratings_count = book.ratings_count;
+          if (book.subtitle) bookData.subtitle = book.subtitle;
+          if (book.print_type) bookData.print_type = book.print_type;
+          
+          return bookData;
+        });
+        
+        // Use upsert to avoid duplicates (based on user_id + title + author)
+        // Insert books in batches to avoid overwhelming the database
+        const BATCH_SIZE = 50;
+        let savedCount = 0;
+        
+        for (let i = 0; i < booksToInsert.length; i += BATCH_SIZE) {
+          const batch = booksToInsert.slice(i, i + BATCH_SIZE);
+          
+          // For each book, check if it exists first, then upsert
+          for (const bookData of batch) {
+            const authorForQuery = bookData.author || '';
+            const { data: existingBook } = await supabase
+              .from('books')
+              .select('id')
+              .eq('user_id', userId)
+              .eq('title', bookData.title)
+              .eq('author', authorForQuery)
+              .maybeSingle();
+            
+            if (existingBook) {
+              // Update existing book (preserve cover_url and other metadata if present)
+              const { error: updateError } = await supabase
+                .from('books')
+                .update({
+                  ...bookData,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', existingBook.id);
+              
+              if (!updateError) savedCount++;
+            } else {
+              // Insert new book
+              const { error: insertError } = await supabase
+                .from('books')
+                .insert(bookData);
+              
+              if (!insertError) savedCount++;
+            }
+          }
+        }
+        
+                console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ SERVER-AUTHORITATIVE: Saved ${savedCount}/${enrichedBooks.length} books directly to books table`);
+      } catch (booksTableError: any) {
+        // Log error but don't fail the job - books are still in scan_jobs.books
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ WARNING: Failed to save books to books table:`, booksTableError);
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Books are still available in scan_jobs.books for client sync`);
+      }
+    } else if (finalStatus === 'completed' && !userId) {
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Skipping books table save: no userId (guest user)`);
+    }
+    
     console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
   }
   
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${cleanBooks.length} books, status=${finalStatus}`);
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${enrichedBooks.length} books, status=${finalStatus}`);
   } catch (error: any) {
     // Update job with error
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';

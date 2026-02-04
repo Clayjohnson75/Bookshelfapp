@@ -1049,3 +1049,117 @@ export async function deleteBookFromSupabase(
   }
 }
 
+/**
+ * Sync on Open: Check for completed scan_jobs and return books that haven't been added to local library yet
+ * This ensures that if a scan finished while the app was closed, the books appear when the app reopens
+ */
+export async function syncCompletedScanJobs(
+  userId: string
+): Promise<Book[]> {
+  if (!supabase) {
+    console.warn('Supabase not available, skipping scan job sync');
+    return [];
+  }
+
+  // Skip for guest users
+  if (userId === 'guest_user') {
+    return [];
+  }
+
+  try {
+    // Get all completed scan jobs for this user
+    const { data: completedJobs, error: jobsError } = await supabase
+      .from('scan_jobs')
+      .select('id, books, updated_at, created_at')
+      .eq('user_id', userId)
+      .eq('status', 'completed')
+      .order('updated_at', { ascending: false });
+
+    if (jobsError) {
+      console.error('Error fetching completed scan jobs:', jobsError);
+      return [];
+    }
+
+    if (!completedJobs || completedJobs.length === 0) {
+      console.log('📚 No completed scan jobs to sync');
+      return [];
+    }
+
+    console.log(`📚 Found ${completedJobs.length} completed scan jobs to check`);
+
+    // Get all existing book titles/authors from the books table to avoid duplicates
+    const { data: existingBooks, error: existingError } = await supabase
+      .from('books')
+      .select('title, author')
+      .eq('user_id', userId);
+
+    if (existingError) {
+      console.error('Error fetching existing books for deduplication:', existingError);
+      // Continue anyway - we'll deduplicate on the client side
+    }
+
+    // Create a set of existing book keys (title + author) for fast lookup
+    const existingBookKeys = new Set<string>();
+    if (existingBooks) {
+      existingBooks.forEach(book => {
+        const key = `${book.title || ''}|${book.author || ''}`.toLowerCase();
+        existingBookKeys.add(key);
+      });
+    }
+
+    // Collect all books from completed jobs that don't exist yet
+    const newBooks: Book[] = [];
+    const scannedAt = Date.now();
+
+    for (const job of completedJobs) {
+      if (!job.books || !Array.isArray(job.books) || job.books.length === 0) {
+        continue;
+      }
+
+      const jobBooks = job.books as any[];
+      const jobCreatedAt = job.created_at ? new Date(job.created_at).getTime() : scannedAt;
+
+      for (const book of jobBooks) {
+        const bookKey = `${book.title || ''}|${book.author || ''}`.toLowerCase();
+        
+        // Skip if book already exists
+        if (existingBookKeys.has(bookKey)) {
+          continue;
+        }
+
+        // Convert scan_job book format to Book type
+        const newBook: Book = {
+          id: book.id || `book_${jobCreatedAt}_${Math.random().toString(36).substring(2, 9)}`,
+          title: book.title || '',
+          author: book.author || undefined,
+          isbn: book.isbn || undefined,
+          confidence: book.confidence || 'medium',
+          status: 'pending', // New books start as pending
+          scannedAt: jobCreatedAt,
+          googleBooksId: book.google_books_id || undefined,
+          description: book.description || undefined,
+          pageCount: book.page_count || undefined,
+          categories: book.categories || undefined,
+          publisher: book.publisher || undefined,
+          publishedDate: book.published_date || undefined,
+          language: book.language || undefined,
+          averageRating: book.average_rating || undefined,
+          ratingsCount: book.ratings_count || undefined,
+          subtitle: book.subtitle || undefined,
+          printType: book.print_type || undefined,
+        };
+
+        newBooks.push(newBook);
+        // Add to existing set to avoid duplicates within this sync
+        existingBookKeys.add(bookKey);
+      }
+    }
+
+    console.log(`📚 Sync on Open: Found ${newBooks.length} new books from completed scan jobs`);
+    return newBooks;
+  } catch (error) {
+    console.error('Error syncing completed scan jobs:', error);
+    return [];
+  }
+}
+

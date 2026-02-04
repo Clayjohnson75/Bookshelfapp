@@ -12,7 +12,8 @@ import {
   TextInput,
   Alert,
   Keyboard,
-  InteractionManager
+  InteractionManager,
+  AppState
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -27,7 +28,7 @@ import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
 import { LoginScreen } from '../auth/AuthScreens';
 import { LibraryView } from '../screens/LibraryView';
-import { loadBooksFromSupabase, deletePhotoFromSupabase } from '../services/supabaseSync';
+import { loadBooksFromSupabase, deletePhotoFromSupabase, syncCompletedScanJobs } from '../services/supabaseSync';
 
 // Helper to read env vars
 const getEnvVar = (key: string): string => {
@@ -272,6 +273,70 @@ export const MyLibraryTab: React.FC = () => {
       }
     }, [user, navigation])
   );
+
+  // Sync on Open: Check for completed scan_jobs when app opens or comes to foreground
+  useEffect(() => {
+    if (!user || isGuestUser(user)) {
+      return;
+    }
+
+    const syncOnForeground = async () => {
+      try {
+        console.log('🔄 Sync on Open: Checking for completed scan jobs...');
+        const newBooks = await syncCompletedScanJobs(user.uid);
+        
+        if (newBooks.length > 0) {
+          console.log(`📚 Sync on Open: Found ${newBooks.length} new books from completed scans`);
+          
+          // Merge new books into existing books (avoid duplicates)
+          setBooks(prevBooks => {
+            const existingKeys = new Set(
+              prevBooks.map(b => `${b.title || ''}|${b.author || ''}`.toLowerCase())
+            );
+            
+            const uniqueNewBooks = newBooks.filter(
+              book => !existingKeys.has(`${book.title || ''}|${book.author || ''}`.toLowerCase())
+            );
+            
+            if (uniqueNewBooks.length > 0) {
+              console.log(`📚 Sync on Open: Adding ${uniqueNewBooks.length} unique new books to library`);
+              // Add new books as pending (they'll need approval)
+              const updatedBooks = [...prevBooks, ...uniqueNewBooks];
+              
+              // Save to AsyncStorage
+              const userApprovedKey = `approved_books_${user.uid}`;
+              AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks)).catch(err => {
+                console.error('Error saving synced books to AsyncStorage:', err);
+              });
+              
+              return updatedBooks;
+            }
+            
+            return prevBooks;
+          });
+        } else {
+          console.log('📚 Sync on Open: No new books found');
+        }
+      } catch (error) {
+        console.error('❌ Error syncing completed scan jobs:', error);
+      }
+    };
+
+    // Sync immediately on mount
+    syncOnForeground();
+
+    // Listen for app state changes (foreground/background)
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        // App came to foreground - sync completed scan jobs
+        syncOnForeground();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
 
   const loadUserData = async () => {
     // Don't load data for null users or guest users
