@@ -2062,6 +2062,10 @@ export const ScansTab: React.FC = () => {
             'Server is busy, please try again.',
             [{ text: 'OK' }]
           );
+          // Clear scanning bar on failure
+          setScanProgress(null);
+          setIsUploading(false);
+          setIsScanning(false);
           return { books: [], fromVercel: false };
         }
         
@@ -2086,6 +2090,10 @@ export const ScansTab: React.FC = () => {
               if (user) {
                 loadScanUsage();
               }
+              // Clear scanning bar on failure
+              setScanProgress(null);
+              setIsUploading(false);
+              setIsScanning(false);
               return { books: [], fromVercel: false };
             }
           } catch (e) {
@@ -2099,6 +2107,10 @@ export const ScansTab: React.FC = () => {
           'Unable to start scan. Please try again.',
           [{ text: 'OK' }]
         );
+        // Clear scanning bar on failure
+        setScanProgress(null);
+        setIsUploading(false);
+        setIsScanning(false);
         return { books: [], fromVercel: false };
       }
       
@@ -2107,6 +2119,10 @@ export const ScansTab: React.FC = () => {
       
       if (!jobId) {
         console.error('❌ No jobId returned from scan API');
+        // Clear scanning bar on failure
+        setScanProgress(null);
+        setIsUploading(false);
+        setIsScanning(false);
         return { books: [], fromVercel: false };
       }
       
@@ -2201,6 +2217,10 @@ export const ScansTab: React.FC = () => {
             const errorCode = errorInfo.code || 'unknown_error';
             const errorMessage = errorInfo.message || 'Scan failed';
             console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage} [JOB ${jobId}]`);
+            // Clear scanning bar on failure
+            setScanProgress(null);
+            setIsUploading(false);
+            setIsScanning(false);
             // STOP POLLING - return empty books on failure
             return { books: [], fromVercel: false, jobId };
           }
@@ -2217,11 +2237,14 @@ export const ScansTab: React.FC = () => {
       // Timeout - job took too long (still pending/processing)
       // This should not happen if server completes within 185s, but handle gracefully
       setIsUploading(false);
+      setIsScanning(false);
       console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
       Alert.alert(
         'Scan Timeout',
         'The scan is taking longer than expected. Please try again or check your connection.'
       );
+      // Clear scanning bar on timeout
+      setScanProgress(null);
       return { books: [], fromVercel: false, jobId };
       
     } catch (e: any) {
@@ -2247,6 +2270,10 @@ export const ScansTab: React.FC = () => {
           `Error: ${errorMsg.substring(0, 100)}`
         );
       }
+      // Clear scanning bar on error
+      setScanProgress(null);
+      setIsUploading(false);
+      setIsScanning(false);
       return { books: [], fromVercel: false };
     }
   };
@@ -2353,6 +2380,8 @@ export const ScansTab: React.FC = () => {
         );
         setIsUploading(false);
         setIsScanning(false);
+        // Clear scanning bar on failure
+        setScanProgress(null);
         // Remove from processing set
         processingUrisRef.current.delete(uri);
         return;

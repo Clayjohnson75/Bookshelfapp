@@ -292,23 +292,19 @@ async function processScanJob(jobId: string, imageDataURL: string | null, userId
       throw new Error('No image_path or imageDataURL found in job');
     }
     
-    // REMOVED: Direct call logic - all scans must go through QStash worker (/api/scan-worker)
-    // This endpoint should only be used for legacy/compatibility, not for new scans
-    console.error(`[API] [SCAN-JOB] [JOB ${jobId}] ERROR: Direct scan pipeline call removed. All scans must go through QStash worker (/api/scan-worker).`);
+    // Import the real processScanJob from scan.ts
+    // This allows the QStash worker to process jobs correctly
+    const { processScanJob: realProcessScanJob } = await import('./scan');
     
-    await supabase
-      .from('scan_jobs')
-      .update({ 
-        status: 'failed',
-        error: JSON.stringify({
-          code: 'direct_call_removed',
-          message: 'Direct scan pipeline calls are no longer supported. All scans must go through QStash worker.'
-        }),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', jobId);
+    // Generate scanId if not available
+    const finalScanId = scanId || `scan_${jobId.split('_')[1]}_${jobId.split('_')[2]}`;
     
-    throw new Error('Direct scan pipeline calls are no longer supported');
+    console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Calling processScanJob from scan.ts (scanId: ${finalScanId})`);
+    
+    // Call the real processScanJob function with the fetched image
+    await realProcessScanJob(imageDataURLToUse, finalUserId, finalScanId, jobId);
+    
+    console.log(`[API] [SCAN-JOB] [JOB ${jobId}] ✅ Scan processing completed successfully`);
     
   } catch (error: any) {
     console.error(`[API] [SCAN-JOB] [JOB ${jobId}] Failed:`, error);
