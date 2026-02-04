@@ -7,7 +7,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "dev:local": "vercel dev --listen 3000"
+    "dev:local": "vercel dev --listen 3000",
+    "vercel-build": "echo 'Skipping build - Vercel handles compilation'"
   },
   "dependencies": {
     "@expo/ngrok": "^4.1.0",

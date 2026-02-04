@@ -1,5 +1,7 @@
 {
-  "compilerOptions": {},
+  "compilerOptions": {
+    "skipLibCheck": true
+  },
   "extends": "expo/tsconfig.base",
   "exclude": [
     "api/**/*",

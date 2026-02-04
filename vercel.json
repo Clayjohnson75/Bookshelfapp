@@ -1,6 +1,5 @@
 {
   "buildCommand": "echo 'Skipping build - Vercel handles TypeScript compilation'",
-  "ignoreCommand": "echo 'Skipping type check'",
   "crons": [
     {
       "path": "/api/scan-job",
