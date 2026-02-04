@@ -6,3 +6,5 @@
     "node_modules"
   ]
 }
+
+// Note: API routes use tsconfig.api.json to avoid Expo JSX compilation issues

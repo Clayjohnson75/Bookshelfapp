@@ -2292,8 +2292,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
     
-    // Server-side dedupe: hash image bytes and check for recent duplicate
+    // CRITICAL: Upload image to Supabase Storage first (don't send in QStash payload)
+    // QStash has payload size limits (~1MB), and base64 images are too large
     let imageHash: string | null = null;
+    let imagePath: string | null = null;
+    
     try {
       const crypto = await import('crypto');
       imageHash = crypto.createHash('sha256').update(imageDataURL).digest('hex').substring(0, 16);
@@ -2316,25 +2319,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
       }
-    } catch (hashError) {
-      // Hash calculation failed, continue anyway
-      console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Failed to hash image for duplicate detection:`, hashError);
+      
+      // Upload image to Supabase Storage
+      // Extract base64 data and convert to binary
+      const base64Data = imageDataURL.split(',')[1] || imageDataURL;
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      
+      // Determine file extension from data URL or default to jpg
+      const mimeMatch = imageDataURL.match(/^data:([^;]+);base64,/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const extension = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+      
+      // Storage path: scans/{userId}/{imageHash}.{ext} or scans/guest/{jobId}.{ext}
+      const storageUserId = userId || 'guest';
+      imagePath = `scans/${storageUserId}/${imageHash || jobId}.${extension}`;
+      
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Uploading image to storage: ${imagePath} (${imageBuffer.length} bytes)`);
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('photos')
+        .upload(imagePath, imageBuffer, {
+          contentType: mimeType,
+          upsert: true,
+        });
+      
+      if (uploadError) {
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Failed to upload image to storage:`, uploadError);
+        // If storage upload fails, we can't proceed - return error
+        return res.status(500).json({
+          status: 'error',
+          error: { code: 'image_upload_failed', message: 'Failed to upload image to storage' }
+        });
+      }
+      
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Image uploaded to storage: ${imagePath}`);
+      
+    } catch (storageError: any) {
+      console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Storage error:`, storageError);
+      return res.status(500).json({
+        status: 'error',
+        error: { code: 'storage_error', message: storageError?.message || 'Failed to process image for storage' }
+      });
     }
     
     // Create job record in durable storage (Supabase)
-    // This ensures all instances can read the same job state
+    // Store image_path instead of image_data to avoid huge payloads
     const { error: insertError } = await supabase
       .from('scan_jobs')
       .insert({
         id: jobId,
         user_id: userId || null,
-        image_data: imageDataURL,
+        image_path: imagePath, // Store path, not data
+        image_hash: imageHash,
+        scan_id: scanId, // Store scanId for correlation
         status: 'pending',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
     
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job created in durable storage (Supabase)`);
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job created in durable storage (Supabase) with image_path: ${imagePath}`);
     
     if (insertError) {
       console.error('[API] Error creating scan job:', insertError);
@@ -2350,58 +2393,93 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       status: 'pending'
     });
     
-    // Enqueue job to worker via QStash (or fallback to direct call if QStash not configured)
+    // Enqueue job to worker via QStash (ONLY send jobId - image is in storage)
     const qstashUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io/v2/publish/';
     const qstashToken = process.env.QSTASH_TOKEN;
     const workerUrl = process.env.WORKER_URL || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}/api/scan-worker`;
     
-    if (qstashToken) {
-      // Use QStash to trigger worker asynchronously
-      // QStash URL format: https://qstash.upstash.io/v2/publish/{destination_url}
-      try {
-        const qstashPublishUrl = qstashUrl.endsWith('/') 
-          ? `${qstashUrl}${workerUrl}` 
-          : `${qstashUrl}/${workerUrl}`;
+    if (!qstashToken) {
+      // QStash is required - mark job as failed if not configured
+      console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash not configured - marking job as failed`);
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({ code: 'qstash_not_configured', message: 'QStash token not configured' }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      
+      return res.status(500).json({
+        status: 'error',
+        error: { code: 'worker_not_configured', message: 'Worker service not configured' }
+      });
+    }
+    
+    // Use QStash to trigger worker asynchronously
+    // CRITICAL: Only send jobId - worker will fetch image from storage
+    try {
+      const qstashPublishUrl = qstashUrl.endsWith('/') 
+        ? `${qstashUrl}${workerUrl}` 
+        : `${qstashUrl}/${workerUrl}`;
+      
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl} (payload: jobId only)`);
+      
+      const qstashResponse = await fetch(qstashPublishUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${qstashToken}`,
+          'Content-Type': 'application/json',
+          'Upstash-Delay': '0', // Process immediately
+        },
+        body: JSON.stringify({
+          jobId // ONLY jobId - image is in storage at image_path
+        })
+      });
+      
+      if (!qstashResponse.ok) {
+        const errorText = await qstashResponse.text().catch(() => '');
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash enqueue failed: ${qstashResponse.status} - ${errorText.substring(0, 200)}`);
         
-        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl}`);
-        
-        const qstashResponse = await fetch(qstashPublishUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${qstashToken}`,
-            'Content-Type': 'application/json',
-            'Upstash-Delay': '0', // Process immediately
-          },
-          body: JSON.stringify({
-            jobId,
-            scanId,
-            userId,
-            imageDataURL
+        // Mark job as failed - don't try direct call fallback
+        await supabase
+          .from('scan_jobs')
+          .update({
+            status: 'failed',
+            error: JSON.stringify({ 
+              code: 'qstash_enqueue_failed', 
+              message: `QStash returned ${qstashResponse.status}: ${errorText.substring(0, 200)}` 
+            }),
+            updated_at: new Date().toISOString()
           })
-        });
+          .eq('id', jobId);
         
-        if (!qstashResponse.ok) {
-          console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash enqueue failed: ${qstashResponse.status}`);
-          // Fallback: try direct call (not ideal but better than nothing)
-          processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
-            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Fallback worker error:`, error);
-          });
-        } else {
-          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job enqueued to QStash worker`);
-        }
-      } catch (qstashError: any) {
-        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash error:`, qstashError?.message || qstashError);
-        // Fallback: try direct call
-        processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
-          console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Fallback worker error:`, error);
+        return res.status(500).json({
+          status: 'error',
+          error: { code: 'enqueue_failed', message: 'Failed to enqueue scan job' }
         });
       }
-    } else {
-      // QStash not configured - use direct call as fallback
-      // WARNING: This may not work reliably in Vercel serverless
-      console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash not configured, using direct call (may not work reliably)`);
-      processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
-        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Direct worker error:`, error);
+      
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job enqueued to QStash worker successfully`);
+    } catch (qstashError: any) {
+      console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash error:`, qstashError?.message || qstashError);
+      
+      // Mark job as failed
+      await supabase
+        .from('scan_jobs')
+        .update({
+          status: 'failed',
+          error: JSON.stringify({ 
+            code: 'qstash_error', 
+            message: qstashError?.message || String(qstashError) 
+          }),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      
+      return res.status(500).json({
+        status: 'error',
+        error: { code: 'enqueue_error', message: 'Failed to enqueue scan job' }
       });
     }
     

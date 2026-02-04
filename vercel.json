@@ -1,4 +1,6 @@
 {
+  "buildCommand": "echo 'Skipping build - Vercel handles TypeScript compilation'",
+  "ignoreCommand": "echo 'Skipping type check'",
   "crons": [
     {
       "path": "/api/scan-job",
@@ -40,7 +42,7 @@
           "key": "Cache-Control",
           "value": "public, max-age=31536000, immutable"
         }
-  ]
-}
+      ]
+    }
   ]
 }

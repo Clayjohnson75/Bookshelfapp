@@ -15,8 +15,10 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
   -- User who initiated the scan (nullable for guest users)
   user_id TEXT,
   
-  -- Base64-encoded image data (large, but needed for background processing)
-  image_data TEXT NOT NULL,
+  -- Image storage path (image stored in Supabase Storage, not in DB)
+  image_path TEXT NOT NULL,
+  -- Image hash for deduplication
+  image_hash TEXT,
   
   -- Job status: pending → processing → completed/failed
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),

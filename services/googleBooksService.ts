@@ -146,14 +146,19 @@ const isClientSide = isReactNative ||
 const getApiBaseUrl = (): string => {
   if (isClientSide) {
     // Try to get from Constants (Expo) or fallback to default
+    // Use dynamic require to avoid module resolution issues in serverless
     try {
-      const Constants = require('expo-constants');
-      return Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-             Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-             'https://bookshelfscan.app';
+      // Only require expo-constants if we're actually in a React Native environment
+      if (typeof require !== 'undefined') {
+        const Constants = require('expo-constants');
+        return Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+               Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
+               'https://bookshelfscan.app';
+      }
     } catch {
-      return 'https://bookshelfscan.app';
+      // expo-constants not available (server-side or not installed) - that's fine
     }
+    return 'https://bookshelfscan.app';
   }
   return '';
 };
