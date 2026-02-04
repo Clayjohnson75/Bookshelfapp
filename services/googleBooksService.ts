@@ -100,6 +100,22 @@ interface GoogleBooksVolume {
   };
 }
 
+// Resilient proxy API response types
+interface GoogleBooksProxySuccessResponse {
+  ok: true;
+  data: GoogleBooksResponse | GoogleBooksVolumeResponse;
+}
+
+interface GoogleBooksProxyErrorResponse {
+  ok: false;
+  error?: string;
+  code?: string;
+  message?: string;
+  retryAfterMs?: number;
+}
+
+type GoogleBooksProxyResponse = GoogleBooksProxySuccessResponse | GoogleBooksProxyErrorResponse;
+
 interface GoogleBooksResponse {
   kind?: string;
   totalItems?: number;
@@ -896,7 +912,7 @@ async function fetchByGoogleBooksId(
 
       // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
       // Parse response and check ok flag
-      const responseData = await response.json();
+      const responseData = await response.json() as GoogleBooksProxyResponse;
       
       // Handle new resilient response format
       if (responseData.ok === false) {
@@ -1135,7 +1151,7 @@ async function searchBook(
 
       // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
       // Parse response and check ok flag
-      const responseData = await response.json();
+      const responseData = await response.json() as GoogleBooksProxyResponse;
       
       // Handle new resilient response format
       if (responseData.ok === false) {
