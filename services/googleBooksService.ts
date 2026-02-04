@@ -134,8 +134,13 @@ const getEnvVar = (key: string): string | undefined => {
 };
 
 // Detect if we're running in React Native (client-side)
-const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
-const isClientSide = isReactNative || (typeof window !== 'undefined' && typeof process === 'undefined');
+const isReactNative = typeof globalThis !== 'undefined' && 
+  typeof (globalThis as any).navigator !== 'undefined' && 
+  (globalThis as any).navigator.product === 'ReactNative';
+const isClientSide = isReactNative || 
+  (typeof globalThis !== 'undefined' && 
+   typeof (globalThis as any).window !== 'undefined' && 
+   typeof process === 'undefined');
 
 // Get API base URL for proxy (client-side only)
 const getApiBaseUrl = (): string => {
