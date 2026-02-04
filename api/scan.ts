@@ -1915,8 +1915,8 @@ export async function processScanJob(
     // But that's a large refactor. For now, let's use a simpler approach:
     // Call the scan processing via an internal function call
     
-  // Hard timeout: 75 seconds total
-  const TOTAL_TIMEOUT_MS = 75000;
+  // Hard timeout: 135 seconds total (extended from 75s to allow for longer Gemini responses)
+  const TOTAL_TIMEOUT_MS = 135000;
   const scanStartTime = Date.now();
   const getElapsedMs = () => Date.now() - scanStartTime;
   const getRemainingMs = () => Math.max(0, TOTAL_TIMEOUT_MS - getElapsedMs());
@@ -2013,10 +2013,10 @@ export async function processScanJob(
   };
   
   // AbortControllers and timeouts
-  const geminiController = new AbortController();
-  const openaiController = new AbortController();
-  let geminiTimeout: NodeJS.Timeout | null = null;
-  let openaiTimeout: NodeJS.Timeout | null = null;
+    const geminiController = new AbortController();
+    const openaiController = new AbortController();
+    let geminiTimeout: NodeJS.Timeout | null = null;
+    let openaiTimeout: NodeJS.Timeout | null = null;
   let overallTimeout: NodeJS.Timeout | null = null;
   
   // Track attempts
@@ -2029,7 +2029,7 @@ export async function processScanJob(
   
   // Set overall timeout - catch-all failure handler
   overallTimeout = setTimeout(() => {
-    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Hard timeout (75s) exceeded`);
+    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Hard timeout (135s) exceeded`);
     geminiController.abort();
     openaiController.abort();
     scanMetadata.ended_reason = 'timeout';
@@ -2045,13 +2045,13 @@ export async function processScanJob(
       await updateProgress('gemini', 0);
       
       try {
-        geminiTimeout = setTimeout(() => {
-          geminiController.abort();
+              geminiTimeout = setTimeout(() => {
+                geminiController.abort();
         }, getRemainingMs());
-        
+              
         geminiResult = await scanWithGemini(imageDataURL, scanId);
         
-        if (geminiTimeout) clearTimeout(geminiTimeout);
+              if (geminiTimeout) clearTimeout(geminiTimeout);
         
         geminiBooks = geminiResult.books || [];
         
@@ -2122,13 +2122,13 @@ export async function processScanJob(
           // Quality gate failed - fallback to OpenAI
           console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚠️ Gemini quality gate failed: usedRepair=${geminiResult.usedRepair}, books=${geminiBooks.length}, rawLength=${geminiResult.rawLength}. Falling back to OpenAI.`);
         }
-      } catch (err: any) {
-        if (geminiTimeout) clearTimeout(geminiTimeout);
+            } catch (err: any) {
+              if (geminiTimeout) clearTimeout(geminiTimeout);
         if (err?.name === 'AbortError') {
           scanMetadata.ended_reason = scanMetadata.ended_reason || 'model_timeout';
           console.warn(`[SCAN ${scanId}] Gemini scan aborted (timeout)`);
         } else {
-          console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
+                console.error(`[SCAN ${scanId}] Gemini scan failed:`, err?.message || err);
           scanMetadata.ended_reason = scanMetadata.ended_reason || 'gemini_api_error';
         }
         geminiResult = { books: [], usedRepair: false, rawLength: 0 };
@@ -2143,26 +2143,26 @@ export async function processScanJob(
       await updateProgress('openai', 0);
       
       try {
-        openaiTimeout = setTimeout(() => {
-          openaiController.abort();
+                  openaiTimeout = setTimeout(() => {
+                    openaiController.abort();
         }, getRemainingMs());
-        
+                  
         openaiBooks = await scanWithOpenAI(imageDataURL, 0, openaiController, scanId);
         
-        if (openaiTimeout) clearTimeout(openaiTimeout);
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
         
         if (openaiBooks.length > 0) {
           await updateProgress('openai', openaiBooks.length);
         }
         
         log('info', `[SCAN ${scanId}] OpenAI completed: ${openaiBooks.length} books`);
-      } catch (err: any) {
-        if (openaiTimeout) clearTimeout(openaiTimeout);
+                } catch (err: any) {
+                  if (openaiTimeout) clearTimeout(openaiTimeout);
         if (err?.name === 'AbortError') {
           scanMetadata.ended_reason = scanMetadata.ended_reason || 'model_timeout';
           console.warn(`[SCAN ${scanId}] OpenAI scan aborted (timeout)`);
         } else {
-          console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
+                    console.error(`[SCAN ${scanId}] OpenAI scan failed:`, err?.message || err);
           scanMetadata.ended_reason = scanMetadata.ended_reason || 'openai_api_error';
         }
         openaiBooks = [];
@@ -2175,7 +2175,7 @@ export async function processScanJob(
       const merged = mergeBookResults(geminiBooks, openaiBooks);
       await updateProgress('merging', merged.length);
       finalBooks = merged;
-    } else {
+              } else {
       scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
       console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
     }
@@ -2208,7 +2208,7 @@ export async function processScanJob(
     console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
   } else if (cleanBooks.length === 0) {
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
-  } else {
+      } else {
     scanMetadata.ended_reason = 'completed';
   }
   
@@ -2258,7 +2258,7 @@ export async function processScanJob(
       .eq('id', jobId);
     // Throw error so it's caught by outer catch block
     throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
-  } else {
+        } else {
     console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${cleanBooks.length} clean books to scan_jobs.books (status=${finalStatus})`);
     console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
   }

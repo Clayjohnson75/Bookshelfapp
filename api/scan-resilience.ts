@@ -211,7 +211,7 @@ export class ScanTimeBudget {
   private openaiBudget: number;
   private scanId: string;
   
-  constructor(scanId: string, totalBudgetMs: number = 75000, geminiPrimaryWindowMs: number = 30000) {
+  constructor(scanId: string, totalBudgetMs: number = 135000, geminiPrimaryWindowMs: number = 30000) {
     this.scanId = scanId;
     this.startTime = Date.now();
     this.totalBudget = totalBudgetMs;
