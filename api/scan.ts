@@ -2394,9 +2394,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
     
     // Enqueue job to worker via QStash (ONLY send jobId - image is in storage)
+    // CRITICAL: Worker endpoint MUST be /api/scan-worker, NOT /api/scan
     const qstashUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io/v2/publish/';
     const qstashToken = process.env.QSTASH_TOKEN;
-    const workerUrl = process.env.WORKER_URL || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}/api/scan-worker`;
+    
+    // Build worker URL - MUST point to /api/scan-worker, never /api/scan
+    let workerUrl: string;
+    if (process.env.WORKER_URL) {
+      // If WORKER_URL is set, use it but validate it points to scan-worker
+      workerUrl = process.env.WORKER_URL;
+      if (!workerUrl.includes('/api/scan-worker') && !workerUrl.includes('scan-worker')) {
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] WARNING: WORKER_URL does not point to scan-worker: ${workerUrl}`);
+        // Force it to scan-worker
+        const baseUrl = workerUrl.split('/api/')[0] || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
+        workerUrl = `${baseUrl}/api/scan-worker`;
+        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Corrected WORKER_URL to: ${workerUrl}`);
+      }
+    } else {
+      // Default: construct from request headers, always use /api/scan-worker
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers.host || 'www.bookshelfscan.app';
+      workerUrl = `${protocol}://${host}/api/scan-worker`;
+    }
     
     if (!qstashToken) {
       // QStash is required - mark job as failed if not configured
@@ -2418,12 +2437,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     // Use QStash to trigger worker asynchronously
     // CRITICAL: Only send jobId - worker will fetch image from storage
+    // CRITICAL: Worker URL MUST be /api/scan-worker, never /api/scan
     try {
+      // QStash publish URL format: https://qstash.upstash.io/v2/publish/{destination_url}
       const qstashPublishUrl = qstashUrl.endsWith('/') 
         ? `${qstashUrl}${workerUrl}` 
         : `${qstashUrl}/${workerUrl}`;
       
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl} (payload: jobId only)`);
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl} (worker: ${workerUrl}, payload: jobId only)`);
       
       const qstashResponse = await fetch(qstashPublishUrl, {
         method: 'POST',

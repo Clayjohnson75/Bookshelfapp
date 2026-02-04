@@ -23,12 +23,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // QStash sends only jobId in req.body (image is in storage)
-    const { jobId } = req.body || {};
+    // This endpoint is called by QStash, NOT by /api/scan
+    const { jobId, scanId, userId } = req.body || {};
     
     if (!jobId) {
-      console.error('[API] [WORKER] Missing jobId');
+      console.error('[API] [WORKER] Missing jobId in request body');
       return res.status(400).json({ error: 'jobId required' });
     }
+    
+    console.log(`[API] [WORKER] Received job request: jobId=${jobId}, scanId=${scanId || 'none'}, userId=${userId || 'none'}`);
 
     // Load job from Supabase to get image_path and other metadata
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -104,11 +107,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log(`[API] [WORKER] [JOB ${jobId}] Image downloaded from storage (${buffer.length} bytes)`);
     
+    // Update job status to 'processing' before starting
+    await supabase
+      .from('scan_jobs')
+      .update({
+        status: 'processing',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    
+    console.log(`[API] [WORKER] [JOB ${jobId}] Job status set to 'processing'`);
+    
     // Import the processScanJob function from scan.ts (now exported)
     const { processScanJob } = await import('./scan');
     
     // Process the job (this is the heavy work: Gemini + OpenAI + validation)
     // This can take 60-90+ seconds, but QStash allows long-running workers
+    // processScanJob will update the job status to 'completed' or 'failed' when done
     await processScanJob(imageDataURL, user_id, scanId, jobId);
     
     console.log(`[API] [WORKER] [JOB ${jobId}] Worker processing completed`);
@@ -117,7 +132,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true, jobId });
     
   } catch (e: any) {
-    console.error('[API] [WORKER] Error in scan worker:', e);
+    console.error(`[API] [WORKER] [JOB ${req.body?.jobId || 'unknown'}] Error in scan worker:`, e);
+    
+    // Update job status to 'failed' if we have a jobId
+    const failedJobId = req.body?.jobId;
+    if (failedJobId) {
+      try {
+        const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+        const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        
+        if (supabaseUrl && supabaseServiceKey) {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false
+            }
+          });
+          
+          await supabase
+            .from('scan_jobs')
+            .update({
+              status: 'failed',
+              error: JSON.stringify({ 
+                code: 'worker_error', 
+                message: e?.message || String(e),
+                stack: e?.stack 
+              }),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', failedJobId);
+          
+          console.log(`[API] [WORKER] [JOB ${failedJobId}] Job status set to 'failed'`);
+        }
+      } catch (updateError) {
+        console.error(`[API] [WORKER] Failed to update job status to 'failed':`, updateError);
+      }
+    }
+    
     return res.status(500).json({ error: 'worker_failed', detail: e?.message || String(e) });
   }
 }
