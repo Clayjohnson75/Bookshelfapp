@@ -1958,16 +1958,17 @@ export async function processScanJob(
   };
   
   // Update job progress helper
+  // Note: progress column may not exist - only update updated_at to keep job alive
   const updateProgress = async (stage: string, booksFound?: number) => {
     try {
       if (!scanMetadata.parse_path) scanMetadata.parse_path = [];
       if (!scanMetadata.parse_path.includes(stage)) {
         scanMetadata.parse_path.push(stage);
       }
+      // Only update updated_at - progress column may not exist
       await supabase
         .from('scan_jobs')
         .update({
-          progress: { stage, booksFound: booksFound || 0 },
           updated_at: new Date().toISOString()
         })
         .eq('id', jobId);
@@ -2040,23 +2041,35 @@ export async function processScanJob(
           const cheapFiltered = cheapValidated.filter(book => !book.cheapFilterReason);
           
           // Complete job with Gemini results (batch validation can run async if needed)
-          // CRITICAL: Update books column (not results) with final validated books
+          // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
           const updateResult = await supabase
             .from('scan_jobs')
             .update({
               status: 'completed',
-              books: cheapFiltered, // Write to books column (not results)
-              api_results: {
-                gemini: { working: true, count: geminiBooks.length, hasKey: true },
-                openai: { working: false, count: 0, hasKey: hasOpenAIKey, skipped: 'gemini_passed_quality_gate' }
-              },
-              progress: { stage: 'completed', booksFound: cheapFiltered.length },
+              books: cheapFiltered, // Write to books column
+              error: null, // Clear any previous error
               updated_at: new Date().toISOString()
             })
             .eq('id', jobId);
           
           if (updateResult.error) {
-            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Failed to update job with books:`, updateResult.error);
+            // CRITICAL: If DB update fails, treat as failed - don't log success
+            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
+            scanMetadata.ended_reason = 'db_update_failed';
+            // Update job as failed with error
+            await supabase
+              .from('scan_jobs')
+              .update({
+                status: 'failed',
+                error: JSON.stringify({
+                  code: 'db_update_failed',
+                  message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
+                }),
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', jobId);
+            // Don't return early - let it fall through to error handler
+            throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
           } else {
             console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job updated: status=completed, books=${cheapFiltered.length}, books.length=${cheapFiltered.length > 0 ? 'YES' : 'NO'}`);
           }
@@ -2171,22 +2184,8 @@ export async function processScanJob(
     scanMetadata.ended_reason = 'completed';
   }
   
-  const apiResults = {
-    openai: {
-      working: hasOpenAIKey && openaiBooks.length > 0,
-      count: openaiBooks.length,
-      hasKey: hasOpenAIKey,
-      error: openaiBooks.length === 0 && hasOpenAIKey && openaiAttempted ? 'No books returned' : null
-    },
-    gemini: {
-      working: hasGeminiKey && geminiBooks.length > 0,
-      count: geminiBooks.length,
-      hasKey: hasGeminiKey,
-      error: geminiBooks.length === 0 && hasGeminiKey && geminiAttempted ? 'No books returned' : null
-    }
-  };
-  
   // Log final metadata with jobId correlation
+  // Note: apiResults removed - api_results column doesn't exist in scan_jobs table
   console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan completed:`, {
     received_image_bytes: scanMetadata.received_image_bytes,
     content_type: scanMetadata.content_type,
@@ -2196,26 +2195,41 @@ export async function processScanJob(
   });
   
   // Update job with final results - ensure status is always 'completed' or 'failed'
-  // CRITICAL: Write to books column (not results) - this is the canonical column
+  // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
   const finalStatus = finalValidatedBooks.length > 0 ? 'completed' : 'failed';
+  const finalError = finalValidatedBooks.length === 0 ? JSON.stringify({
+    code: scanMetadata.ended_reason || 'no_books_detected',
+    message: 'No books detected after validation',
+    metadata: scanMetadata
+  }) : null;
+  
   const updateResult = await supabase
     .from('scan_jobs')
     .update({
       status: finalStatus,
-      books: finalValidatedBooks, // Write to books column (not results)
-      api_results: apiResults,
-      progress: { stage: 'completed', booksFound: finalValidatedBooks.length },
-      error: finalValidatedBooks.length === 0 ? JSON.stringify({
-        code: scanMetadata.ended_reason || 'no_books_detected',
-        message: 'No books detected after validation',
-        metadata: scanMetadata
-      }) : null,
+      books: finalValidatedBooks, // Write to books column
+      error: finalError, // Set error if failed, null if completed
       updated_at: new Date().toISOString()
     })
     .eq('id', jobId);
   
   if (updateResult.error) {
-    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ Failed to update job with books:`, updateResult.error);
+    // CRITICAL: If DB update fails, treat as failed - don't log success
+    console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] ❌ FAILED to update job with books:`, updateResult.error);
+    // Try to update job as failed with error about the DB update failure
+    await supabase
+      .from('scan_jobs')
+      .update({
+        status: 'failed',
+        error: JSON.stringify({
+          code: 'db_update_failed',
+          message: `Failed to save books to database: ${updateResult.error.message || String(updateResult.error)}`
+        }),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', jobId);
+    // Throw error so it's caught by outer catch block
+    throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
   } else {
     console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job updated: status=${finalStatus}, books=${finalValidatedBooks.length}, books.length=${finalValidatedBooks.length > 0 ? 'YES' : 'NO'}`);
   }
