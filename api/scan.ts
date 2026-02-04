@@ -2390,15 +2390,15 @@ export async function processScanJob(
           // Gemini passed quality gate - complete immediately, skip OpenAI
           console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Gemini passed quality gate: ${geminiBooks.length} books, clean JSON, ${geminiResult.rawLength} chars. Completing job without OpenAI.`);
           
-          // PRE-WARM PIPELINE: Parse → Enrich → Normalize + Validate → cleanBooks
+          // PRE-WARM PIPELINE: Parse → Normalize + Validate → Enrich → cleanBooks
           // Step 1: Parse (already done - geminiBooks are rawBooks)
           const rawBooks = geminiBooks;
           
-          // Step 2: Enrich with Google Books API FIRST (before validation to speed up)
-          const enrichedBooks = await enrichBooksWithGoogleBooks(rawBooks, scanId, jobId, supabase);
+          // Step 2: Normalize + Validate FIRST (before enrichment)
+          const cleanBooks = await normalizeAndValidateBooks(rawBooks);
           
-          // Step 3: Normalize + Validate AFTER enrichment (moved after Gemini returns)
-          const cleanBooks = await normalizeAndValidateBooks(enrichedBooks);
+          // Step 3: Enrich with Google Books API (replace AI guesses with official metadata)
+          const enrichedBooks = await enrichBooksWithGoogleBooks(cleanBooks, scanId, jobId, supabase);
           
           // Step 4: Save books directly to books table FIRST (server-authoritative)
           // This must happen before updating scan_jobs status for early response
@@ -2579,14 +2579,15 @@ export async function processScanJob(
     }
     
     // Merge results if we have both
-    let finalBooks: any[] = [];
+    // Note: finalBooks is already declared at top level, just assign here
     if (geminiBooks.length > 0 || openaiBooks.length > 0) {
       const merged = mergeBookResults(geminiBooks, openaiBooks);
       await updateProgress('merging', merged.length);
       finalBooks = merged;
-              } else {
+    } else {
       scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
       console.warn(`[SCAN ${scanId}] Both providers returned empty results`);
+      finalBooks = []; // Ensure it's empty if no books found
     }
     
     // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
@@ -2895,9 +2896,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Generate jobId for this scan
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    // Generate jobId for this scan with high entropy to prevent collisions
+    // Use crypto.randomUUID() if available, otherwise use timestamp + counter + random
+    let jobId: string;
+    let scanId: string;
+    try {
+      const crypto = await import('crypto');
+      // Use crypto.randomUUID() for maximum uniqueness (128 bits of entropy)
+      const uuid = crypto.randomUUID();
+      jobId = `job_${uuid}`;
+      scanId = `scan_${uuid}`;
+    } catch {
+      // Fallback: timestamp + high-precision counter + random string
+      // Add process.hrtime() for sub-millisecond precision
+      const hrtime = process.hrtime();
+      const counter = (global as any).__scanJobCounter = ((global as any).__scanJobCounter || 0) + 1;
+      const randomStr = Math.random().toString(36).substring(2, 15); // Longer random string
+      jobId = `job_${Date.now()}_${hrtime[1]}_${counter}_${randomStr}`;
+      scanId = `scan_${Date.now()}_${hrtime[1]}_${counter}_${randomStr}`;
+    }
     
     // Create job in Supabase immediately
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -2997,29 +3014,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Create job record in durable storage (Supabase)
     // Store image_path instead of image_data to avoid huge payloads
     // CRITICAL: Initialize books as empty array (not results column)
-    const { error: insertError } = await supabase
+    // Fix 500 Crash Logic: Use upsert with onConflict to handle duplicate jobId/image_hash gracefully
+    const jobData = {
+      id: jobId,
+      user_id: userId || null,
+      image_path: imagePath, // Store path, not data
+      image_hash: imageHash,
+      scan_id: scanId, // Store scanId for correlation
+      status: 'pending',
+      books: [], // Initialize books as empty array (will be updated when completed)
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    
+    // Use upsert to handle conflicts gracefully (duplicate jobId or image_hash)
+    const { data: upsertedJob, error: upsertError } = await supabase
       .from('scan_jobs')
-      .insert({
-        id: jobId,
-        user_id: userId || null,
-        image_path: imagePath, // Store path, not data
-        image_hash: imageHash,
-        scan_id: scanId, // Store scanId for correlation
-        status: 'pending',
-        books: [], // Initialize books as empty array (will be updated when completed)
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
+      .upsert(jobData, {
+        onConflict: 'id', // If jobId exists, update it
+        ignoreDuplicates: false
+      })
+      .select('id, status')
+      .single();
     
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job created in durable storage (Supabase) with image_path: ${imagePath}`);
-    
-    if (insertError) {
-      console.error('[API] Error creating scan job:', insertError);
+    if (upsertError) {
+      // If upsert failed, check if it's a duplicate image_hash conflict
+      if (upsertError.code === '23505' || upsertError.message?.includes('duplicate') || upsertError.message?.includes('unique')) {
+        // Try to find existing job with same image_hash
+        if (imageHash) {
+          const { data: existingJob } = await supabase
+            .from('scan_jobs')
+            .select('id, status')
+            .eq('image_hash', imageHash)
+            .eq('user_id', userId || null)
+            .in('status', ['pending', 'processing'])
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          
+          if (existingJob) {
+            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ⚡ Conflict resolved: Found existing job ${existingJob.id} with same image_hash, returning existing jobId`);
+            return res.status(202).json({
+              jobId: existingJob.id,
+              status: existingJob.status
+            });
+          }
+        }
+      }
+      
+      console.error('[API] Error creating/updating scan job:', upsertError);
       return res.status(500).json({ 
         status: 'error',
         error: { code: 'job_creation_failed', message: 'Failed to create scan job' }
       });
     }
+    
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job created/updated in durable storage (Supabase) with image_path: ${imagePath}`);
     
     // Build worker URL - MUST point to /api/scan-worker, never /api/scan
     // CRITICAL: Use canonical URL https://www.bookshelfscan.app/api/scan-worker

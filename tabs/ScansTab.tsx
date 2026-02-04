@@ -118,6 +118,8 @@ export const ScansTab: React.FC = () => {
   const [currentScan, setCurrentScan] = useState<{id: string, uri: string, progress: {current: number, total: number}} | null>(null);
   // Track if scanning is in progress to disable button immediately after first tap
   const [isScanning, setIsScanning] = useState(false);
+  // Track if uploading to prevent duplicate requests
+  const [isUploading, setIsUploading] = useState(false);
   
   // Ref to track latest totalScans to avoid stale closure issues
   const totalScansRef = useRef<number>(0);
@@ -222,7 +224,8 @@ export const ScansTab: React.FC = () => {
     currentScanIdRef.current = scanId;
     setCaptionText('');
     
-    // Disable scan button immediately to prevent duplicate requests
+    // Immediate UI Lock: Disable scan button immediately to prevent duplicate requests
+    setIsUploading(true);
     setIsScanning(true);
     
     // Start scanning IMMEDIATELY - this will trigger the notification
@@ -1961,6 +1964,7 @@ export const ScansTab: React.FC = () => {
       }
     } catch (error) {
       console.error('❌ Error submitting background scan job:', error);
+      setIsUploading(false);
       return null;
     }
   };
@@ -2050,6 +2054,17 @@ export const ScansTab: React.FC = () => {
         const errorText = await createResp.text().catch(() => '');
         console.error(`❌ Failed to create scan job: ${createResp.status} - ${errorText.substring(0, 200)}`);
         
+        // Kill "0 Books" Fallback: If server returns error, STOP everything
+        // Do not proceed to client-side detection
+        if (createResp.status === 500) {
+          Alert.alert(
+            'Server Error',
+            'Server is busy, please try again.',
+            [{ text: 'OK' }]
+          );
+          return { books: [], fromVercel: false };
+        }
+        
         // Check if it's a scan limit error
         if (createResp.status === 403) {
           try {
@@ -2078,6 +2093,12 @@ export const ScansTab: React.FC = () => {
           }
         }
         
+        // For any other error, show alert and stop
+        Alert.alert(
+          'Scan Failed',
+          'Unable to start scan. Please try again.',
+          [{ text: 'OK' }]
+        );
         return { books: [], fromVercel: false };
       }
       
@@ -2090,6 +2111,9 @@ export const ScansTab: React.FC = () => {
       }
       
       console.log(`✅ Scan job created: ${jobId}, status: ${jobData.status} [SCAN ${scanId || 'new'}]`);
+      
+      // Re-enable upload button after job is created successfully
+      setIsUploading(false);
       
       // Track active scan for dedupe
       try {
@@ -2191,7 +2215,8 @@ export const ScansTab: React.FC = () => {
       }
       
       // Timeout - job took too long (still pending/processing)
-      // This should not happen if server completes within 135s, but handle gracefully
+      // This should not happen if server completes within 185s, but handle gracefully
+      setIsUploading(false);
       console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
       Alert.alert(
         'Scan Timeout',
@@ -2318,15 +2343,27 @@ export const ScansTab: React.FC = () => {
       
       console.log(`📚 AI scan completed: ${detectedBooks.length} books detected (${cameFromVercel ? 'from Vercel API, already validated' : 'from client-side, needs validation'})`);
       
-      if (detectedBooks.length === 0) {
-        console.error('❌ WARNING: No books detected from scan!');
-        console.error('   Scan result:', JSON.stringify(scanResult, null, 2));
+      // Kill "0 Books" Fallback: If server returned error (not fromVercel and no books), stop everything
+      if (!cameFromVercel && detectedBooks.length === 0) {
+        console.error('❌ WARNING: Server scan failed and returned 0 books - stopping (no client-side fallback)');
+        Alert.alert(
+          'Scan Failed',
+          'Unable to detect books. Please try again with a clearer image.',
+          [{ text: 'OK' }]
+        );
+        setIsUploading(false);
+        setIsScanning(false);
+        // Remove from processing set
+        processingUrisRef.current.delete(uri);
+        return;
+      }
+      
+      if (detectedBooks.length === 0 && cameFromVercel) {
+        console.error('❌ WARNING: Server scan completed but returned 0 books');
         console.error('   Possible causes:');
-        console.error('   1. API keys not configured (check logs above)');
-        console.error('   2. Image quality too low or no books visible');
-        console.error('   3. API errors (check network/status)');
-        console.error('   4. Validation filtered out all books as invalid');
-        console.error('   5. Both OpenAI and Gemini returned 0 books');
+        console.error('   1. Image quality too low or no books visible');
+        console.error('   2. Validation filtered out all books as invalid');
+        console.error('   3. Both OpenAI and Gemini returned 0 books');
       }
       
       updateProgress({ currentStep: 4, totalScans: totalScans });
@@ -2652,7 +2689,10 @@ export const ScansTab: React.FC = () => {
                 }, 0);
                 return updatedQueue;
               });
-            processImage(nextScan.uri, nextScan.id);
+            // Process sequentially - processImage is async, but we wrap it to ensure proper error handling
+            processImage(nextScan.uri, nextScan.id).catch(err => {
+              console.error('Error processing image:', err);
+            });
           }, 500);
         }
       } else {
@@ -2741,7 +2781,10 @@ export const ScansTab: React.FC = () => {
                 item.id === nextScan.id ? { ...item, status: 'processing' as const } : item
               )
             );
-            processImage(nextScan.uri, nextScan.id);
+            // Process sequentially - processImage is async, but we wrap it to ensure proper error handling
+            processImage(nextScan.uri, nextScan.id).catch(err => {
+              console.error('Error processing image:', err);
+            });
           }, 500);
         }
       } else {
@@ -2764,6 +2807,8 @@ export const ScansTab: React.FC = () => {
       // Remove URI from processing set so it can be processed again if needed
       processingUrisRef.current.delete(uri);
       setCurrentScan(null);
+      // Always reset upload state
+      setIsUploading(false);
       // Check if there are more scans to process
       const hasMorePending = scanQueue.some(item => item.status === 'pending');
       // Only set to false if there are no more pending scans and we're not starting a new one
@@ -3839,7 +3884,10 @@ export const ScansTab: React.FC = () => {
                   item.id === firstItem.scanId ? { ...item, status: 'processing' as const } : item
                 )
               );
-              processImage(firstItem.uri, firstItem.scanId);
+              // Process sequentially with async/await to prevent simultaneous requests
+              (async () => {
+                await processImage(firstItem.uri, firstItem.scanId);
+              })();
             }, 50);
           }
         }, 0);
