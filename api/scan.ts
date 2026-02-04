@@ -1799,10 +1799,11 @@ Remember: When in doubt, KEEP IT. Only reject if clearly not a real book. Respon
 }
 
 /**
- * Process a scan job asynchronously - wraps the existing scan logic
- * This function will be called in the background after job creation
+ * Process a scan job - runs Gemini/OpenAI and updates Supabase
+ * This function is called by the worker endpoint (/api/scan-worker)
+ * Exported so it can be imported by the worker
  */
-async function processScanJob(
+export async function processScanJob(
   imageDataURL: string,
   userId: string | undefined,
   scanId: string,
@@ -2349,10 +2350,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       status: 'pending'
     });
     
-    // Process scan in background (don't await - let it run async)
-    processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
-      console.error(`[API] Background scan job ${jobId} error:`, error);
-    });
+    // Enqueue job to worker via QStash (or fallback to direct call if QStash not configured)
+    const qstashUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io/v2/publish/';
+    const qstashToken = process.env.QSTASH_TOKEN;
+    const workerUrl = process.env.WORKER_URL || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}/api/scan-worker`;
+    
+    if (qstashToken) {
+      // Use QStash to trigger worker asynchronously
+      // QStash URL format: https://qstash.upstash.io/v2/publish/{destination_url}
+      try {
+        const qstashPublishUrl = qstashUrl.endsWith('/') 
+          ? `${qstashUrl}${workerUrl}` 
+          : `${qstashUrl}/${workerUrl}`;
+        
+        console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl}`);
+        
+        const qstashResponse = await fetch(qstashPublishUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${qstashToken}`,
+            'Content-Type': 'application/json',
+            'Upstash-Delay': '0', // Process immediately
+          },
+          body: JSON.stringify({
+            jobId,
+            scanId,
+            userId,
+            imageDataURL
+          })
+        });
+        
+        if (!qstashResponse.ok) {
+          console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash enqueue failed: ${qstashResponse.status}`);
+          // Fallback: try direct call (not ideal but better than nothing)
+          processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
+            console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Fallback worker error:`, error);
+          });
+        } else {
+          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job enqueued to QStash worker`);
+        }
+      } catch (qstashError: any) {
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash error:`, qstashError?.message || qstashError);
+        // Fallback: try direct call
+        processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
+          console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Fallback worker error:`, error);
+        });
+      }
+    } else {
+      // QStash not configured - use direct call as fallback
+      // WARNING: This may not work reliably in Vercel serverless
+      console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash not configured, using direct call (may not work reliably)`);
+      processScanJob(imageDataURL, userId, scanId, jobId).catch((error) => {
+        console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] Direct worker error:`, error);
+      });
+    }
     
   } catch (e: any) {
     console.error('[API] Error in scan handler:', e);
