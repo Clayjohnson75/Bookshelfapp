@@ -146,10 +146,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[API] Processing ${pendingJobs.length} pending scan jobs...`);
       
       // Process each pending job
-      // Use production URL for cron jobs (no request host available)
+      // FIXED: Now passes null for imageDataURL - processScanJob will fetch from storage
       const results = await Promise.allSettled(
         pendingJobs.map(job => 
-          processScanJob(job.id, job.image_data, job.user_id || undefined, undefined)
+          processScanJob(job.id, job.image_data || null, job.user_id || undefined, undefined)
         )
       );
       
@@ -221,7 +221,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 // Background processing function
-async function processScanJob(jobId: string, imageDataURL: string, userId: string | undefined, requestHost?: string) {
+// FIXED: Now fetches image from storage and calls scan pipeline directly (does NOT call /api/scan)
+async function processScanJob(jobId: string, imageDataURL: string | null, userId: string | undefined, requestHost?: string) {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   
@@ -238,6 +239,21 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
   });
   
   try {
+    // Fetch job from database to get image_path
+    const { data: jobData, error: jobError } = await supabase
+      .from('scan_jobs')
+      .select('image_path, scan_id, user_id')
+      .eq('id', jobId)
+      .single();
+    
+    if (jobError || !jobData) {
+      throw new Error(`Job not found: ${jobError?.message || 'Not found'}`);
+    }
+    
+    const { image_path, scan_id, user_id } = jobData;
+    const scanId = scan_id || `scan_${jobId.split('_')[1]}_${jobId.split('_')[2]}`;
+    const finalUserId = userId || user_id;
+    
     // Update status to processing
     await supabase
       .from('scan_jobs')
@@ -247,61 +263,57 @@ async function processScanJob(jobId: string, imageDataURL: string, userId: strin
       })
       .eq('id', jobId);
     
-    // Determine the base URL for calling the scan API
-    // Use the request host if available (from the original request)
-    // Otherwise fall back to production URL or environment variable
-    let baseUrl: string;
+    // Fetch image from storage if image_path exists, otherwise use imageDataURL (legacy)
+    let imageDataURLToUse: string;
     
-    if (requestHost) {
-      // Use the host from the original request
-      baseUrl = `https://${requestHost}`;
-    } else {
-      // Fallback: use production URL (never use VERCEL_URL as it might be preview)
-      baseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://bookshelfscan.app';
+    if (image_path) {
+      // Download image from Supabase Storage
+      console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Downloading image from storage: ${image_path}`);
+      const { data: imageData, error: downloadError } = await supabase.storage
+        .from('photos')
+        .download(image_path);
       
-      // Ensure it's a full URL with https
-      if (!baseUrl.startsWith('http')) {
-        baseUrl = `https://${baseUrl}`;
+      if (downloadError || !imageData) {
+        throw new Error(`Failed to download image from storage: ${downloadError?.message || 'No blob'}`);
       }
+      
+      // Convert blob to base64 data URL
+      const arrayBuffer = await imageData.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const base64 = buffer.toString('base64');
+      const mimeType = image_path.endsWith('.png') ? 'image/png' : image_path.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+      imageDataURLToUse = `data:${mimeType};base64,${base64}`;
+      console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Image downloaded from storage (${buffer.length} bytes)`);
+    } else if (imageDataURL) {
+      // Legacy: use imageDataURL if image_path not available
+      console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Using legacy imageDataURL from job data`);
+      imageDataURLToUse = imageDataURL;
+    } else {
+      throw new Error('No image_path or imageDataURL found in job');
     }
     
-    console.log(`[API] Processing scan job ${jobId} via scan API at ${baseUrl}/api/scan`);
+    // Import and call the scan pipeline directly (do NOT call /api/scan)
+    const { processScanJob: runScanPipeline } = await import('./scan');
     
-    const scanResponse = await fetch(`${baseUrl}/api/scan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageDataURL, userId })
-    });
+    console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Calling scan pipeline directly (not via /api/scan)`);
     
-    if (!scanResponse.ok) {
-      const errorText = await scanResponse.text().catch(() => '');
-      throw new Error(`Scan API returned ${scanResponse.status}: ${errorText.substring(0, 200)}`);
-    }
+    // Call the scan pipeline directly - it will update the job status when done
+    await runScanPipeline(imageDataURLToUse, finalUserId, scanId, jobId);
     
-    const scanData = await scanResponse.json() as { books?: unknown[] };
-    const books = Array.isArray(scanData.books) ? scanData.books : [];
-    
-    // Update job with results
-    await supabase
-      .from('scan_jobs')
-      .update({ 
-        status: 'completed',
-        books: books,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', jobId);
-    
-    console.log(`[API] Scan job ${jobId} completed with ${books.length} books`);
+    console.log(`[API] [SCAN-JOB] [JOB ${jobId}] Scan pipeline completed`);
     
   } catch (error: any) {
-    console.error(`[API] Scan job ${jobId} failed:`, error);
+    console.error(`[API] [SCAN-JOB] [JOB ${jobId}] Failed:`, error);
     
     // Update job with error
     await supabase
       .from('scan_jobs')
       .update({ 
         status: 'failed',
-        error: error?.message || String(error),
+        error: JSON.stringify({
+          code: 'scan_job_error',
+          message: error?.message || String(error)
+        }),
         updated_at: new Date().toISOString()
       })
       .eq('id', jobId);
