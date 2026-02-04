@@ -1281,6 +1281,61 @@ export const ScansTab: React.FC = () => {
   // NOTE: Client-side validation removed for security
   // All validation is now handled server-side by the API endpoint
 
+  /**
+   * Optimize image before upload: resize to max 1600px (longest side), compress to 0.6 quality, convert to WebP
+   * This reduces payload from ~2.5MB to ~300KB
+   */
+  const optimizeImageForUpload = async (uri: string): Promise<string> => {
+    try {
+      console.log('🖼️ Optimizing image for upload: resize to 1600px max (longest side), quality 0.6, WebP format');
+      
+      // Get image dimensions first (this is a lightweight operation)
+      const imageInfo = await ImageManipulator.manipulateAsync(
+        uri, 
+        [], 
+        { format: ImageManipulator.SaveFormat.PNG }
+      );
+      
+      // Calculate resize dimensions - max 1600px on longest side
+      let resizeActions: any[] = [];
+      if (imageInfo.width && imageInfo.height) {
+        const maxDimension = Math.max(imageInfo.width, imageInfo.height);
+        if (maxDimension > 1600) {
+          // Resize based on longest dimension to ensure max 1600px on longest side
+          if (imageInfo.width >= imageInfo.height) {
+            resizeActions.push({ resize: { width: 1600 } });
+          } else {
+            resizeActions.push({ resize: { height: 1600 } });
+          }
+        }
+      }
+      
+      const manipulatedImage = await ImageManipulator.manipulateAsync(
+        uri,
+        resizeActions, // Resize if needed, otherwise empty array
+        { 
+          compress: 0.6, // Compress quality to 0.6
+          format: ImageManipulator.SaveFormat.WEBP, // Convert to WebP format
+          base64: true 
+        }
+      );
+      
+      if (manipulatedImage.base64) {
+        const dataUrl = `data:image/webp;base64,${manipulatedImage.base64}`;
+        const sizeKB = Math.round(manipulatedImage.base64.length * 0.75 / 1024); // Approximate size
+        console.log(`✅ Image optimized: ${sizeKB}KB (WebP, max 1600px, quality 0.6)`);
+        return dataUrl;
+      }
+      
+      throw new Error('Failed to get base64 from ImageManipulator');
+    } catch (error) {
+      console.error('❌ Image optimization failed:', error);
+      // Fallback to original conversion if optimization fails
+      console.log('⚠️ Falling back to original image conversion');
+      return convertImageToBase64(uri);
+    }
+  };
+
   const convertImageToBase64 = async (uri: string): Promise<string> => {
     try {
       // Converting image to base64
@@ -2052,7 +2107,7 @@ export const ScansTab: React.FC = () => {
       // Step 2: Poll for job completion (with progress updates)
       // CRITICAL: Use same canonical baseUrl for polling (no redirects, no mixed hosts)
       const POLL_INTERVAL_MS = 1000; // Poll every 1 second
-      const MAX_POLL_TIME_MS = 75000; // Max 75 seconds (matches server timeout)
+      const MAX_POLL_TIME_MS = 135000; // Max 135 seconds (matches server timeout)
       const startTime = Date.now();
       let lastStatus = jobData.status;
       
@@ -2131,7 +2186,7 @@ export const ScansTab: React.FC = () => {
       }
       
       // Timeout - job took too long (still pending/processing)
-      // This should not happen if server completes within 75s, but handle gracefully
+      // This should not happen if server completes within 135s, but handle gracefully
       console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
       Alert.alert(
         'Scan Timeout',
@@ -2235,8 +2290,9 @@ export const ScansTab: React.FC = () => {
       
       setCurrentScan({ id: scanId, uri, progress: { current: 1, total: 10 } });
       
-      // Step 2: Converting to base64 (10%)
-      const imageDataURL = await convertImageToBase64(uri);
+      // Step 2: Optimize and convert image to base64 (10%)
+      // Optimize: resize to 1600px max, quality 0.6, WebP format (reduces payload from ~2.5MB to ~300KB)
+      const imageDataURL = await optimizeImageForUpload(uri);
       updateProgress({ currentStep: 2, totalScans: totalScans });
       setCurrentScan({ id: scanId, uri, progress: { current: 2, total: 10 } });
       
@@ -4017,7 +4073,10 @@ export const ScansTab: React.FC = () => {
 
       {/* Pending Books - Need Approval */}
       {pendingBooks.length > 0 && (
-        <View style={styles.pendingSection}>
+        <View style={[
+          styles.pendingSection,
+          scanProgress && scanProgress.totalScans > 0 && styles.pendingSectionWithScanning
+        ]}>
           <View style={styles.pendingHeader}>
             <View style={styles.pendingTitleContainer}>
               <Text style={styles.sectionTitle}>Pending Books ({pendingBooks.length})</Text>
@@ -5347,6 +5406,11 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     elevation: 3,
     borderWidth: 0.5,
     borderColor: '#e5e7eb', // Subtle gray border
+  },
+  pendingSectionWithScanning: {
+    marginBottom: 0, // Remove bottom margin when scanning notification is visible
+    borderBottomLeftRadius: 0, // Connect to scanning bar
+    borderBottomRightRadius: 0, // Connect to scanning bar
   },
   recentSection: {
     backgroundColor: '#ffffff', // White card

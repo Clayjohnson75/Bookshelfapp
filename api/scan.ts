@@ -2828,18 +2828,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
     
-    // Return jobId immediately (202 Accepted) - only jobId and status, NEVER books
-    res.status(202).json({
-      jobId,
-      status: 'pending'
-    });
-    
-    // Enqueue job to worker via QStash (ONLY send jobId - image is in storage)
-    // CRITICAL: Worker endpoint MUST be /api/scan-worker, NOT /api/scan
-    const qstashUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io/v2/publish/';
-    const qstashToken = process.env.QSTASH_TOKEN;
-    
     // Build worker URL - MUST point to /api/scan-worker, never /api/scan
+    // CRITICAL: Use canonical URL https://www.bookshelfscan.app/api/scan-worker
     let workerUrl: string;
     if (process.env.WORKER_URL) {
       // If WORKER_URL is set, use it but validate it points to scan-worker
@@ -2847,17 +2837,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!workerUrl.includes('/api/scan-worker') && !workerUrl.includes('scan-worker')) {
         console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] WARNING: WORKER_URL does not point to scan-worker: ${workerUrl}`);
         // Force it to scan-worker
-        const baseUrl = workerUrl.split('/api/')[0] || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
+        const baseUrl = workerUrl.split('/api/')[0] || 'https://www.bookshelfscan.app';
         workerUrl = `${baseUrl}/api/scan-worker`;
         console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Corrected WORKER_URL to: ${workerUrl}`);
       }
     } else {
-      // Default: construct from request headers, always use /api/scan-worker
-      const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers.host || 'www.bookshelfscan.app';
-      workerUrl = `${protocol}://${host}/api/scan-worker`;
+      // Default: always use canonical URL
+      workerUrl = 'https://www.bookshelfscan.app/api/scan-worker';
     }
     
+    // Validate QStash configuration BEFORE sending response
+    const qstashToken = process.env.QSTASH_TOKEN;
     if (!qstashToken) {
       // QStash is required - mark job as failed if not configured
       console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash not configured - marking job as failed`);
@@ -2876,26 +2866,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
     
-    // Use QStash to trigger worker asynchronously
-    // CRITICAL: Only send jobId - worker will fetch image from storage
-    // CRITICAL: Worker URL MUST be /api/scan-worker, never /api/scan
+    // Return jobId immediately (202 Accepted) - only jobId and status, NEVER books
+    // CRITICAL: Must return here to prevent ERR_HTTP_HEADERS_SENT
+    res.status(202).json({
+      jobId,
+      status: 'pending'
+    });
+    
+    // Enqueue job to worker via QStash (ONLY send jobId - image is in storage)
+    // CRITICAL: This runs AFTER response is sent, so errors won't affect client
+    // CRITICAL: Worker endpoint MUST be /api/scan-worker, NOT /api/scan
     try {
-      // QStash publish URL format: https://qstash.upstash.io/v2/publish/{destination_url}
-      const qstashPublishUrl = qstashUrl.endsWith('/') 
-        ? `${qstashUrl}${workerUrl}` 
-        : `${qstashUrl}/${workerUrl}`;
+      // QStash publish URL format: https://qstash.upstash.io/v2/publish/{url-encoded-destination}
+      // The destination URL must be URL-encoded
+      const qstashBaseUrl = 'https://qstash.upstash.io/v2/publish';
+      const encodedWorkerUrl = encodeURIComponent(workerUrl);
+      const qstashPublishUrl = `${qstashBaseUrl}/${encodedWorkerUrl}`;
       
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl} (worker: ${workerUrl}, payload: jobId only)`);
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Enqueuing to QStash: ${qstashPublishUrl}`);
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Worker URL: ${workerUrl}`);
       
       const qstashResponse = await fetch(qstashPublishUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${qstashToken}`,
           'Content-Type': 'application/json',
-          'Upstash-Delay': '0', // Process immediately
         },
         body: JSON.stringify({
-          jobId // ONLY jobId - image is in storage at image_path
+          jobId, // ONLY jobId - image is in storage at image_path
+          scanId, // Include scanId for correlation
+          userId // Include userId for worker
         })
       });
       
@@ -2916,13 +2916,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           })
           .eq('id', jobId);
         
-        return res.status(500).json({
-          status: 'error',
-          error: { code: 'enqueue_failed', message: 'Failed to enqueue scan job' }
-        });
+        // Response already sent, can't return error to client
+        return;
       }
       
-      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job enqueued to QStash worker successfully`);
+      const qstashResponseData = await qstashResponse.json().catch(() => ({}));
+      console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job enqueued to QStash successfully:`, qstashResponseData);
     } catch (qstashError: any) {
       console.error(`[API] [SCAN ${scanId}] [JOB ${jobId}] QStash error:`, qstashError?.message || qstashError);
       
@@ -2939,10 +2938,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })
         .eq('id', jobId);
       
-      return res.status(500).json({
-        status: 'error',
-        error: { code: 'enqueue_error', message: 'Failed to enqueue scan job' }
-      });
+      // Response already sent, can't return error to client
+      return;
     }
     
   } catch (e: any) {
