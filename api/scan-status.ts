@@ -1,8 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 /**
- * GET /api/scan/[jobId]
+ * GET /api/scan-status?jobId=xxx
  * Poll endpoint to check scan job status
+ * This is the single source of truth for job status
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Add CORS headers
@@ -12,16 +13,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json');
   
   // CRITICAL: Make this endpoint explicitly non-cacheable
-  // Prevent 304 Not Modified responses that break polling
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.setHeader('Surrogate-Control', 'no-store');
-  // Remove ETag to prevent conditional GET / 304 responses
   res.removeHeader('ETag');
   res.removeHeader('Last-Modified');
 
-  // Handle OPTIONS preflight request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -36,13 +34,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'jobId required' });
     }
 
-    // CRITICAL: Read from durable storage (Supabase), not in-memory state
-    // This ensures all serverless instances see the same job state
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      console.error(`[API] [JOB ${jobId}] Database not configured for job status check`);
       return res.status(500).json({ error: 'Database not configured' });
     }
 
@@ -54,9 +49,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     });
 
-    // Read from durable storage - SELECT only the fields we need
-    // CRITICAL: Select status, books (NOT results), error, id to ensure we get the canonical data
-    console.log(`[API] [JOB ${jobId}] Reading job status from durable storage (Supabase)`);
+    // CRITICAL: Select only the fields we need - use books column (not results)
     const { data, error } = await supabase
       .from('scan_jobs')
       .select('id, status, books, error, updated_at') // Select books column (not results)
@@ -64,8 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .single();
 
     if (error || !data) {
-      console.log(`[API] [JOB ${jobId}] Job not found in database:`, error?.message || 'No data');
-      // Always return 200 with JSON, never 304
+      console.log(`[API] [SCAN-STATUS] [JOB ${jobId}] Job not found:`, error?.message || 'No data');
       return res.status(200).json({ 
         jobId: jobId,
         status: 'not_found',
@@ -84,21 +76,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     
-    // CRITICAL: Always return jobId, status, books (from books column, NOT results), and error
-    // Books are ALWAYS included (empty array if not completed or null)
-    // This ensures client can always parse the response and get books when status='completed'
+    // CRITICAL: Always return books from books column (not results)
     const booksArray = Array.isArray(data.books) ? data.books : [];
     const response = {
-      jobId: data.id, // Include jobId in response for correlation
+      jobId: data.id,
       status: data.status, // 'pending' | 'processing' | 'completed' | 'failed'
-      books: booksArray, // Always array, never null/undefined - from books column (not results)
-      error: errorObj
+      books: booksArray, // Always array - from books column (not results)
+      error: errorObj,
+      updated_at: data.updated_at
     };
     
     // Log what we're returning - confirm books.length > 0 when completed
-    console.log(`[API] [JOB ${jobId}] ✅ Returning status: ${response.status}, books.length=${booksArray.length}, books.length>0=${booksArray.length > 0 ? 'YES' : 'NO'}`);
+    console.log(`[API] [SCAN-STATUS] [JOB ${jobId}] ✅ Returning status: ${response.status}, books.length=${booksArray.length}, books.length>0=${booksArray.length > 0 ? 'YES' : 'NO'}`);
     if (response.status === 'completed' && booksArray.length === 0) {
-      console.warn(`[API] [JOB ${jobId}] ⚠️ WARNING: Status is 'completed' but books.length is 0! This may indicate a data issue.`);
+      console.warn(`[API] [SCAN-STATUS] [JOB ${jobId}] ⚠️ WARNING: Status is 'completed' but books.length is 0!`);
     }
     
     return res.status(200).json(response);

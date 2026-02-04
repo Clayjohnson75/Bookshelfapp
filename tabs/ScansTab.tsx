@@ -1559,36 +1559,36 @@ export const ScansTab: React.FC = () => {
     // Concurrency limiter: process up to CONCURRENCY_LIMIT books in parallel
     const processNextBatch = async () => {
       while (pendingIndex < booksNeedingCovers.length && activeRequests < CONCURRENCY_LIMIT) {
-        if (!isActiveRef.current) {
-          console.log('🛑 Cover fetch cancelled: screen not active');
-          break;
-        }
-        
+      if (!isActiveRef.current) {
+        console.log('🛑 Cover fetch cancelled: screen not active');
+        break;
+      }
+      
         const book = booksNeedingCovers[pendingIndex++];
         activeRequests++;
         completedCount++;
         
         // Process this book (don't await - let it run in parallel)
         (async () => {
+      try {
+        // Skip if already has all data (cover, description, and stats) and local cache
+        if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
           try {
-            // Skip if already has all data (cover, description, and stats) and local cache
-            if (book.googleBooksId && book.localCoverPath && FileSystem.documentDirectory) {
-              try {
-                const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
-                const fileInfo = await FileSystem.getInfoAsync(fullPath);
-                // Check if we already have cover, description, and key stats
-                if (fileInfo.exists && book.coverUrl && book.description && 
-                    (book.pageCount || book.publisher || book.publishedDate)) {
+            const fullPath = `${FileSystem.documentDirectory}${book.localCoverPath}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            // Check if we already have cover, description, and key stats
+            if (fileInfo.exists && book.coverUrl && book.description && 
+                (book.pageCount || book.publisher || book.publishedDate)) {
                   activeRequests--;
                   processNextBatch(); // Process next book
                   return; // Already has everything, skip
-                }
-              } catch (error) {
-                // File doesn't exist, continue to fetch
-              }
             }
+          } catch (error) {
+            // File doesn't exist, continue to fetch
+          }
+        }
 
-            // Use centralized service - it will use googleBooksId if available (much faster!)
+        // Use centralized service - it will use googleBooksId if available (much faster!)
             console.log(`🔍 [${completedCount}/${booksNeedingCovers.length}] Fetching cover for: "${book.title}"${book.author ? ` by ${book.author}` : ''}${book.googleBooksId ? ` (ID: ${book.googleBooksId})` : ''}`);
             
             // Retry logic for 429 errors
@@ -1600,10 +1600,10 @@ export const ScansTab: React.FC = () => {
             while (retryCount <= MAX_RETRIES) {
               try {
                 bookData = await fetchBookData(
-                  book.title,
-                  book.author,
-                  book.googleBooksId // If we already have the ID, use it instead of searching
-                );
+          book.title,
+          book.author,
+          book.googleBooksId // If we already have the ID, use it instead of searching
+        );
                 break; // Success, exit retry loop
               } catch (error: any) {
                 // Check if it's a 429 error
@@ -1637,83 +1637,83 @@ export const ScansTab: React.FC = () => {
             }
             
             console.log(`📦 [${completedCount}/${booksNeedingCovers.length}] Got book data for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
-            
-            // Check again after async operation
-            if (!isActiveRef.current) {
-              console.log('🛑 Cover fetch cancelled: screen not active (after fetch)');
+        
+        // Check again after async operation
+        if (!isActiveRef.current) {
+          console.log('🛑 Cover fetch cancelled: screen not active (after fetch)');
               activeRequests--;
               return;
-            }
-            
-            if (bookData.coverUrl && bookData.googleBooksId) {
+        }
+        
+        if (bookData.coverUrl && bookData.googleBooksId) {
               console.log(`✅ [${completedCount}/${booksNeedingCovers.length}] Found cover for "${book.title}": ${bookData.coverUrl.substring(0, 80)}...`);
-              // Download and cache the cover (non-blocking)
-              const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
-              
-              // Check again after download
-              if (!isActiveRef.current) {
-                console.log('🛑 Cover fetch cancelled: screen not active (after download)');
+          // Download and cache the cover (non-blocking)
+          const localPath = await downloadAndCacheCover(bookData.coverUrl, bookData.googleBooksId);
+          
+          // Check again after download
+          if (!isActiveRef.current) {
+            console.log('🛑 Cover fetch cancelled: screen not active (after download)');
                 activeRequests--;
                 return;
-              }
-              
-              // Include all stats data from Google Books API
-              const updatedBook = {
-                coverUrl: bookData.coverUrl,
-                googleBooksId: bookData.googleBooksId,
-                ...(localPath && { localCoverPath: localPath }),
-                // Include all stats fields
-                ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
-                ...(bookData.categories && { categories: bookData.categories }),
-                ...(bookData.publisher && { publisher: bookData.publisher }),
-                ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
-                ...(bookData.language && { language: bookData.language }),
-                ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
-                ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
-                ...(bookData.subtitle && { subtitle: bookData.subtitle }),
-                ...(bookData.printType && { printType: bookData.printType }),
-                ...(bookData.description && { description: bookData.description }),
-              };
+          }
+          
+          // Include all stats data from Google Books API
+          const updatedBook = {
+            coverUrl: bookData.coverUrl,
+            googleBooksId: bookData.googleBooksId,
+            ...(localPath && { localCoverPath: localPath }),
+            // Include all stats fields
+            ...(bookData.pageCount !== undefined && { pageCount: bookData.pageCount }),
+            ...(bookData.categories && { categories: bookData.categories }),
+            ...(bookData.publisher && { publisher: bookData.publisher }),
+            ...(bookData.publishedDate && { publishedDate: bookData.publishedDate }),
+            ...(bookData.language && { language: bookData.language }),
+            ...(bookData.averageRating !== undefined && { averageRating: bookData.averageRating }),
+            ...(bookData.ratingsCount !== undefined && { ratingsCount: bookData.ratingsCount }),
+            ...(bookData.subtitle && { subtitle: bookData.subtitle }),
+            ...(bookData.printType && { printType: bookData.printType }),
+            ...(bookData.description && { description: bookData.description }),
+          };
 
-              // Accumulate update in patch map (don't update state immediately)
-              // Only if screen is still active
-              if (book.id && isActiveRef.current) {
+          // Accumulate update in patch map (don't update state immediately)
+          // Only if screen is still active
+          if (book.id && isActiveRef.current) {
                 console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Queuing state update for "${book.title}" with coverUrl`);
-                patchById.set(book.id, updatedBook);
+            patchById.set(book.id, updatedBook);
                 
                 // Flush if we've accumulated enough updates or enough time has passed
                 if (patchById.size >= FLUSH_COUNT_THRESHOLD) {
                   flushUpdates();
                 } else {
-                  scheduleFlush();
+            scheduleFlush();
                 }
-              } else {
-                console.warn(`⚠️ Skipping state update for "${book.title}": book.id=${book.id}, isActive=${isActiveRef.current}`);
-              }
-              
-              // Save to Supabase immediately if cover, description, or stats were fetched
-              // Skip Supabase for guest users
-              if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
-                const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
+          } else {
+            console.warn(`⚠️ Skipping state update for "${book.title}": book.id=${book.id}, isActive=${isActiveRef.current}`);
+          }
+          
+          // Save to Supabase immediately if cover, description, or stats were fetched
+          // Skip Supabase for guest users
+          if (user && !isGuestUser(user) && (updatedBook.coverUrl || updatedBook.description || updatedBook.pageCount || updatedBook.publisher)) {
+            const bookStatus = book.status || 'pending'; // Preserve original status (pending/approved/rejected)
                 console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Saving book with cover to Supabase: "${book.title}" (status: ${bookStatus})`);
-                saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
-                  .then(success => {
-                    if (success) {
-                      console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
-                    } else {
-                      console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
-                    }
-                  })
-                  .catch(error => {
-                    console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
-                  });
-              }
-            } else {
+            saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
+              .then(success => {
+                if (success) {
+                  console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
+                } else {
+                  console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
+                }
+              })
+              .catch(error => {
+                console.error(`❌ Error saving book data to Supabase for ${book.title}:`, error);
+              });
+          }
+        } else {
               console.warn(`⚠️ [${completedCount}/${booksNeedingCovers.length}] No cover found for "${book.title}": coverUrl=${bookData.coverUrl ? 'YES' : 'NO'}, googleBooksId=${bookData.googleBooksId || 'NO'}`);
-            }
-          } catch (error) {
+        }
+      } catch (error) {
             // Fail softly - don't throw, just log
-            if (isActiveRef.current) {
+        if (isActiveRef.current) {
               console.error(`❌ [${completedCount}/${booksNeedingCovers.length}] Error fetching data for "${book.title}":`, error);
             }
           } finally {
@@ -1974,13 +1974,13 @@ export const ScansTab: React.FC = () => {
       const scanUrl = `${baseUrl}/api/scan`;
       console.log(`📡 Creating scan job at: ${scanUrl} [SCAN ${scanId || 'new'}]`);
       const createResp = await fetch(scanUrl, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({ 
-          imageDataURL: primaryDataURL,
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ 
+            imageDataURL: primaryDataURL,
           userId: user?.uid || undefined
         }),
       });
@@ -1995,17 +1995,17 @@ export const ScansTab: React.FC = () => {
             const errorData = JSON.parse(errorText);
             if (errorData.error === 'scan_limit_reached') {
               if (!isSubscriptionUIHidden()) {
-                Alert.alert(
-                  'Scan Limit Reached',
-                  errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
-                  [
-                    { text: 'OK', onPress: () => {
-                      if (!isSubscriptionUIHidden()) {
-                        setShowUpgradeModal(true);
-                      }
-                    }}
-                  ]
-                );
+              Alert.alert(
+                'Scan Limit Reached',
+                errorData.message || 'You have reached your monthly scan limit. Please upgrade to Pro for unlimited scans.',
+                [
+                  { text: 'OK', onPress: () => {
+                    if (!isSubscriptionUIHidden()) {
+                      setShowUpgradeModal(true);
+                    }
+                  }}
+                ]
+              );
               }
               if (user) {
                 loadScanUsage();
@@ -2050,8 +2050,8 @@ export const ScansTab: React.FC = () => {
       
       // Step 2: Poll for job completion (with progress updates)
       // CRITICAL: Use same canonical baseUrl for polling (no redirects, no mixed hosts)
-      const POLL_INTERVAL_MS = 1500; // Poll every 1.5 seconds
-      const MAX_POLL_TIME_MS = 300000; // Max 5 minutes of polling
+      const POLL_INTERVAL_MS = 1000; // Poll every 1 second
+      const MAX_POLL_TIME_MS = 75000; // Max 75 seconds (matches server timeout)
       const startTime = Date.now();
       let lastStatus = jobData.status;
       
@@ -2068,7 +2068,7 @@ export const ScansTab: React.FC = () => {
             method: 'GET',
             headers: { 
               'Accept': 'application/json',
-              'Cache-Control': 'no-cache',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
               'Pragma': 'no-cache'
             },
             cache: 'no-store' // Explicitly disable caching
@@ -2089,8 +2089,7 @@ export const ScansTab: React.FC = () => {
           const statusData = await statusResp.json();
           const currentStatus = statusData.status;
           
-          // Only process results if status is 'completed' or 'failed'
-          // Do NOT show "0 books" while status is 'pending' or 'processing'
+          // CRITICAL: Stop polling and return results when status is 'completed' or 'failed'
           if (currentStatus === 'completed') {
             const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
             
@@ -2101,7 +2100,8 @@ export const ScansTab: React.FC = () => {
               });
             }
             
-            console.log(`✅ Scan job completed: ${serverBooks.length} books found`);
+            console.log(`✅ Scan job completed: ${serverBooks.length} books found [JOB ${jobId}]`);
+            // STOP POLLING - return results immediately (covers can load in background)
             return { books: serverBooks, fromVercel: true, jobId };
           }
           
@@ -2109,13 +2109,14 @@ export const ScansTab: React.FC = () => {
             const errorInfo = statusData.error || {};
             const errorCode = errorInfo.code || 'unknown_error';
             const errorMessage = errorInfo.message || 'Scan failed';
-            console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage}`);
-            // Only return empty books if status is explicitly 'failed' (not 'pending' or 'processing')
+            console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage} [JOB ${jobId}]`);
+            // STOP POLLING - return empty books on failure
             return { books: [], fromVercel: false, jobId };
           }
           
-          // Continue polling if still pending/processing - do NOT return empty books yet
+          // Continue polling if still pending/processing
           // Status is 'pending' or 'processing', keep waiting
+          console.log(`⏳ Job ${jobId} status: ${currentStatus}, continuing to poll...`);
         } catch (pollError: any) {
           console.error(`❌ Error polling job status:`, pollError?.message || pollError);
           // Continue polling on network errors
@@ -2123,8 +2124,12 @@ export const ScansTab: React.FC = () => {
       }
       
       // Timeout - job took too long (still pending/processing)
-      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s (status may still be processing)`);
-      // Return empty books on timeout - job may still be processing on server
+      // This should not happen if server completes within 75s, but handle gracefully
+      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
+      Alert.alert(
+        'Scan Timeout',
+        'The scan is taking longer than expected. Please try again or check your connection.'
+      );
       return { books: [], fromVercel: false, jobId };
       
     } catch (e: any) {
