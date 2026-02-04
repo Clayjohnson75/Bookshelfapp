@@ -24,14 +24,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // QStash sends only jobId in req.body (image is in storage)
     // This endpoint is called by QStash, NOT by /api/scan
-    const { jobId, scanId, userId } = req.body || {};
+    const { jobId, scanId: requestScanId, userId } = req.body || {};
     
     if (!jobId) {
       console.error('[API] [WORKER] Missing jobId in request body');
       return res.status(400).json({ error: 'jobId required' });
     }
     
-    console.log(`[API] [WORKER] Received job request: jobId=${jobId}, scanId=${scanId || 'none'}, userId=${userId || 'none'}`);
+    console.log(`[API] [WORKER] Received job request: jobId=${jobId}, scanId=${requestScanId || 'none'}, userId=${userId || 'none'}`);
 
     // Load job from Supabase to get image_path and other metadata
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -63,7 +63,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     
     const { image_path, user_id, image_hash, scan_id } = jobData;
-    const scanId = scan_id || `scan_${jobId.split('_')[1]}_${jobId.split('_')[2]}`; // Use stored scan_id or extract from jobId
+    // Use scanId from request, then from database, then generate from jobId
+    const scanId = requestScanId || scan_id || `scan_${jobId.split('_')[1]}_${jobId.split('_')[2]}`;
     
     if (!image_path) {
       console.error(`[API] [WORKER] [JOB ${jobId}] No image_path in job data`);
