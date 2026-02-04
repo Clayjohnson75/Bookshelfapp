@@ -153,12 +153,12 @@ const getApiBaseUrl = (): string => {
         const Constants = require('expo-constants');
         return Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
                Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-               'https://bookshelfscan.app';
+               'https://www.bookshelfscan.app';
       }
     } catch {
       // expo-constants not available (server-side or not installed) - that's fine
     }
-    return 'https://bookshelfscan.app';
+    return 'https://www.bookshelfscan.app';
   }
   return '';
 };
@@ -894,24 +894,22 @@ async function fetchByGoogleBooksId(
         throw fetchError;
       }
 
-      // Handle rate limiting (429) with Retry-After header support
-      if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
-        
-        const error: any = new Error(`Google Books 429: Rate limited${retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : ''}`);
-        error.status = 429;
-        error.statusCode = 429;
-        error.retryAfter = retryAfterSeconds;
-        throw error; // Let queue handle retry logic
+      // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
+      // Parse response and check ok flag
+      const responseData = await response.json();
+      
+      // Handle new resilient response format
+      if (responseData.ok === false) {
+        // Proxy returned error gracefully - log and return empty
+        const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Proxy returned ok:false - ${responseData.error || 'Unknown error'}`);
+        }
+        return {}; // Gracefully fail - no cover, but don't crash
       }
 
-      if (!response.ok) {
-        console.warn(`Google Books API request failed: ${response.status} ${response.statusText}`);
-        return {};
-      }
-
-      const data = await response.json() as GoogleBooksVolumeResponse;
+      // Success - extract data from response
+      const data = (responseData.data || responseData) as GoogleBooksVolumeResponse;
       const volumeInfo = data.volumeInfo || {};
 
       // Enhanced DEBUG_GOOGLE_BOOKS logging for direct ID lookup
@@ -1135,28 +1133,26 @@ async function searchBook(
         console.log(`[DEBUG_GOOGLE_BOOKS]   URL: ${url}`);
       }
 
-      // Handle rate limiting (429) with Retry-After header support
-      if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
-        
-        const error: any = new Error(`Google Books 429: Rate limited${retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : ''}`);
-        error.status = 429;
-        error.statusCode = 429;
-        error.retryAfter = retryAfterSeconds;
-        throw error; // Let queue handle retry logic
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
+      // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
+      // Parse response and check ok flag
+      const responseData = await response.json();
+      
+      // Handle new resilient response format
+      if (responseData.ok === false) {
+        // Proxy returned error gracefully - log and return empty
         if (DEBUG_GOOGLE_BOOKS) {
-          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Response not OK - Error text (first 500 chars): ${errorText.substring(0, 500)}`);
+          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Proxy returned ok:false - ${responseData.error || 'Unknown error'}`);
         }
-        console.warn(`Google Books API request failed: ${response.status} ${response.statusText}`);
-        return {};
+        // If retryAfterMs is provided and we have retries left, wait and retry
+        if (responseData.retryAfterMs && retryCount < 2) {
+          await new Promise(resolve => setTimeout(resolve, responseData.retryAfterMs));
+          throw new Error('Rate limited - retrying...');
+        }
+        return {}; // Gracefully fail - no cover, but don't crash
       }
 
-      const data = await response.json() as GoogleBooksResponse;
+      // Success - extract data from response
+      const data = (responseData.data || responseData) as GoogleBooksResponse;
       
       // DEBUG: Log items count and top 3 candidates
       if (DEBUG_GOOGLE_BOOKS) {

@@ -871,7 +871,8 @@ export const MyLibraryTab: React.FC = () => {
             setIsAutoSorting(true);
             try {
               // Get API base URL
-              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
+              // Canonical URL: always use www.bookshelfscan.app
+              const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
               
               if (!baseUrl) {
                 throw new Error('API server URL not configured');
@@ -2247,9 +2248,10 @@ export const MyLibraryTab: React.FC = () => {
                       try {
                         setBookSearchLoading(true);
                         // Use proxy API route to get API key and rate limiting
+                        // Canonical URL: always use www.bookshelfscan.app
                         const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
                                        Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                                       'https://bookshelfscan.app';
+                                       'https://www.bookshelfscan.app';
                         const response = await fetch(`${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=8`);
                         const data = await response.json();
                         setBookSearchResults(data.items || []);

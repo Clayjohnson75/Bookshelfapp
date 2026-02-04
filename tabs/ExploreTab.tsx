@@ -88,9 +88,10 @@ export const ExploreTab: React.FC = () => {
       // but we'll also try 'relevance' as a fallback
       // Actually, 'relevance' should work better for popular books, but let's add langRestrict for English
       // Use proxy API route to get API key and rate limiting
+      // Canonical URL: always use www.bookshelfscan.app
       const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
                      Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                     'https://bookshelfscan.app';
+                     'https://www.bookshelfscan.app';
       const response = await fetch(
         `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(queryParam)}&maxResults=20&startIndex=${startIndex}&orderBy=relevance&langRestrict=en`
       );

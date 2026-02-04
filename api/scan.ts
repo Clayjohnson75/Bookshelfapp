@@ -1957,6 +1957,41 @@ export async function processScanJob(
     });
   };
   
+  /**
+   * GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
+   * This function ALWAYS runs normalization and validation before saving.
+   * 
+   * @param rawBooks - Raw books from API (parse step)
+   * @returns cleanBooks - Normalized and validated books ready to save
+   */
+  const normalizeAndValidateBooks = async (rawBooks: any[]): Promise<any[]> => {
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] 🔄 PIPELINE: Normalizing and validating ${rawBooks.length} raw books...`);
+    
+    // Step 1: Fix title/author swaps (normalization)
+    await updateProgress('normalizing', rawBooks.length);
+    const fixedBooks = fixSwappedBooks(rawBooks);
+    
+    // Step 2: Deduplicate (normalization)
+    const deduped = dedupeBooks(fixedBooks);
+    
+    // Step 3: Apply cheap validator (validation)
+    await updateProgress('cheap_validating', deduped.length);
+    const cheapValidated = deduped.map(book => cheapValidate(book).normalizedBook);
+    const cheapFiltered = cheapValidated.filter(book => !book.cheapFilterReason);
+    
+    // Step 4: Batch validate (validation)
+    await updateProgress('batch_validating', cheapFiltered.length);
+    const validatedBooks = await batchValidateBooks(cheapFiltered);
+    const validBooks = validatedBooks.filter(book => book.confidence !== 'invalid' && book.isValid !== false);
+    
+    // Step 5: Final deduplication (normalization)
+    const finalCleanBooks = dedupeBooks(validBooks);
+    
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE: ${rawBooks.length} raw → ${finalCleanBooks.length} clean books`);
+    
+    return finalCleanBooks;
+  };
+  
   // Update job progress helper
   // Note: progress column may not exist - only update updated_at to keep job alive
   const updateProgress = async (stage: string, booksFound?: number) => {
@@ -2034,19 +2069,20 @@ export async function processScanJob(
           // Gemini passed quality gate - complete immediately, skip OpenAI
           console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Gemini passed quality gate: ${geminiBooks.length} books, clean JSON, ${geminiResult.rawLength} chars. Completing job without OpenAI.`);
           
-          // Quick validation (non-blocking - can run after completion if needed)
-          const fixedBooks = fixSwappedBooks(geminiBooks);
-          const deduped = dedupeBooks(fixedBooks);
-          const cheapValidated = deduped.map(book => cheapValidate(book).normalizedBook);
-          const cheapFiltered = cheapValidated.filter(book => !book.cheapFilterReason);
+          // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
+          // Step 1: Parse (already done - geminiBooks are rawBooks)
+          const rawBooks = geminiBooks;
           
-          // Complete job with Gemini results (batch validation can run async if needed)
+          // Step 2: Normalize + Validate (ALWAYS runs before save)
+          const cleanBooks = await normalizeAndValidateBooks(rawBooks);
+          
+          // Step 3: Save cleanBooks to scan_jobs.books (ONLY after normalization/validation)
           // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
           const updateResult = await supabase
             .from('scan_jobs')
             .update({
               status: 'completed',
-              books: cheapFiltered, // Write to books column
+              books: cleanBooks, // Write cleanBooks (normalized + validated) to books column
               error: null, // Clear any previous error
               updated_at: new Date().toISOString()
             })
@@ -2071,13 +2107,15 @@ export async function processScanJob(
             // Don't return early - let it fall through to error handler
             throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
           } else {
-            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job updated: status=completed, books=${cheapFiltered.length}, books.length=${cheapFiltered.length > 0 ? 'YES' : 'NO'}`);
+            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${cleanBooks.length} clean books to scan_jobs.books (status=completed)`);
+            console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
           }
           
           scanMetadata.ended_reason = 'completed';
-          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job completed with Gemini results: ${cheapFiltered.length} books`);
+          console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Job completed with Gemini results: ${cleanBooks.length} books`);
           
           // Cleanup and return early
+          // Step 4: Cover fetching happens on client side when it receives status='completed'
           if (overallTimeout) clearTimeout(overallTimeout);
           return;
         } else {
@@ -2157,28 +2195,18 @@ export async function processScanJob(
     if (!openaiController.signal.aborted) openaiController.abort();
   }
   
-  // Process and validate results (non-blocking - can run after completion if needed)
-  await updateProgress('validating', finalBooks.length);
+  // GUARANTEED PIPELINE: Parse → Normalize + Validate → cleanBooks
+  // Step 1: Parse (already done - finalBooks are rawBooks from merge)
+  const rawBooks = finalBooks;
   
-  const fixedBooks = fixSwappedBooks(finalBooks);
-  const deduped = dedupeBooks(fixedBooks);
-  
-  // Apply cheap validator
-  const cheapValidated = deduped.map(book => cheapValidate(book).normalizedBook);
-  const cheapFiltered = cheapValidated.filter(book => !book.cheapFilterReason);
-  
-  // Batch validate (non-blocking - can run async after completion if needed)
-  // For now, we'll do it synchronously but it's fast
-  await updateProgress('batch_validating', cheapFiltered.length);
-  const validatedBooks = await batchValidateBooks(cheapFiltered);
-  const validBooks = validatedBooks.filter(book => book.confidence !== 'invalid' && book.isValid !== false);
-  const finalValidatedBooks = dedupeBooks(validBooks);
+  // Step 2: Normalize + Validate (ALWAYS runs before save)
+  const cleanBooks = await normalizeAndValidateBooks(rawBooks);
   
   // Check if validation filtered everything out
-  if (finalValidatedBooks.length === 0 && finalBooks.length > 0) {
+  if (cleanBooks.length === 0 && rawBooks.length > 0) {
     scanMetadata.ended_reason = 'validation_failed';
     console.warn(`[SCAN ${scanId}] All books filtered out by validation`);
-  } else if (finalValidatedBooks.length === 0) {
+  } else if (cleanBooks.length === 0) {
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'no_books_detected';
   } else {
     scanMetadata.ended_reason = 'completed';
@@ -2191,13 +2219,13 @@ export async function processScanJob(
     content_type: scanMetadata.content_type,
     parse_path: scanMetadata.parse_path,
     ended_reason: scanMetadata.ended_reason,
-    books_found: finalValidatedBooks.length
+    books_found: cleanBooks.length
   });
   
-  // Update job with final results - ensure status is always 'completed' or 'failed'
+  // Step 3: Save cleanBooks to scan_jobs.books (ONLY after normalization/validation)
   // CRITICAL: Update ONLY columns that exist: status, books, error, updated_at (NOT api_results, NOT progress)
-  const finalStatus = finalValidatedBooks.length > 0 ? 'completed' : 'failed';
-  const finalError = finalValidatedBooks.length === 0 ? JSON.stringify({
+  const finalStatus = cleanBooks.length > 0 ? 'completed' : 'failed';
+  const finalError = cleanBooks.length === 0 ? JSON.stringify({
     code: scanMetadata.ended_reason || 'no_books_detected',
     message: 'No books detected after validation',
     metadata: scanMetadata
@@ -2207,7 +2235,7 @@ export async function processScanJob(
     .from('scan_jobs')
     .update({
       status: finalStatus,
-      books: finalValidatedBooks, // Write to books column
+      books: cleanBooks, // Write cleanBooks (normalized + validated) to books column
       error: finalError, // Set error if failed, null if completed
       updated_at: new Date().toISOString()
     })
@@ -2231,10 +2259,11 @@ export async function processScanJob(
     // Throw error so it's caught by outer catch block
     throw new Error(`Failed to update job with books: ${updateResult.error.message || String(updateResult.error)}`);
   } else {
-    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Job updated: status=${finalStatus}, books=${finalValidatedBooks.length}, books.length=${finalValidatedBooks.length > 0 ? 'YES' : 'NO'}`);
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ PIPELINE COMPLETE: Saved ${cleanBooks.length} clean books to scan_jobs.books (status=${finalStatus})`);
+    console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] ✅ Cover fetching will be triggered by client when status='completed'`);
   }
   
-  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${finalValidatedBooks.length} books, status=${finalStatus}`);
+  console.log(`[API] [SCAN ${scanId}] [JOB ${jobId}] Scan job completed: ${cleanBooks.length} books, status=${finalStatus}`);
   } catch (error: any) {
     // Update job with error
     scanMetadata.ended_reason = scanMetadata.ended_reason || 'scan_exception';

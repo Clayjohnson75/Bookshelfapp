@@ -248,7 +248,8 @@ export const ScansTab: React.FC = () => {
       try {
         setIsSearching(true);
         // Use proxy API route to get API key and rate limiting
-        const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
+        // Canonical URL: always use www.bookshelfscan.app
+        const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
         const response = await fetch(
           `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=10`
         );
@@ -4431,7 +4432,8 @@ export const ScansTab: React.FC = () => {
                     setIsSearching(true);
                     try {
                       // Use proxy API route to get API key and rate limiting
-                      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
+                      // Canonical URL: always use www.bookshelfscan.app
+                      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
                       const response = await fetch(
                         `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=10`
                       );
