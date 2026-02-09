@@ -19,18 +19,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import Constants from 'expo-constants';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
 import BookDetailModal from '../components/BookDetailModal';
-
-// Helper to read env vars
-const getEnvVar = (key: string): string => {
-  return Constants.expoConfig?.extra?.[key] || 
-         Constants.manifest?.extra?.[key] || 
-         process.env[key] || 
-         '';
-};
+import { dedupeBooks } from '../lib/dedupeBooks';
+import { getEnvVar } from '../lib/getEnvVar';
 
 interface LibraryViewProps {
   onClose?: () => void;
@@ -153,7 +146,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
   const loadBooks = async () => {
     if (!user) return;
     try {
-      // Load from Supabase first (primary source of truth)
+      const { supabase } = await import('../lib/supabase');
+      const { data: sess } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
+      if (!sess?.session?.access_token) {
+        setBooks([]);
+        return;
+      }
+
       let supabaseBooks = null;
       try {
         const { loadBooksFromSupabase } = await import('../services/supabaseSync');
@@ -162,7 +161,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         console.error('Error loading books from Supabase:', error);
       }
 
-      // Also load from AsyncStorage for backwards compatibility
+      // Merge with AsyncStorage only when we have a valid session (no guest fallback)
       const userApprovedKey = `approved_books_${user.uid}`;
       const storedApproved = await AsyncStorage.getItem(userApprovedKey);
       const localBooks: Book[] = storedApproved ? JSON.parse(storedApproved) : [];
@@ -212,7 +211,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         mergedBooks = localBooks;
       }
       
-      setBooks(mergedBooks);
+      // Use canonical merge result only — do NOT merge with prev or same book can appear twice (different ids)
+      setBooks(dedupeBooks(mergedBooks));
 
       // Load photos to find source photo for books
       const photosKey = `@${user.uid}:photos`;
@@ -820,9 +820,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         );
       }
     } else if (exportAll) {
-      booksToExport = sortedBooks;
+      booksToExport = allSortedBooks;
     } else {
-      booksToExport = sortedBooks.filter(book => 
+      booksToExport = allSortedBooks.filter(book => 
         selectedBooksForExport.has(book.id || `${book.title}_${book.author}`)
       );
     }
@@ -1327,7 +1327,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
               if (!user) return;
               
               const newReadAt = filterReadStatus === 'unread' ? Date.now() : null;
-              const booksToUpdate = sortedBooks.filter(book => {
+              const booksToUpdate = allSortedBooks.filter(book => {
                 const bookId = book.id || `${book.title}_${book.author}`;
                 return selectedBooks.has(bookId);
               });
@@ -1359,7 +1359,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 }
 
                 // Update Supabase - CRITICAL: This must succeed for data to persist
-                const { supabase } = await import('../lib/supabaseClient');
+                const { supabase } = await import('../lib/supabase');
                 if (supabase) {
                   const updatePromises = booksToUpdate.map(async (book) => {
                     const authorForQuery = book.author || '';
@@ -1499,13 +1499,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
           setSelectedBook(null);
         }}
         onBookUpdate={(updatedBook) => {
-          // Update the book in state when description/stats are fetched
           setBooks(prev => prev.map(b => 
             b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
               ? updatedBook
               : b
           ));
-          setSelectedBook(updatedBook); // Update the selected book too
+          setSelectedBook(updatedBook);
         }}
         onDeleteBook={async (book) => {
           if (!user) return;
@@ -1523,33 +1522,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
         onEditBook={async (book) => {
           if (!user) return;
           try {
-            // Update local state immediately
             const userApprovedKey = `approved_books_${user.uid}`;
             const updatedBooks = books.map(b => 
               b.id === book.id || (b.title === book.title && b.author === book.author)
                 ? book
                 : b
             );
-            setBooks(updatedBooks);
+            setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
             setSelectedBook(book);
             await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
-            
-            // Reload from Supabase to ensure all views are updated
             setTimeout(() => {
               loadBooks();
             }, 500);
           } catch (error) {
             console.error('Error editing book:', error);
           }
-        }}
-        onBookUpdate={(updatedBook) => {
-          // Update the book in state when cover is changed
-          setBooks(prev => prev.map(b => 
-            b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
-              ? updatedBook
-              : b
-          ));
-          setSelectedBook(updatedBook);
         }}
         onAddBookToFolder={() => {}}
         folders={[]}
@@ -1974,10 +1961,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                 {folderSearchQuery.length > 0 && (
                   <TouchableOpacity
                     onPress={() => setFolderSearchQuery('')}
-                    style={styles.librarySearchClear}
+                    style={styles.folderLibrarySearchClear}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
-                    <Text style={styles.librarySearchClearText}>×</Text>
+                    <Text style={styles.folderLibrarySearchClearText}>×</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1985,7 +1972,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
               {/* Select Button */}
               <View style={styles.folderSelectButtonContainer}>
                 <TouchableOpacity
-                  style={styles.selectButton}
+                  style={styles.folderSelectButton}
                   onPress={() => {
                     setIsFolderSelectionMode(!isFolderSelectionMode);
                     if (isFolderSelectionMode) {
@@ -1994,7 +1981,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                   }}
                   activeOpacity={0.7}
                 >
-                  <Text style={styles.selectButtonText}>
+                  <Text style={styles.folderSelectButtonText}>
                     {isFolderSelectionMode ? 'Cancel' : 'Select'}
                   </Text>
                 </TouchableOpacity>
@@ -2002,8 +1989,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
 
               {/* Selection Mode Indicator */}
               {isFolderSelectionMode && selectedFolderBooks.size > 0 && (
-                <View style={styles.selectionBar}>
-                  <Text style={styles.selectionCount}>
+                <View style={styles.folderSelectionBar}>
+                  <Text style={styles.folderSelectionCount}>
                     {selectedFolderBooks.size} {selectedFolderBooks.size === 1 ? 'book' : 'books'} selected
                   </Text>
                   <TouchableOpacity
@@ -2109,7 +2096,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onClose, filterReadSta
                     ? book
                     : b
                 );
-                setBooks(updatedBooks);
+                setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
                 setSelectedBook(book);
                 await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
                 
@@ -2237,6 +2224,12 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     flex: 1,
     backgroundColor: '#f8f9fa',
     position: 'relative',
+  },
+  mainScrollView: {
+    flex: 1,
+  },
+  container: {
+    flex: 1,
   },
   header: {
     backgroundColor: '#2d3748',
@@ -2953,6 +2946,22 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     fontSize: 16,
     fontWeight: '600',
   },
+  selectionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#e6f2ff',
+    marginBottom: 12,
+    borderRadius: 8,
+    marginHorizontal: 15,
+  },
+  selectionCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4299e1',
+  },
   bottomActionBar: {
     position: 'absolute',
     bottom: 0,
@@ -3321,7 +3330,7 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     fontSize: 14,
     color: '#1a202c',
   },
-  librarySearchClear: {
+  folderLibrarySearchClear: {
     width: 24,
     height: 24,
     borderRadius: 12,
@@ -3329,7 +3338,7 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     justifyContent: 'center',
     backgroundColor: '#e2e8f0',
   },
-  librarySearchClearText: {
+  folderLibrarySearchClearText: {
     fontSize: 18,
     color: '#4a5568',
     lineHeight: 20,
@@ -3341,7 +3350,7 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     paddingHorizontal: 20,
     marginBottom: 12,
   },
-  selectButton: {
+  folderSelectButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#4299e1',
@@ -3349,12 +3358,12 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     justifyContent: 'center',
     alignItems: 'center',
   },
-  selectButtonText: {
+  folderSelectButtonText: {
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
   },
-  selectionBar: {
+  folderSelectionBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -3365,7 +3374,7 @@ const getStyles = (screenWidth: number, screenHeight: number) => StyleSheet.crea
     borderRadius: 8,
     marginHorizontal: 15,
   },
-  selectionCount: {
+  folderSelectionCount: {
     fontSize: 14,
     fontWeight: '600',
     color: '#4299e1',

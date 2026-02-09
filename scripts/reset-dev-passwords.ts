@@ -56,7 +56,8 @@ async function resetPassword(email: string, newPassword: string): Promise<boolea
       return false;
     }
     
-    const user = users.users.find(u => u.email === email);
+    type AuthUser = { id: string; email?: string };
+const user = ((users?.users ?? []) as AuthUser[]).find(u => u.email === email);
     
     if (!user) {
       console.error(`❌ User not found: ${email}`);

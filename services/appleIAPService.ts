@@ -3,7 +3,7 @@
  * Handles subscription purchases, restoration, and Supabase sync
  */
 
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 import { Platform, Alert } from 'react-native';
 import Constants from 'expo-constants';
 

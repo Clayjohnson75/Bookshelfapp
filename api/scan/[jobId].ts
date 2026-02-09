@@ -55,11 +55,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // Read from durable storage - SELECT only the fields we need
-    // CRITICAL: Select status, books (NOT results), error, id to ensure we get the canonical data
-    console.log(`[API] [JOB ${jobId}] Reading job status from durable storage (Supabase)`);
+    // CRITICAL: Select status, books (NOT results), error, id, stage, progress, stage_detail to ensure we get the canonical data
     const { data, error } = await supabase
       .from('scan_jobs')
-      .select('id, status, books, error, updated_at') // Select books column (not results)
+      .select('id, status, books, error, stage, progress, stage_detail, updated_at') // Select books column (not results), plus stage/progress/stage_detail
       .eq('id', jobId)
       .single();
 
@@ -88,14 +87,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // This is the key fix - frontend needs books when status='completed'
     const booksArray = Array.isArray(data.books) ? data.books : [];
     
-    // Log what we're reading from DB
-    console.log(`[API] [JOB ${jobId}] DB data: status=${data.status}, books type=${typeof data.books}, books isArray=${Array.isArray(data.books)}, books.length=${booksArray.length}`);
-    
     // CRITICAL: When status is 'completed', return status and books explicitly
     if (data.status === 'completed') {
       const response = {
         status: 'completed',
-        books: booksArray // Return books from books column
+        books: booksArray, // Return books from books column
+        stage: data.stage || 'completed',
+        progress: data.progress !== null && data.progress !== undefined ? data.progress : 100,
+        stage_detail: data.stage_detail || null
       };
       console.log(`[API] [JOB ${jobId}] ✅ Returning completed status with ${booksArray.length} books`);
       if (booksArray.length === 0) {
@@ -104,15 +103,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json(response);
     }
     
-    // For other statuses, return full response
+    // For other statuses, return full response including stage/progress/stage_detail
+    // Don't log every poll when still processing - reduces log noise (client polls every 3s)
     const response = {
       jobId: data.id,
       status: data.status, // 'pending' | 'processing' | 'failed'
       books: [], // Empty array for non-completed statuses
+      stage: data.stage || null, // Current stage: queued | downloading | optimizing | gemini | validating | enriching | completed | failed
+      progress: data.progress !== null && data.progress !== undefined ? data.progress : null, // 0-100 or null
+      stage_detail: data.stage_detail || null, // Optional detail like "batch 1/2"
       error: errorObj
     };
-    
-    console.log(`[API] [JOB ${jobId}] Returning status: ${response.status}`);
     return res.status(200).json(response);
 
   } catch (e: any) {

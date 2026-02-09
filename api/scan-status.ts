@@ -50,9 +50,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // CRITICAL: Select only the fields we need - use books column (not results)
+    // Include progress, stage, and cancel fields for cancel + progress tracking
     const { data, error } = await supabase
       .from('scan_jobs')
-      .select('id, status, books, error, updated_at') // Select books column (not results)
+      .select('id, status, books, error, progress, stage, stage_detail, cancel_requested, canceled_at, updated_at, created_at') // Select books column (not results) + progress/stage/cancel fields
       .eq('id', jobId)
       .single();
 
@@ -80,10 +81,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const booksArray = Array.isArray(data.books) ? data.books : [];
     const response = {
       jobId: data.id,
-      status: data.status, // 'pending' | 'processing' | 'completed' | 'failed'
+      status: data.status, // 'pending' | 'processing' | 'completed' | 'failed' | 'canceled'
       books: booksArray, // Always array - from books column (not results)
       error: errorObj,
-      updated_at: data.updated_at
+      progress: data.progress !== null && data.progress !== undefined ? data.progress : 0, // 0-100
+      stage: data.stage || null, // Current stage: queued/claimed/downloading/scanning/validating/enriching/completed/failed/canceled
+      stage_detail: data.stage_detail || null, // Optional detail like "batch 1/2"
+      cancel_requested: data.cancel_requested || false,
+      canceled_at: data.canceled_at || null,
+      updated_at: data.updated_at,
+      created_at: data.created_at
     };
     
     // Log what we're returning - confirm books.length > 0 when completed

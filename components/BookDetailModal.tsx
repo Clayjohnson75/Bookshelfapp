@@ -16,9 +16,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Book, Photo } from '../types/BookTypes';
+import { Book, Photo, Folder } from '../types/BookTypes';
 import { useAuth } from '../auth/SimpleAuthContext';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 
 interface BookDetailModalProps {
   visible: boolean;
@@ -26,8 +26,11 @@ interface BookDetailModalProps {
   photo: Photo | null;
   onClose: () => void;
   onRemove?: () => void; // Callback to refresh library after removal
+  onDeleteBook?: (book: Book) => Promise<void>; // Callback to delete book (used by LibraryView)
   onBookUpdate?: (updatedBook: Book) => void; // Callback to update book data (e.g., when description is fetched)
   onEditBook?: (updatedBook: Book) => void; // Callback to update book (for cover changes)
+  onAddBookToFolder?: () => void;
+  folders?: Folder[];
 }
 
 const BookDetailModal: React.FC<BookDetailModalProps> = ({
@@ -36,8 +39,11 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   photo,
   onClose,
   onRemove,
+  onDeleteBook,
   onBookUpdate,
   onEditBook,
+  onAddBookToFolder,
+  folders,
 }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -496,7 +502,9 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
       const results = await searchMultipleBooks(book.title, undefined, 20);
       
       // Filter to only show results with covers
-      const resultsWithCovers = results.filter(r => r.coverUrl && r.googleBooksId);
+      const resultsWithCovers = results
+        .filter((r): r is typeof r & { googleBooksId: string } => Boolean(r.coverUrl && r.googleBooksId))
+        .map(r => ({ googleBooksId: r.googleBooksId, coverUrl: r.coverUrl }));
       setCoverSearchResults(resultsWithCovers);
     } catch (error) {
       console.error('Error searching for covers:', error);
@@ -866,11 +874,12 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
               style={styles.bookCoverContainer}
             >
               {getBookCoverUri(book) ? (
-                <Image
-                  source={{ uri: getBookCoverUri(book) }}
-                  style={styles.bookCover}
-                  pointerEvents="none"
-                />
+                <View pointerEvents="none" collapsable={false} style={styles.bookCover}>
+                  <Image
+                    source={{ uri: getBookCoverUri(book) }}
+                    style={styles.bookCover}
+                  />
+                </View>
               ) : (
                 <View style={[styles.bookCover, styles.placeholderCover]}>
                   <Text style={styles.placeholderCoverText}>Tap to add cover</Text>

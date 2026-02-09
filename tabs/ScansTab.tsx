@@ -26,9 +26,9 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth, isGuestUser, GUEST_USER_ID } from '../auth/SimpleAuthContext';
+import { scanJobKey, lastBatchKey, PENDING_APPROVE_ACTION_KEY } from '../lib/cacheKeys';
 import { useScanning } from '../contexts/ScanningContext';
 import { useCamera } from '../contexts/CameraContext';
 import { Book, Photo, Folder } from '../types/BookTypes';
@@ -44,14 +44,8 @@ import { canUserScan, getUserScanUsage, incrementScanCount, ScanUsage, isSubscri
 import { ScanLimitBanner, ScanLimitBannerRef } from '../components/ScanLimitBanner';
 import { UpgradeModal } from '../components/UpgradeModal';
 import { fetchBookData, searchMultipleBooks, searchBooksByQuery } from '../services/googleBooksService';
-
-// Helper to read env vars in both development and production builds
-const getEnvVar = (key: string): string => {
-  return Constants.expoConfig?.extra?.[key] || 
-         Constants.manifest?.extra?.[key] || 
-         process.env[key] || 
-         '';
-};
+import { getEnvVar } from '../lib/getEnvVar';
+import { supabase, SUPABASE_INSTANCE_ID } from '../lib/supabase';
 
 // Utility: wait for ms
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -75,7 +69,9 @@ async function withRetries(fn: () => Promise<Book[]>, tries = 2, backoffMs = 120
 interface ScanQueueItem {
   id: string;
   uri: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'canceled';
+  batchId?: string; // Track which batch this item belongs to
+  jobId?: string; // Track jobId for cancellation
 }
 
 export const ScansTab: React.FC = () => {
@@ -86,7 +82,7 @@ export const ScansTab: React.FC = () => {
   // Defined at component level to persist across renders
   const activeScansRef = React.useRef(new Map<string, { jobId: string; timestamp: number }>());
   const DEDUPE_WINDOW_MS = 5000; // 5 seconds
-  const { user } = useAuth();
+  const { user, session, authReady, loading: authLoading } = useAuth();
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
   
   useEffect(() => {
@@ -96,13 +92,76 @@ export const ScansTab: React.FC = () => {
     return () => subscription?.remove();
   }, []);
 
-  
+  useEffect(() => {
+    if (__DEV__) console.log('[SUPABASE_INSTANCE][ScansTab]', SUPABASE_INSTANCE_ID);
+  }, []);
+
   const screenWidth = dimensions.width || 375; // Fallback to default width
   const screenHeight = dimensions.height || 667; // Fallback to default height
   
   const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
   
-  const { scanProgress, setScanProgress, updateProgress } = useScanning();
+  const { scanProgress, setScanProgress, updateProgress, setOnCancelComplete } = useScanning();
+  
+  // Keep ref in sync so cancel callback can read jobIds (before state is cleared)
+  React.useEffect(() => {
+    scanProgressRef.current = scanProgress;
+  }, [scanProgress]);
+  
+  // Register cancel callback to clear queue and state
+  React.useEffect(() => {
+    if (setOnCancelComplete) {
+      setOnCancelComplete(() => {
+        if (__DEV__) console.log('🚫 [CANCEL] Clearing batch state');
+        // So single-image poll doesn't show "Scan Timeout" after user canceled
+        const jobIds = scanProgressRef.current?.jobIds;
+        if (jobIds && Array.isArray(jobIds)) {
+          jobIds.forEach(id => canceledJobIdsRef.current.add(id));
+        }
+        // Abort all pending fetch requests for the current batch
+        const currentBatch = currentBatchIdRef.current;
+        if (currentBatch) {
+          const controller = abortControllersRef.current.get(currentBatch);
+          if (controller) {
+            console.log(`🚫 [CANCEL] Aborting fetch requests for batch ${currentBatch}`);
+            controller.abort();
+            abortControllersRef.current.delete(currentBatch);
+          }
+        }
+        // Abort all other pending controllers (cleanup)
+        abortControllersRef.current.forEach((controller, batchId) => {
+          console.log(`🚫 [CANCEL] Aborting fetch requests for old batch ${batchId}`);
+          controller.abort();
+        });
+        abortControllersRef.current.clear();
+        
+        // Clear current batch ID (this filters out late updates from old batches)
+        setCurrentBatchId(null);
+        currentBatchIdRef.current = null; // Also clear ref
+        // Clear queue immediately
+        setScanQueue([]);
+        // Reset all counters
+        totalScansRef.current = 0;
+        inFlightEnqueuesRef.current = 0; // Reset in-flight counter
+        // Clear scan progress (hides scanning bar immediately)
+        setScanProgress(null);
+        // Clear processing flags
+        setIsProcessing(false);
+        setIsUploading(false);
+        setIsScanning(false);
+        // Clear current scan
+        setCurrentScan(null);
+        // Clear processing URIs
+        processingUrisRef.current.clear();
+      });
+    }
+    return () => {
+      // Cleanup: unregister callback when component unmounts
+      if (setOnCancelComplete) {
+        setOnCancelComplete(undefined);
+      }
+    };
+  }, [setOnCancelComplete]);
   
   // Camera states
   const { isCameraActive, setIsCameraActive } = useCamera();
@@ -121,6 +180,16 @@ export const ScansTab: React.FC = () => {
   // Track if uploading to prevent duplicate requests
   const [isUploading, setIsUploading] = useState(false);
   
+  // Batch state management: track current batch to ignore updates from old batches
+  const [currentBatchId, setCurrentBatchId] = useState<string | null>(null);
+  const currentBatchIdRef = useRef<string | null>(null); // Ref for checking in async callbacks
+  
+  // In-flight counter: track how many enqueue operations are currently in progress
+  const inFlightEnqueuesRef = useRef<number>(0);
+  
+  // AbortController map: track controllers per batch so cancel can abort pending fetches
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  
   // Ref to track latest totalScans to avoid stale closure issues
   const totalScansRef = useRef<number>(0);
   
@@ -129,15 +198,102 @@ export const ScansTab: React.FC = () => {
   
   // Ref to refresh scan limit banner after scans
   const scanLimitBannerRef = useRef<ScanLimitBannerRef>(null);
+
+  // Track last userId so we clear cache/queue when user changes (prevent account mixing)
+  const previousUserIdRef = useRef<string | null>(null);
   
   // Ref for search debounce timeout
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Refs for cancel: so single-image poll knows user canceled and doesn't show "Scan Timeout"
+  const scanProgressRef = useRef<typeof scanProgress>(null);
+  const canceledJobIdsRef = useRef<Set<string>>(new Set());
+  
   // Ref to track if screen is active/mounted (prevents background updates)
   const isActiveRef = useRef(true);
+  const checkAndCompletePendingActionsRef = useRef<() => Promise<void>>(async () => {});
   
   // Ref to prevent multiple cover fetch operations from running simultaneously
   const coverFetchInProgressRef = useRef(false);
+  
+  // Update scanProgress whenever scanQueue changes (fixes React render error)
+  useEffect(() => {
+    // CRITICAL: Only process queue items for the current batch (ignore old batches)
+    const currentBatchQueue = currentBatchId 
+      ? scanQueue.filter(item => item.batchId === currentBatchId)
+      : []; // If no currentBatchId, don't process anything (batch was canceled)
+    
+    // CRITICAL: If currentBatchId is null, don't update progress (batch was canceled)
+    if (!currentBatchId) {
+      // If we have scanProgress but no currentBatchId, clear it (batch was canceled)
+      if (scanProgress && scanProgress.totalScans > 0) {
+        console.log('🚫 Clearing scanProgress: currentBatchId is null (batch was canceled)');
+        setScanProgress(null);
+      }
+      return;
+    }
+    
+    // Only update if there are items in the current batch queue
+    if (currentBatchQueue.length === 0) {
+      // If current batch queue is empty and we have no active scans, clear progress
+      if (!scanProgress || (scanProgress.totalScans === 0 && scanProgress.completedScans === 0)) {
+        return; // Don't clear if we're in the middle of something
+      }
+      // If all scans are done (completed, failed, or canceled), we can clear progress
+      const doneCount = scanProgress.completedScans + scanProgress.failedScans + (scanProgress.canceledScans ?? 0);
+      const allCompleted = scanProgress.totalScans > 0 && doneCount >= scanProgress.totalScans;
+      if (allCompleted) {
+        setScanProgress(null);
+        setCurrentBatchId(null); // Clear batch ID when all done
+      }
+      return;
+    }
+    
+    // Calculate active scans (pending + processing) for current batch only
+    const activeScans = currentBatchQueue.filter(item => item.status === 'pending' || item.status === 'processing');
+    const completedScans = currentBatchQueue.filter(item => item.status === 'completed').length;
+    const failedScans = currentBatchQueue.filter(item => item.status === 'failed').length;
+    const canceledScans = currentBatchQueue.filter(item => item.status === 'canceled').length; // User canceled – not failed
+    
+    // totalScans should be the total number of scans in the current batch queue
+    // This represents the original number of images picked for this batch
+    const totalScans = currentBatchQueue.length;
+    
+    // Collect jobIds from active scans (if they have jobId property)
+    const activeJobIds: string[] = [];
+    activeScans.forEach(item => {
+      if ((item as any).jobId) {
+        activeJobIds.push((item as any).jobId);
+      }
+    });
+    
+    // CRITICAL: Track progress by batchId and jobIds, not just userId
+    // This ensures progress persists even if auth temporarily fails
+    const progressData = {
+      currentScanId: null,
+      currentStep: 0,
+      totalSteps: 10,
+      totalScans: totalScans, // Total scans in queue (original count)
+      completedScans: completedScans,
+      failedScans: failedScans,
+      canceledScans,
+      startTimestamp: scanProgress?.startTimestamp || Date.now(), // Preserve existing timestamp
+      batchId: currentBatchId || undefined, // Track batchId for robustness
+      jobIds: activeJobIds.length > 0 ? activeJobIds : undefined, // Track jobIds for cancel and progress
+    };
+    
+    console.log('📊 Updating scanProgress from queue:', {
+      totalScans: progressData.totalScans,
+      activeScans: activeScans.length,
+      completedScans: progressData.completedScans,
+      failedScans: progressData.failedScans,
+      queueLength: scanQueue.length
+    });
+    
+    // Update ref to track latest totalScans
+    totalScansRef.current = progressData.totalScans;
+    setScanProgress(progressData);
+  }, [scanQueue]); // Only depend on scanQueue, not scanProgress
   
   // Data states  
   const [pendingBooks, setPendingBooks] = useState<Book[]>([]);
@@ -442,34 +598,43 @@ export const ScansTab: React.FC = () => {
     };
   }, [isCameraActive]);
 
+  // Load data only after auth is ready. Only clear batch state on true sign-out (had user, now null), not on auth init/transition.
   useEffect(() => {
-    if (user) {
-      // Load data immediately on mount/user change
-      // Don't await - let it load in background so UI is responsive
-      // CRITICAL: Load data immediately on first mount to ensure books and buttons work
-      console.log('🔄 User changed, loading data immediately...');
-      loadUserData().catch(error => {
-        console.error('❌ Error loading user data:', error);
-        // On error, still try to load from AsyncStorage as fallback
-        loadUserDataFromStorage().catch(e => {
-          console.error('❌ Error loading from AsyncStorage fallback:', e);
-        });
-      });
-      loadScanUsage().catch(error => {
-        console.error('❌ Error loading scan usage:', error);
-        // Default to allowing scans if we can't load usage
+    if (!authReady) return;
+    if (!user) {
+      // Only clear batch/queue when it's truly a sign-out (we had a user before), not when auth is still resolving
+      if (previousUserIdRef.current !== null) {
+        setPendingBooks([]);
+        setApprovedBooks([]);
+        setRejectedBooks([]);
+        setPhotos([]);
+        setScanQueue([]);
+        setScanUsage(null);
         setCanScan(true);
-      });
-    } else {
-      // Clear data when user signs out
+        previousUserIdRef.current = null;
+      }
+      return;
+    }
+    // User changed (A → B or guest → B): clear cache/queue so we don't show previous user's data
+    if (previousUserIdRef.current !== user.uid) {
       setPendingBooks([]);
       setApprovedBooks([]);
       setRejectedBooks([]);
       setPhotos([]);
-      setScanUsage(null);
-      setCanScan(true);
+      setScanQueue([]);
+      previousUserIdRef.current = user.uid;
     }
-  }, [user?.uid]); // Use user.uid instead of user object to catch sign-in/out events
+    loadUserData().catch(error => {
+      console.error('❌ Error loading user data:', error);
+      loadUserDataFromStorage().catch(e => {
+        console.error('❌ Error loading from AsyncStorage fallback:', e);
+      });
+    });
+    loadScanUsage().catch(error => {
+      console.error('❌ Error loading scan usage:', error);
+      setCanScan(true);
+    });
+  }, [user?.uid, authReady]);
   
   // Fallback function to load from AsyncStorage if Supabase fails
   const loadUserDataFromStorage = async () => {
@@ -547,10 +712,10 @@ export const ScansTab: React.FC = () => {
       setCanScan(scansRemaining > 0);
       setScanUsage({
         subscriptionTier: 'free',
-        scansUsed: scansUsed,
+        monthlyScans: scansUsed,
         monthlyLimit: 1, // One free scan for guests
         scansRemaining: scansRemaining,
-        resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       });
       return;
     }
@@ -617,8 +782,8 @@ export const ScansTab: React.FC = () => {
         return;
       }
       
-      // Get last sync time from storage
-      const lastSyncKey = `last_scan_sync_${user.uid}`;
+      // Get last sync time from storage (user-scoped)
+      const lastSyncKey = lastBatchKey(user.uid);
       const lastSyncTime = await AsyncStorage.getItem(lastSyncKey);
       const since = lastSyncTime || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(); // Default to 7 days ago
       
@@ -661,8 +826,8 @@ export const ScansTab: React.FC = () => {
       // Process each completed job
       for (const job of completedJobs) {
         if (job.status === 'completed' && job.books && job.books.length > 0) {
-          // Get the photo ID associated with this job
-          const jobKey = `scan_job_${job.jobId}`;
+          // Get the photo ID associated with this job (user-scoped key)
+          const jobKey = scanJobKey(user.uid, job.jobId);
           const jobData = await AsyncStorage.getItem(jobKey);
           
           if (jobData) {
@@ -759,8 +924,22 @@ export const ScansTab: React.FC = () => {
   };
 
   const loadUserData = async () => {
+    if (!authReady) {
+      console.log('⏳ Auth not ready yet, delaying data load');
+      return;
+    }
+    // Guest mode ONLY when authReady === true AND session === null; never earlier.
+    if (authReady && session === null) {
+      console.log('[GUEST_GATE]', JSON.stringify({
+        authReady,
+        hasSession: false,
+        reason: 'no_session_guest_ok',
+      }, null, 2));
+      console.log('📱 Guest user (authReady=true, session=null), using local data only');
+      return;
+    }
     if (!user) return;
-    
+
     try {
       // Load from AsyncStorage FIRST for instant UI, then merge Supabase data
       console.log('📥 Loading user data (AsyncStorage first, then Supabase)...');
@@ -820,9 +999,14 @@ export const ScansTab: React.FC = () => {
       let supabaseBooks: any = null;
       let supabasePhotos: any = null;
       
-      // Skip Supabase for guest users (they only use local storage)
-      if (isGuestUser(user)) {
-        console.log('📱 Guest user: Skipping Supabase load, using local data only');
+      // Skip Supabase only when guest: authReady && session === null (guest mode)
+      if (authReady && session === null && isGuestUser(user)) {
+        console.log('[GUEST_GATE]', JSON.stringify({
+          authReady,
+          hasSession: false,
+          reason: 'no_session_guest_ok_skip_supabase',
+        }, null, 2));
+        console.log('📱 Guest user (authReady=true, session=null): Skipping Supabase load, using local data only');
         supabaseBooks = null;
         supabasePhotos = null;
       } else {
@@ -1147,36 +1331,27 @@ export const ScansTab: React.FC = () => {
   // Must be after loadUserData and loadScanUsage are defined
   useFocusEffect(
     useCallback(() => {
-      // Mark screen as active when focused
       isActiveRef.current = true;
-      
+      if (!authReady) return;
       if (user) {
         console.log('🔄 Tab focused, refreshing data...');
-        // Reload data in background
         loadUserData().catch(error => {
           console.error('❌ Error reloading user data on focus:', error);
         });
         loadScanUsage().catch(error => {
           console.error('❌ Error reloading scan usage on focus:', error);
         });
-        
-        // Check for pending approval actions (from guest user trying to add books)
-        checkAndCompletePendingActions();
-        
-        // Check guest scan status
+        checkAndCompletePendingActionsRef.current();
         if (isGuestUser(user)) {
           AsyncStorage.getItem('guest_scan_used').then(hasUsedScan => {
             setGuestHasUsedScan(hasUsedScan === 'true');
           });
         }
       } else {
-        // If no user, check if guest scan was used
         AsyncStorage.getItem('guest_scan_used').then(hasUsedScan => {
           setGuestHasUsedScan(hasUsedScan === 'true');
         });
       }
-      
-      // Cleanup: mark screen as inactive when blurred
       return () => {
         isActiveRef.current = false;
         // Clear Google Books queue when leaving tab (safely, don't let errors propagate)
@@ -1188,7 +1363,8 @@ export const ScansTab: React.FC = () => {
           console.debug('Error clearing Google Books queue:', error);
         }
       };
-    }, [user, checkAndCompletePendingActions])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- checkAndCompletePendingActions is defined later
+    }, [user, authReady])
   );
 
   // Helper to show login prompt for guest users
@@ -1505,70 +1681,68 @@ export const ScansTab: React.FC = () => {
       
       if (patchById.size === 0) return;
       
-      const patches = Array.from(patchById.entries());
-      console.log(`🔄 Flushing ${patches.length} cover updates to state`);
+      const patches = Array.from(patchById.entries()) as [string, Partial<Book>][];
       patchById.clear();
+      if (__DEV__) console.log(`🔄 Flushing ${patches.length} cover updates to state`);
       
       // Double-check active state before updating
       if (!isActiveRef.current) {
-        console.log('🛑 Flush cancelled: screen became inactive');
         return;
       }
       
-      // Update pendingBooks (always flush)
-      // Use a more efficient approach: only create new array if there are actual changes
-      setPendingBooks(prev => {
-        if (!isActiveRef.current) {
-          console.log('🛑 setPendingBooks cancelled: screen not active');
-          return prev; // Don't update if inactive
+      // Build lookup by id and by title|author so we never miss a match (fixes covers not loading for some scans)
+      const patchMapById = new Map<string, Partial<Book>>();
+      const patchMapByKey = new Map<string, Partial<Book>>();
+      patches.forEach(([id, p]) => {
+        patchMapById.set(id, p);
+        if (p.title != null || p.author != null) {
+          const key = `${(p.title || '').toLowerCase().trim()}|${(p.author || '').toLowerCase().trim()}`;
+          if (key !== '|') patchMapByKey.set(key, p);
         }
-        
-        const patchMap = new Map(patches);
+      });
+      const getPatch = (book: Book): Partial<Book> | undefined =>
+        (book.id && patchMapById.get(book.id)) ||
+        patchMapByKey.get(`${(book.title || '').toLowerCase().trim()}|${(book.author || '').toLowerCase().trim()}`);
+
+      // Update pendingBooks (use getPatch so we match by id or title+author)
+      setPendingBooks(prev => {
+        if (!isActiveRef.current) return prev;
         let hasChanges = false;
         const updated = prev.map(pendingBook => {
-          const patch = patchMap.get(pendingBook.id);
+          const patch = getPatch(pendingBook);
           if (patch) {
             hasChanges = true;
-            console.log(`✅ Updating pendingBook "${pendingBook.title}" with coverUrl=${patch.coverUrl ? 'YES' : 'NO'}`);
             return { ...pendingBook, ...patch };
           }
           return pendingBook;
         });
-        
-        if (hasChanges) {
-          console.log(`✅ Updated ${patches.length} pendingBooks with covers`);
-        }
-        
-        // Only return new array if there were actual changes (prevents unnecessary re-renders)
         return hasChanges ? updated : prev;
       });
       
-      // Update photos and approvedBooks only if there are actual patches
-      // Use a more efficient approach: only update if we have patches
       if (isActiveRef.current && patches.length > 0) {
-        // Batch these updates together to reduce re-renders
+        // Only create new photo/approved objects when THAT photo/approved actually changed (avoids ~30s UI freeze)
         setPhotos(prev => {
-          const patchMap = new Map(patches);
-          let hasChanges = false;
+          let anyChanges = false;
           const updated = prev.map(photo => {
+            let photoHasChanges = false;
             const updatedBooks = photo.books.map(photoBook => {
-              const patch = patchMap.get(photoBook.id);
+              const patch = getPatch(photoBook);
               if (patch) {
-                hasChanges = true;
+                photoHasChanges = true;
                 return { ...photoBook, ...patch };
               }
               return photoBook;
             });
-            return hasChanges ? { ...photo, books: updatedBooks } : photo;
+            if (photoHasChanges) anyChanges = true;
+            return photoHasChanges ? { ...photo, books: updatedBooks } : photo;
           });
-          return hasChanges ? updated : prev;
+          return anyChanges ? updated : prev;
         });
 
         setApprovedBooks(prev => {
-          const patchMap = new Map(patches);
           let hasChanges = false;
           const updated = prev.map(approvedBook => {
-            const patch = patchMap.get(approvedBook.id);
+            const patch = getPatch(approvedBook);
             if (patch) {
               hasChanges = true;
               return { ...approvedBook, ...patch };
@@ -1610,11 +1784,11 @@ export const ScansTab: React.FC = () => {
       }
     };
 
-    // Process books in parallel with concurrency limit (5 concurrent requests)
-    console.log(`🚀 Starting parallel cover fetch for ${booksNeedingCovers.length} books (concurrency: 5)`);
+    // Process books in parallel (higher concurrency = faster cover loading; backend allows multiple in flight)
+    if (__DEV__) console.log(`🚀 Starting parallel cover fetch for ${booksNeedingCovers.length} books (concurrency: 8)`);
     
-    const CONCURRENCY_LIMIT = 5;
-    const FLUSH_COUNT_THRESHOLD = 5; // Or every 5 results
+    const CONCURRENCY_LIMIT = 8;
+    const FLUSH_COUNT_THRESHOLD = 5; // Flush state every 5 results for responsive UI
     
     let activeRequests = 0;
     let completedCount = 0;
@@ -1739,11 +1913,10 @@ export const ScansTab: React.FC = () => {
             ...(bookData.description && { description: bookData.description }),
           };
 
-          // Accumulate update in patch map (don't update state immediately)
-          // Only if screen is still active
+          // Accumulate update in patch map (include title/author so flush can match by title+author if id differs)
           if (book.id && isActiveRef.current) {
-                console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Queuing state update for "${book.title}" with coverUrl`);
-            patchById.set(book.id, updatedBook);
+            if (__DEV__) console.log(`💾 [${completedCount}/${booksNeedingCovers.length}] Queuing state update for "${book.title}" with coverUrl`);
+            patchById.set(book.id, { ...updatedBook, title: book.title, author: book.author });
                 
                 // Flush if we've accumulated enough updates or enough time has passed
                 if (patchById.size >= FLUSH_COUNT_THRESHOLD) {
@@ -1763,7 +1936,7 @@ export const ScansTab: React.FC = () => {
             saveBookToSupabase(user.uid, { ...book, ...updatedBook }, bookStatus)
               .then(success => {
                 if (success) {
-                  console.log(`✅ Saved book cover to Supabase: "${book.title}"`);
+                  // Cover saved (no log to reduce noise)
                 } else {
                   console.warn(`⚠️ Failed to save book cover to Supabase: "${book.title}"`);
                 }
@@ -1900,16 +2073,29 @@ export const ScansTab: React.FC = () => {
       console.error('❌ No API base URL configured');
       return null;
     }
-    
+
+    let headers: Record<string, string>;
+    try {
+      const { getScanAuthHeaders } = await import('../lib/authHeaders');
+      headers = { 'Content-Type': 'application/json', ...(await getScanAuthHeaders()) };
+    } catch (err: any) {
+      console.warn('❌ No Supabase session or invalid token; block scanning until re-auth.', err?.message);
+      if (!err?.message?.startsWith('BUG:')) {
+        Alert.alert('Sign in required', 'Please sign in again to scan.', [{ text: 'OK' }]);
+      }
+      return null;
+    }
+
     try {
       const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      
-      const resp = await fetch(`${baseUrl}/api/scan-job`, {
+
+      const scanJobUrl = `${baseUrl}/api/scan-job`;
+      console.log('[ENQUEUE_URL]', scanJobUrl);
+      const resp = await fetch(scanJobUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           imageDataURL,
-          userId: user?.uid,
           jobId
         })
       });
@@ -1923,8 +2109,9 @@ export const ScansTab: React.FC = () => {
           console.log(`✅ Background scan job completed synchronously: ${finalJobId} with ${data.books.length} books`);
           // Job completed immediately, return the jobId so caller knows it's done
           // The books will be processed by the sync function when app reopens
-          // For now, just store the job info
-          const jobKey = `scan_job_${finalJobId}`;
+          // For now, just store the job info (user-scoped so account mixing is impossible)
+          const uid = user?.uid ?? GUEST_USER_ID;
+          const jobKey = scanJobKey(uid, finalJobId);
           await AsyncStorage.setItem(jobKey, JSON.stringify({
             jobId: finalJobId,
             scanId,
@@ -1940,8 +2127,9 @@ export const ScansTab: React.FC = () => {
         } else {
           // Job is still processing or pending
           console.log(`⏳ Background scan job submitted: ${finalJobId} (status: ${data.status})`);
-          // Store job tracking info
-          const jobKey = `scan_job_${finalJobId}`;
+          // Store job tracking info (user-scoped)
+          const uid = user?.uid ?? GUEST_USER_ID;
+          const jobKey = scanJobKey(uid, finalJobId);
           await AsyncStorage.setItem(jobKey, JSON.stringify({
             jobId: finalJobId,
             scanId,
@@ -1966,6 +2154,535 @@ export const ScansTab: React.FC = () => {
       console.error('❌ Error submitting background scan job:', error);
       setIsUploading(false);
       return null;
+    }
+  };
+
+  // Enqueue a single image (create job, return jobId immediately)
+  const enqueueImage = async (
+    imageDataURL: string, 
+    batchId: string, 
+    index: number, 
+    total: number, 
+    scanId: string,
+    abortController?: AbortController
+  ): Promise<{ jobId: string, scanId: string } | null> => {
+    // CRITICAL: Increment in-flight counter (always decrement in finally)
+    inFlightEnqueuesRef.current++;
+    const wasAborted = abortController?.signal.aborted;
+    
+    console.log(`📤 [BATCH ${batchId}] [${index}/${total}] Enqueue start for scanId: ${scanId} (inFlight: ${inFlightEnqueuesRef.current}, aborted: ${wasAborted})`);
+    
+    // If already aborted, don't start
+    if (wasAborted) {
+      console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Enqueue aborted before start`);
+      inFlightEnqueuesRef.current--; // Decrement immediately
+      return null;
+    }
+    
+    // Get canonical API base URL
+    let baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    if (!baseUrl || baseUrl.includes('bookshelfapp-five') || baseUrl === 'https://bookshelfscan.app') {
+      baseUrl = 'https://www.bookshelfscan.app';
+    }
+    if (baseUrl && !baseUrl.startsWith('http')) {
+      baseUrl = `https://${baseUrl}`;
+    }
+    if (baseUrl && baseUrl.includes('bookshelfscan.app') && !baseUrl.includes('www.')) {
+      baseUrl = baseUrl.replace('bookshelfscan.app', 'www.bookshelfscan.app');
+    }
+    
+    if (!baseUrl) {
+      console.error('❌ CRITICAL: No API base URL configured!');
+      inFlightEnqueuesRef.current--; // Decrement on early return
+      return null;
+    }
+    
+    try {
+      const scanUrl = `${baseUrl}/api/scan`;
+      console.log('[ENQUEUE_URL]', scanUrl);
+      const enqueueStart = Date.now();
+      
+      const { getScanAuthHeaders } = await import('../lib/authHeaders');
+      const headers = await getScanAuthHeaders();
+
+      const createResp = await fetch(scanUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...headers,
+        },
+        body: JSON.stringify({
+          imageDataURL,
+          batchId,
+          index,
+          total,
+          forceFresh: true
+        }),
+        signal: abortController?.signal, // CRITICAL: Pass abort signal to fetch
+      });
+      
+      const enqueueDuration = Date.now() - enqueueStart;
+      
+      // Check if aborted during fetch
+      if (abortController?.signal.aborted) {
+        console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Enqueue aborted during fetch`);
+        return null;
+      }
+      
+      if (!createResp.ok) {
+        const errorText = await createResp.text().catch(() => '');
+        console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Failed to enqueue: ${createResp.status} - ${errorText.substring(0, 200)}`);
+        if (createResp.status === 401) {
+          try {
+            const errBody = JSON.parse(errorText);
+            if (errBody?.error === 'reauth_required') {
+              Alert.alert('Session expired', 'Please sign in again to scan.', [{ text: 'OK' }]);
+              abortController?.abort();
+            }
+          } catch (_) {}
+        }
+        return null;
+      }
+      
+      const jobData = await createResp.json();
+      const jobId = jobData.jobId;
+      const qstashMessageId = jobData.messageId || null;
+      
+      console.log(`✅ [BATCH ${batchId}] [${index}/${total}] Enqueue end: jobId=${jobId}, messageId=${qstashMessageId}, duration=${enqueueDuration}ms`);
+      
+      if (!jobId) {
+        console.error(`❌ [BATCH ${batchId}] [${index}/${total}] No jobId returned from scan API`);
+        return null;
+      }
+      
+      return { jobId, scanId };
+    } catch (e: any) {
+      // Check if error is due to abort
+      if (e?.name === 'AbortError' || abortController?.signal.aborted) {
+        console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Enqueue aborted: ${e?.message || 'AbortError'}`);
+        return null;
+      }
+      
+      const errorMsg = e?.message || String(e);
+      console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Enqueue failed: ${errorMsg}`);
+      return null;
+    } finally {
+      // CRITICAL: Always decrement in-flight counter, even on error or abort
+      inFlightEnqueuesRef.current--;
+      console.log(`📊 [BATCH ${batchId}] [${index}/${total}] Enqueue finished (inFlight: ${inFlightEnqueuesRef.current})`);
+    }
+  };
+
+  // Enqueue a batch of images (create all jobs first, then poll for completions)
+  const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promise<void> => {
+    if (items.length === 0) return;
+    
+    // CRITICAL: Always create a fresh batch instance (new batchId and new controller)
+    // This ensures cancel from previous batch doesn't affect new batch
+    const batchId = `batch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const total = items.length;
+    
+    // Create fresh AbortController for this batch
+    const batchController = new AbortController();
+    abortControllersRef.current.set(batchId, batchController);
+    console.log(`📦 [BATCH ${batchId}] Starting batch enqueue: ${total} images (fresh batchId and controller created)`);
+    
+    // Set current batch ID (filters out updates from old batches)
+    setCurrentBatchId(batchId);
+    currentBatchIdRef.current = batchId; // Also update ref for async callbacks
+    
+    // Step 1: Enqueue all images (create all jobs)
+    // Each job gets its own creation timestamp for per-job timeout tracking
+    // Store uri so we can add a photo when poll returns completed books
+    const enqueuedJobs: Array<{jobId: string, scanId: string, index: number, jobCreatedAt: number, uri: string}> = [];
+    
+    for (let i = 0; i < items.length; i++) {
+      const { uri, scanId } = items[i];
+      const index = i + 1;
+      
+      // CRITICAL: Check if batch was canceled before processing each image
+      if (currentBatchIdRef.current !== batchId || batchController.signal.aborted) {
+        console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Batch canceled, stopping enqueue loop`);
+        break; // Stop processing remaining images
+      }
+      
+      try {
+        // Optimize image for upload
+        const imageDataURL = await optimizeImageForUpload(uri);
+        
+        // Check again after optimization (batch might have been canceled during optimization)
+        if (currentBatchIdRef.current !== batchId || batchController.signal.aborted) {
+          console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Batch canceled after optimization, skipping enqueue`);
+          setScanQueue(prev => prev.map(item => 
+            item.id === scanId ? { ...item, status: 'failed' as const, batchId } : item
+          ));
+          continue;
+        }
+        
+        // Enqueue job - record creation timestamp for per-job timeout
+        // CRITICAL: Pass abortController so cancel can abort pending fetches
+        const jobCreatedAt = Date.now();
+        const result = await enqueueImage(imageDataURL, batchId, index, total, scanId, batchController);
+        if (result) {
+          enqueuedJobs.push({ 
+            jobId: result.jobId, 
+            scanId: result.scanId, 
+            index,
+            jobCreatedAt, // Store when job was created (starts per-job timeout)
+            uri,
+          });
+          
+          // Update queue status to processing (include batchId and jobId)
+          setScanQueue(prev => prev.map(item => 
+            item.id === scanId ? { ...item, status: 'processing' as const, batchId, jobId: result.jobId } : item
+          ));
+        } else {
+          // Enqueue failed or was aborted - mark as failed (include batchId)
+          setScanQueue(prev => prev.map(item => 
+            item.id === scanId ? { ...item, status: 'failed' as const, batchId } : item
+          ));
+        }
+      } catch (error: any) {
+        // Check if error is due to abort
+        if (error?.name === 'AbortError' || batchController.signal.aborted) {
+          console.log(`🚫 [BATCH ${batchId}] [${index}/${total}] Enqueue aborted: ${error?.message || 'AbortError'}`);
+          setScanQueue(prev => prev.map(item => 
+            item.id === scanId ? { ...item, status: 'failed' as const, batchId } : item
+          ));
+          continue;
+        }
+        if (error?.message?.includes('re-auth') || error?.message?.includes('session')) {
+          Alert.alert('Sign in required', 'Please sign in again to scan.', [{ text: 'OK' }]);
+        }
+        console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Failed to enqueue image:`, error);
+        setScanQueue(prev => prev.map(item => 
+          item.id === scanId ? { ...item, status: 'failed' as const, batchId } : item
+        ));
+      }
+    }
+    
+    // Cleanup: Remove controller from map when batch is done (or canceled)
+    // Note: Controller might already be removed by cancel handler, so use delete (safe)
+    abortControllersRef.current.delete(batchId);
+    
+    console.log(`✅ [BATCH ${batchId}] Enqueued ${enqueuedJobs.length}/${total} jobs`);
+
+    // If no jobs were enqueued (all failed), go to failed state: dismiss bar + show error
+    if (enqueuedJobs.length === 0) {
+      setScanProgress(null);
+      setCurrentBatchId(null);
+      currentBatchIdRef.current = null;
+      Alert.alert(
+        'Scan failed',
+        'Could not start scan. Please sign in again and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    // Step 2: Poll all jobs until they complete (pass batch controller so cancel stops polling)
+    const pollPromises = enqueuedJobs.map(({ jobId, scanId, index, jobCreatedAt, uri }) => 
+      pollJobUntilComplete(jobId, scanId, batchId, index, total, jobCreatedAt, batchController.signal).then(result => {
+        // CRITICAL: Ignore updates from old batches (if batch was canceled)
+        // Check currentBatchIdRef at resolution time (not at promise creation time)
+        // This ensures we ignore updates if batch was canceled during polling
+        if (currentBatchIdRef.current !== batchId) {
+          console.log(`🚫 [BATCH ${batchId}] Ignoring update for job ${jobId}: currentBatchId=${currentBatchIdRef.current}, update batchId=${batchId} (batch was canceled or replaced)`);
+          return { scanId, status: result.status, books: result.books, ignored: true };
+        }
+          
+        // Update queue status based on result (canceled is not failed - user chose to cancel)
+        setScanQueue(prev => prev.map(item => 
+          item.id === scanId && item.batchId === batchId ? { 
+            ...item, 
+            status: result.status === 'completed' ? 'completed' as const : 
+                    result.status === 'failed' ? 'failed' as const : 
+                    result.status === 'canceled' ? 'canceled' as const : 
+                    'failed' as const
+          } : item
+        ));
+        
+        // When poll returns completed books, merge into photos and pendingBooks (same as processImage).
+        // Use the same book ids in both photo.books and pendingBooks so groupedPendingBooks can show "Scan 1", "Scan 2" sections.
+        if (result.status === 'completed' && result.books && result.books.length > 0) {
+          const allBooks = result.books;
+          const newPendingBooks = allBooks.filter((book: Book) => !isIncompleteBook(book));
+          const newIncompleteBooks = allBooks.filter((book: Book) => isIncompleteBook(book));
+          const existingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+          const uniqueIdFor = (book: Book, index: number, prefix: string) =>
+            `${scanId}_${(book.title || 'book').slice(0, 30)}_${prefix}_${index}_${Math.random().toString(36).slice(2, 9)}`;
+          // Assign unique ids (shared by photo and pending) so grouping by photo works
+          const uniqueNewPending: Book[] = newPendingBooks.map((book: Book, i: number) => ({
+            ...book,
+            id: uniqueIdFor(book, i, 'p'),
+            status: 'pending' as const,
+          }));
+          const uniqueNewIncomplete: Book[] = newIncompleteBooks.map((book: Book, i: number) => ({
+            ...book,
+            id: uniqueIdFor(book, i, 'i'),
+            status: 'incomplete' as const,
+          }));
+          const photoBooks: Book[] = [...uniqueNewPending, ...uniqueNewIncomplete];
+          const finalCaption = scanCaptionsRef.current.get(scanId) || undefined;
+          scanCaptionsRef.current.delete(scanId);
+          const newPhoto: Photo = {
+            id: scanId,
+            uri,
+            books: photoBooks,
+            timestamp: Date.now(),
+            caption: finalCaption,
+          };
+          setPhotos(prevPhotos => {
+            const existingPhoto = prevPhotos.find(p => p.uri === uri);
+            let updatedPhotos: Photo[];
+            if (existingPhoto) {
+              updatedPhotos = prevPhotos.map(p =>
+                p.id === existingPhoto.id ? { ...p, books: [...p.books, ...photoBooks] } : p
+              );
+            } else {
+              updatedPhotos = [...prevPhotos, newPhoto];
+              console.log('📸 [BATCH] Adding photo from completed job, total photos:', updatedPhotos.length);
+            }
+            if (user) {
+              const userPhotosKey = `photos_${user.uid}`;
+              AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos)).catch(err => console.error('Error saving photos:', err));
+              if (!existingPhoto) savePhotoToSupabase(user.uid, newPhoto).catch(err => console.error('Error uploading photo:', err));
+            }
+            setPendingBooks(prevPending => {
+              const existingKeys = new Set(prevPending.map(b => existingKey(b)));
+              const dedupedNewPending = uniqueNewPending.filter(book => {
+                if (existingKeys.has(existingKey(book))) return false;
+                existingKeys.add(existingKey(book));
+                return true;
+              });
+              const updatedPending = [...prevPending, ...dedupedNewPending];
+              console.log('📚 [BATCH] Merged', dedupedNewPending.length, 'books from job, pending count:', updatedPending.length);
+              if (user) saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos).catch(err => console.error('Error saving user data:', err));
+              return updatedPending;
+            });
+            return updatedPhotos;
+          });
+          setSelectedBooks(new Set());
+          // Trigger cover fetch for new books (batch flow doesn't run processImage, so we must call here)
+          if (uniqueNewPending.length > 0) {
+            fetchCoversForBooks(uniqueNewPending).catch(err => console.error('Error fetching covers for batch books:', err));
+          }
+        }
+        
+        return { scanId, status: result.status, books: result.books };
+      })
+    );
+    
+    // Wait for all polls to complete (each job's .then() has already run and updated photos/pendingBooks)
+    await Promise.all(pollPromises);
+    
+    console.log(`✅ [BATCH ${batchId}] All jobs completed`);
+    // Clear scanning bar and remove completed items from queue so UI shows results and bar doesn't stick
+    setTimeout(() => {
+      setScanProgress(null);
+      setScanQueue(prev => prev.filter(item => item.status === 'pending' || item.status === 'processing'));
+    }, 500);
+  };
+
+  // Poll a single job until completion
+  // When abortSignal is aborted (user canceled), stop polling and return canceled
+  // Per-job timeout: starts when job is created, not when polling starts
+  const pollJobUntilComplete = async (
+    jobId: string, 
+    scanId: string, 
+    batchId: string, 
+    index: number, 
+    total: number,
+    jobCreatedAt: number, // Timestamp when job was created (starts per-job timeout)
+    abortSignal?: AbortSignal
+  ): Promise<{ status: 'completed' | 'failed' | 'canceled', books: Book[] }> => {
+    let baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL');
+    if (!baseUrl || baseUrl.includes('bookshelfapp-five') || baseUrl === 'https://bookshelfscan.app') {
+      baseUrl = 'https://www.bookshelfscan.app';
+    }
+    if (baseUrl && !baseUrl.startsWith('http')) {
+      baseUrl = `https://${baseUrl}`;
+    }
+    if (baseUrl && baseUrl.includes('bookshelfscan.app') && !baseUrl.includes('www.')) {
+      baseUrl = baseUrl.replace('bookshelfscan.app', 'www.bookshelfscan.app');
+    }
+    
+    const JOB_TIMEOUT_MS = 180000; // 180 seconds per job (starts when job is created)
+    const POLL_INTERVAL_MS = 3000; // 3 seconds between polls (reduces log noise)
+    let lastUpdatedAt: string | null = null; // Track last updated_at from server
+    let pollCount = 0;
+    
+    // Poll until job completes, per-job timeout expires, or user cancels (abortSignal)
+    while (true) {
+      if (abortSignal?.aborted) {
+        console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} polling stopped (user canceled)`);
+        return { status: 'canceled', books: [] };
+      }
+      const now = Date.now();
+      const jobAge = now - jobCreatedAt;
+      
+      // Check per-job timeout (starts when job was created)
+      if (jobAge >= JOB_TIMEOUT_MS) {
+        // Timeout exceeded - check server status one more time
+        try {
+          const cacheBuster = Date.now();
+          const pollUrl = `${baseUrl}/api/scan/${jobId}?t=${cacheBuster}`;
+          const statusResp = await fetch(pollUrl, {
+            method: 'GET',
+            signal: abortSignal,
+            headers: { 
+              'Accept': 'application/json',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'Pragma': 'no-cache'
+            },
+            cache: 'no-store'
+          });
+          
+          if (statusResp.ok && statusResp.status !== 304) {
+            const statusData = await statusResp.json();
+            const currentStatus = statusData.status;
+            const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
+            const updatedAt = statusData.updated_at || null;
+            
+            // Rule: Only mark as failed if:
+            // 1. Server status = failed, OR
+            // 2. Server status is still pending/processing AND no updates for jobTimeoutMs
+            if (currentStatus === 'failed') {
+              console.log(`❌ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} failed (server status)`);
+              return { status: 'failed', books: serverBooks };
+            }
+            
+            if (currentStatus === 'completed') {
+              console.log(`✅ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} completed (server status)`);
+              if (__DEV__) {
+                console.log('[RESULTS DEBUG] jobId', jobId, 'booksCount', serverBooks?.length);
+              }
+              return { status: 'completed', books: serverBooks };
+            }
+            
+            if (currentStatus === 'canceled') {
+              console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} canceled (server status)`);
+              return { status: 'canceled', books: [] };
+            }
+            
+            // Still pending/processing - check if there have been updates
+            if (currentStatus === 'pending' || currentStatus === 'processing') {
+              // Check if job has been updated recently (within last 30 seconds)
+              // If updated_at is recent, job is still making progress
+              let isStale = true;
+              if (updatedAt) {
+                try {
+                  const updatedAtTime = new Date(updatedAt).getTime();
+                  const timeSinceUpdate = now - updatedAtTime;
+                  // If job was updated within last 30 seconds, it's still active
+                  if (timeSinceUpdate < 30000) {
+                    isStale = false;
+                    console.log(`🔄 [BATCH ${batchId}] [${index}/${total}] Job ${jobId} still ${currentStatus} but updated ${Math.round(timeSinceUpdate / 1000)}s ago, continuing to poll`);
+                  }
+                } catch (e) {
+                  // If we can't parse updatedAt, assume stale
+                }
+              }
+              
+              if (isStale) {
+                // No recent updates - job is stale and timeout exceeded
+                console.warn(`⏱️ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} timeout: no recent updates for ${JOB_TIMEOUT_MS / 1000}s, status=${currentStatus}`);
+                return { status: 'failed', books: [] };
+              } else {
+                // Job has recent updates - continue polling (timeout check will happen again next iteration)
+                lastUpdatedAt = updatedAt;
+                // Break out of timeout check, continue normal polling
+                break;
+              }
+            }
+          }
+        } catch (timeoutCheckError: any) {
+          if (timeoutCheckError?.name === 'AbortError' || abortSignal?.aborted) {
+            console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} polling stopped (user canceled)`);
+            return { status: 'canceled', books: [] };
+          }
+          console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Error checking job ${jobId} on timeout:`, timeoutCheckError?.message || timeoutCheckError);
+        }
+        
+        // If we get here, timeout exceeded and job is still pending/processing with no updates
+        console.warn(`⏱️ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} per-job timeout exceeded (${JOB_TIMEOUT_MS / 1000}s), marking as failed`);
+        return { status: 'failed', books: [] };
+      }
+      
+      // Normal polling interval (abortable so cancel stops immediately)
+      const delayPromise = new Promise<void>(r => setTimeout(r, POLL_INTERVAL_MS));
+      const abortPromise = abortSignal ? new Promise<never>((_, reject) => {
+        if (abortSignal.aborted) reject(new DOMException('aborted', 'AbortError'));
+        abortSignal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      }) : null;
+      try {
+        await (abortPromise ? Promise.race([delayPromise, abortPromise]) : delayPromise);
+      } catch {
+        console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} polling stopped (user canceled)`);
+        return { status: 'canceled', books: [] };
+      }
+      if (abortSignal?.aborted) {
+        console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} polling stopped (user canceled)`);
+        return { status: 'canceled', books: [] };
+      }
+      pollCount++;
+      
+      try {
+        const cacheBuster = Date.now();
+        const pollUrl = `${baseUrl}/api/scan/${jobId}?t=${cacheBuster}`;
+        const statusResp = await fetch(pollUrl, {
+          method: 'GET',
+          signal: abortSignal,
+          headers: { 
+            'Accept': 'application/json',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma': 'no-cache'
+          },
+          cache: 'no-store'
+        });
+        
+        if (statusResp.status === 304) {
+          continue;
+        }
+        
+        if (!statusResp.ok) {
+          console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Failed to poll job ${jobId}: ${statusResp.status}`);
+          // Continue polling on error (don't break - let timeout handle it)
+          continue;
+        }
+        
+        const statusData = await statusResp.json();
+        const currentStatus = statusData.status;
+        const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
+        const updatedAt = statusData.updated_at || null;
+        
+        // Track updated_at to detect stale jobs
+        if (updatedAt) {
+          lastUpdatedAt = updatedAt;
+        }
+        
+        // Check final statuses
+        if (currentStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'canceled') {
+          console.log(`✅ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} finished: status=${currentStatus}, books=${serverBooks.length}`);
+          if (__DEV__) {
+            console.log('[RESULTS DEBUG] jobId', jobId, 'booksCount', serverBooks?.length);
+          }
+          return { 
+            status: currentStatus as 'completed' | 'failed' | 'canceled', 
+            books: serverBooks 
+          };
+        }
+        
+        // Still pending/processing - continue polling
+      } catch (pollError: any) {
+        if (pollError?.name === 'AbortError' || abortSignal?.aborted) {
+          console.log(`⛔ [BATCH ${batchId}] [${index}/${total}] Job ${jobId} polling stopped (user canceled)`);
+          return { status: 'canceled', books: [] };
+        }
+        console.error(`❌ [BATCH ${batchId}] [${index}/${total}] Error polling job ${jobId}:`, pollError?.message || pollError);
+        // Continue polling on error (don't break - let timeout handle it)
+      }
     }
   };
 
@@ -2035,24 +2752,46 @@ export const ScansTab: React.FC = () => {
     
     try {
       // Step 1: Create scan job (returns immediately with jobId)
-      // Use canonical URL - no redirects allowed
+      // Use canonical URL - no redirects allowed. Send auth token; server derives userId.
       const scanUrl = `${baseUrl}/api/scan`;
-      console.log(`📡 Creating scan job at: ${scanUrl} [SCAN ${scanId || 'new'}]`);
+      console.log('[ENQUEUE_URL]', scanUrl);
+      let scanHeaders: Record<string, string>;
+      try {
+        const { getScanAuthHeaders } = await import('../lib/authHeaders');
+        scanHeaders = { 'Accept': 'application/json', ...(await getScanAuthHeaders()) };
+      } catch {
+        setScanProgress(null);
+        setIsUploading(false);
+        setIsScanning(false);
+        Alert.alert('Sign in required', 'Please sign in again to scan.', [{ text: 'OK' }]);
+        return { books: [], fromVercel: false };
+      }
+
       const createResp = await fetch(scanUrl, {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ 
+          headers: scanHeaders,
+          body: JSON.stringify({
             imageDataURL: primaryDataURL,
-          userId: user?.uid || undefined
-        }),
+            forceFresh: true
+          }),
       });
       
       if (!createResp.ok) {
         const errorText = await createResp.text().catch(() => '');
         console.error(`❌ Failed to create scan job: ${createResp.status} - ${errorText.substring(0, 200)}`);
+        
+        if (createResp.status === 401) {
+          try {
+            const errBody = JSON.parse(errorText);
+            if (errBody?.error === 'reauth_required') {
+              Alert.alert('Session expired', 'Please sign in again to scan.', [{ text: 'OK' }]);
+            }
+          } catch (_) {}
+          setScanProgress(null);
+          setIsUploading(false);
+          setIsScanning(false);
+          return { books: [], fromVercel: false };
+        }
         
         // Kill "0 Books" Fallback: If server returns error, STOP everything
         // Do not proceed to client-side detection
@@ -2126,6 +2865,27 @@ export const ScansTab: React.FC = () => {
         return { books: [], fromVercel: false };
       }
       
+      // Store jobId in scanProgress for cancel functionality
+      const currentProgress = scanProgress;
+      if (currentProgress) {
+        const existingJobIds = (currentProgress as any).jobIds || [];
+        if (!existingJobIds.includes(jobId)) {
+          updateProgress({ jobIds: [...existingJobIds, jobId] } as any);
+        }
+      } else {
+        // Create new scanProgress with jobId
+        setScanProgress({
+          currentScanId: scanId || null,
+          currentStep: 0,
+          totalSteps: 10,
+          totalScans: 1,
+          completedScans: 0,
+          failedScans: 0,
+          startTimestamp: Date.now(),
+          jobIds: [jobId],
+        } as any);
+      }
+      
       console.log(`✅ Scan job created: ${jobId}, status: ${jobData.status} [SCAN ${scanId || 'new'}]`);
       
       // Re-enable upload button after job is created successfully
@@ -2149,15 +2909,19 @@ export const ScansTab: React.FC = () => {
         // Ignore hash errors for tracking
       }
       
-      // Step 2: Poll for job completion (with progress updates)
+      // Step 2: Poll for job completion (with exponential polling intervals)
       // CRITICAL: Use same canonical baseUrl for polling (no redirects, no mixed hosts)
-      const POLL_INTERVAL_MS = 1000; // Poll every 1 second
-      const MAX_POLL_TIME_MS = 135000; // Max 135 seconds (matches server timeout)
+      const MAX_POLL_TIME_MS = 120000; // Max 120 seconds
       const startTime = Date.now();
       let lastStatus = jobData.status;
+      let pollCount = 0;
+      
+      // Poll every 3s while status is pending/processing (reduces log noise)
+      const POLL_INTERVAL_MS = 3000;
       
       while (Date.now() - startTime < MAX_POLL_TIME_MS) {
         await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        pollCount++;
         
         try {
           // Use same canonical baseUrl - never use different host
@@ -2189,45 +2953,58 @@ export const ScansTab: React.FC = () => {
           // Only call json() if status is 200 (not 304)
           const statusData = await statusResp.json();
           const currentStatus = statusData.status;
+          const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
+          const stage = statusData.stage || null;
+          const progress = statusData.progress !== null && statusData.progress !== undefined ? statusData.progress : null;
+          const stageDetail = statusData.stage_detail || null;
           
-          // CRITICAL: Stop polling and return results when status is 'completed' or 'failed'
-          if (currentStatus === 'completed') {
-            // CRITICAL: Extract books from response - endpoint returns { status: 'completed', books: [...] }
-            const serverBooks = Array.isArray(statusData.books) ? statusData.books : [];
-            
-            console.log(`✅ Scan job completed: status=${currentStatus}, books.length=${serverBooks.length} [JOB ${jobId}]`);
-            
-            if (serverBooks.length === 0) {
-              console.warn(`⚠️ WARNING: Status is 'completed' but received 0 books [JOB ${jobId}]`);
-            }
-            
-            // Track scan (skip for guest users)
-            if (user && !isGuestUser(user)) {
-              incrementScanCount(user.uid).catch(err => {
-                console.error('❌ Client-side scan tracking failed:', err);
-              });
-            }
-            
-            // STOP POLLING - return results immediately (covers can load in background)
-            return { books: serverBooks, fromVercel: true, jobId };
+          // Update progress in UI if available
+          if (progress !== null && stage) {
+            const progressLabel = stageDetail ? `${stage} (${stageDetail})` : stage;
+            console.log(`📊 [JOB ${jobId}] Progress: ${progress}% - ${progressLabel}`);
+            // TODO: Update UI progress bar here (if you have a progress state)
           }
           
-          if (currentStatus === 'failed') {
-            const errorInfo = statusData.error || {};
-            const errorCode = errorInfo.code || 'unknown_error';
-            const errorMessage = errorInfo.message || 'Scan failed';
-            console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage} [JOB ${jobId}]`);
-            // Clear scanning bar on failure
-            setScanProgress(null);
-            setIsUploading(false);
-            setIsScanning(false);
-            // STOP POLLING - return empty books on failure
-            return { books: [], fromVercel: false, jobId };
+          // Log progress if available
+          if (stage || progress !== null) {
+            console.log(`⏳ Job ${jobId} status: ${currentStatus}, stage: ${stage || 'unknown'}, progress: ${progress !== null ? `${progress}%` : 'N/A'} [poll #${pollCount}]`);
+          } else {
+            console.log(`⏳ Job ${jobId} status: ${currentStatus} [poll #${pollCount}]`);
+          }
+          
+          // CRITICAL: Stop polling and return results when status is 'completed' or 'failed'
+          if (currentStatus === 'completed' || currentStatus === 'failed') {
+            // STOP POLLING - job is done
+            if (currentStatus === 'completed') {
+              console.log(`✅ Scan job completed: status=${currentStatus}, books.length=${serverBooks.length} [JOB ${jobId}]`);
+              
+              // Track scan (skip for guest users)
+              if (user && !isGuestUser(user)) {
+                incrementScanCount(user.uid).catch(err => {
+                  console.error('❌ Client-side scan tracking failed:', err);
+                });
+              }
+              
+              // Return results (even if 0 books, that's a valid completion)
+              return { books: serverBooks, fromVercel: true, jobId };
+            } else {
+              // Failed
+              const errorInfo = statusData.error || {};
+              const errorCode = errorInfo.code || 'unknown_error';
+              const errorMessage = errorInfo.message || 'Scan failed';
+              console.error(`❌ Scan job failed: [${errorCode}] ${errorMessage} [JOB ${jobId}]`);
+              // Clear scanning bar on failure
+              setScanProgress(null);
+              setIsUploading(false);
+              setIsScanning(false);
+              // Return empty books on failure
+              return { books: [], fromVercel: false, jobId };
+            }
           }
           
           // Continue polling if still pending/processing
           // Status is 'pending' or 'processing', keep waiting
-          console.log(`⏳ Job ${jobId} status: ${currentStatus}, continuing to poll...`);
+          lastStatus = currentStatus;
         } catch (pollError: any) {
           console.error(`❌ Error polling job status:`, pollError?.message || pollError);
           // Continue polling on network errors
@@ -2235,13 +3012,20 @@ export const ScansTab: React.FC = () => {
       }
       
       // Timeout - job took too long (still pending/processing)
-      // This should not happen if server completes within 185s, but handle gracefully
+      // If user already canceled, don't show "Scan Timeout" – they chose to stop
+      if (canceledJobIdsRef.current.has(jobId)) {
+        canceledJobIdsRef.current.delete(jobId);
+        setIsUploading(false);
+        setIsScanning(false);
+        setScanProgress(null);
+        return { books: [], fromVercel: false, jobId };
+      }
       setIsUploading(false);
       setIsScanning(false);
-      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s`);
+      console.warn(`⏱️ Scan job ${jobId} polling timeout after ${MAX_POLL_TIME_MS / 1000}s (last status: ${lastStatus})`);
       Alert.alert(
         'Scan Timeout',
-        'The scan is taking longer than expected. Please try again or check your connection.'
+        'The scan is taking longer than expected. The scan may still be processing in the background. Please check back later or try again.'
       );
       // Clear scanning bar on timeout
       setScanProgress(null);
@@ -2303,8 +3087,8 @@ export const ScansTab: React.FC = () => {
       
       setScanQueue(prev => {
         currentQueueLength = prev.length;
-        currentCompletedCount = prev.filter(item => item.status === 'completed' || item.status === 'failed').length;
-        currentFailedCount = prev.filter(item => item.status === 'failed').length;
+        currentCompletedCount = prev.filter(item => item.status === 'completed' || item.status === 'failed' || item.status === 'canceled').length;
+        currentFailedCount = prev.filter(item => item.status === 'failed').length; // Only actual failures, not canceled
         return prev; // Don't modify
       });
       
@@ -2441,71 +3225,75 @@ export const ScansTab: React.FC = () => {
         scannedAt: Date.now(),
       }));
       
-      // Check if no books were found - don't save the photo if so
+      // Check if no books were found - only treat as failure if scan actually completed with 0 books
+      // If cameFromVercel is false, that means the scan failed (network error, etc.)
+      // If cameFromVercel is true but books.length === 0, that means scan completed but found no books
       if (allBooks.length === 0) {
-        console.error('❌ No books detected from scan - not saving photo');
-        
-        // Determine failure reason
-        let failureReason = 'No books were detected in the image.';
-        let failureDetails = '';
-        
+        // Only show failure alert if scan actually failed (not from Vercel) OR if it completed with 0 books
         if (!cameFromVercel) {
-          failureReason = 'Unable to connect to scan server.';
-          failureDetails = 'Please check your internet connection and try again.';
-        } else if (detectedBooks.length === 0) {
-          failureReason = 'No books detected in the image.';
-          failureDetails = 'Possible reasons:\n• Image quality is too low\n• No books are visible in the photo\n• Books are too blurry or obscured\n• Try taking a clearer photo with better lighting';
-        }
-        
-        // Mark scan as failed in queue
-        setScanQueue(prev => prev.map(item => 
-          item.id === scanId ? { ...item, status: 'failed' as const } : item
-        ));
-        
-        // Clear current scan state
-        setCurrentScan(null);
-        
-        // Update progress to show failed scan
-        const currentFailedCount = scanProgress?.failedScans || 0;
-        updateProgress({
-          currentScanId: null,
-          currentStep: 0,
-          failedScans: currentFailedCount + 1,
-          totalScans: totalScans,
-        });
-        
-        // Clean up caption ref
-        scanCaptionsRef.current.delete(scanId);
-        
-        // Check if there are more photos to scan
-        const hasMorePhotos = pendingImages.length > 1 && currentImageIndex < pendingImages.length - 1;
-        
-        if (hasMorePhotos) {
-          // Automatically move to next photo without showing alert
-          console.log('📸 No books found, automatically moving to next photo...');
-          const nextIndex = currentImageIndex + 1;
-          const nextImage = pendingImages[nextIndex];
-          
-          // Update to show next photo in caption modal
-          setCurrentImageIndex(nextIndex);
-          setPendingImageUri(nextImage.uri);
-          currentScanIdRef.current = nextImage.scanId;
-          setCaptionText(scanCaptionsRef.current.get(nextImage.scanId) || '');
-          
-          // Don't save the photo - just return (caption modal will show next photo)
-          return;
-        } else {
-          // This is the last photo (or only photo), show alert
+          // Network/server error - this is a real failure
+          console.error('❌ Scan failed (not from Vercel) - not saving photo');
           Alert.alert(
-            'Failed to Find Books',
-            `${failureReason}\n\n${failureDetails}`,
+            'Scan Failed',
+            'Unable to connect to scan server. Please check your internet connection and try again.',
             [{ text: 'OK' }]
           );
+          
+          // Mark scan as failed in queue
+          setScanQueue(prev => prev.map(item => 
+            item.id === scanId ? { ...item, status: 'failed' as const } : item
+          ));
+          
+          // Clear current scan state
+          setCurrentScan(null);
+          
+          // Update progress to show failed scan
+          const currentFailedCount = scanProgress?.failedScans || 0;
+          updateProgress({
+            currentScanId: null,
+            currentStep: 0,
+            failedScans: currentFailedCount + 1,
+            totalScans: totalScans,
+          });
+          
+          // Clean up caption ref
+          scanCaptionsRef.current.delete(scanId);
+          
+          // Don't save the photo - just return
+          return;
+        } else {
+          // Scan completed successfully but found 0 books - this is a valid result, not a failure
+          console.log('📸 Scan completed but found 0 books - showing message');
+          
+          // Check if there are more photos to scan
+          const hasMorePhotos = pendingImages.length > 1 && currentImageIndex < pendingImages.length - 1;
+          
+          if (hasMorePhotos) {
+            // Automatically move to next photo without showing alert
+            console.log('📸 No books found, automatically moving to next photo...');
+            const nextIndex = currentImageIndex + 1;
+            const nextImage = pendingImages[nextIndex];
+            
+            // Update to show next photo in caption modal
+            setCurrentImageIndex(nextIndex);
+            setPendingImageUri(nextImage.uri);
+            currentScanIdRef.current = nextImage.scanId;
+            setCaptionText(scanCaptionsRef.current.get(nextImage.scanId) || '');
+            
+            // Don't save the photo - just return (caption modal will show next photo)
+            return;
+          } else {
+            // This is the last photo (or only photo), show informational message
+            Alert.alert(
+              'Couldn\'t Find Any Books',
+              'The scan completed but no books were detected in this image.\n\nPossible reasons:\n• Image quality is too low\n• No books are visible in the photo\n• Books are too blurry or obscured\n• Try taking a clearer photo with better lighting',
+              [{ text: 'OK' }]
+            );
+          }
+          
+          // Don't save the photo - just return
+          return;
         }
-        
-        // Don't save the photo - just return
-        // The photo won't appear in recent scans since it's never added to the photos array
-        return;
       }
       
       // Mark guest scan as used if this is a successful scan
@@ -2662,31 +3450,19 @@ export const ScansTab: React.FC = () => {
         item.id === scanId ? { ...item, status: 'completed' as const } : item
       );
       
-        // Update scanning progress - ensure totalScans is correct
-      const newCompletedCount = updatedQueue.filter(item => item.status === 'completed').length;
-      const pendingScans = updatedQueue.filter(item => item.status === 'pending');
-      const stillProcessing = updatedQueue.some(item => item.status === 'processing');
-        const actualTotalScans = updatedQueue.length; // Use actual queue length
+        // Progress will be updated automatically via useEffect watching scanQueue
+        // No need to manually update here - the useEffect will handle it
+        const pendingScans = updatedQueue.filter(item => item.status === 'pending');
+        const stillProcessing = updatedQueue.some(item => item.status === 'processing');
         
         console.log('📊 Scan completion check:', {
-          newCompletedCount,
+          completedCount: updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed' || item.status === 'canceled').length,
           pendingScans: pendingScans.length,
           stillProcessing,
-          actualTotalScans,
+          activeScans: updatedQueue.filter(item => item.status === 'pending' || item.status === 'processing').length,
+          totalInQueue: updatedQueue.length,
           queue: updatedQueue.map(i => ({ id: i.id, status: i.status }))
         });
-        
-        // Defer progress update to avoid "Cannot update component during render" error
-        setTimeout(() => {
-          // ALWAYS update progress to keep notification visible with correct count
-        updateProgress({
-          currentScanId: null,
-          currentStep: 0,
-          completedScans: newCompletedCount,
-            totalScans: actualTotalScans, // Use actual queue length
-          });
-          console.log('📊 Updated progress - totalScans:', actualTotalScans, 'completedScans:', newCompletedCount);
-        }, 0);
         
         // Check if there are more scans to process
         const hasMoreScans = pendingScans.length > 0 || stillProcessing;
@@ -2705,17 +3481,7 @@ export const ScansTab: React.FC = () => {
                 const updatedQueue = currentQueue.map(item => 
                 item.id === nextScan.id ? { ...item, status: 'processing' as const } : item
                 );
-                // Read completed count from updated queue
-                const currentCompleted = updatedQueue.filter(item => item.status === 'completed').length;
-                // Update progress AFTER state update completes
-                setTimeout(() => {
-                  updateProgress({
-                    currentScanId: nextScan.id,
-                    currentStep: 0,
-                    completedScans: currentCompleted,
-                    totalScans: actualTotalScans,
-                  });
-                }, 0);
+                // Progress will be updated automatically via useEffect watching scanQueue
                 return updatedQueue;
               });
             // Process sequentially - processImage is async, but we wrap it to ensure proper error handling
@@ -2725,10 +3491,13 @@ export const ScansTab: React.FC = () => {
           }, 500);
         }
       } else {
-        // All scans complete, hide notification after a brief delay
-          console.log('📊 All scans complete, hiding notification');
+        // All scans complete, hide notification and clear progress
+          console.log('📊 All scans complete, hiding notification and clearing progress');
         setTimeout(() => {
           setScanProgress(null);
+          totalScansRef.current = 0; // Reset ref when all scans complete
+          // Clear completed scans from queue to prevent them from being counted in future scans
+          setScanQueue(prev => prev.filter(item => item.status === 'pending' || item.status === 'processing'));
           // Refresh scan usage when all scans are complete
           if (user) {
             setTimeout(() => {
@@ -2851,7 +3620,7 @@ export const ScansTab: React.FC = () => {
     // Guest users: navigate to My Library (login screen) and store pending action
     if (user && isGuestUser(user)) {
       // Store the book ID to approve after login
-      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_book', bookId }));
+      await AsyncStorage.setItem(PENDING_APPROVE_ACTION_KEY, JSON.stringify({ type: 'approve_book', bookId }));
       // Navigate to My Library tab which shows login screen
       navigation.navigate('MyLibrary' as never);
       return;
@@ -3003,7 +3772,7 @@ export const ScansTab: React.FC = () => {
     // Guest users: navigate to My Library (login screen) and store pending action
     if (user && isGuestUser(user)) {
       // Store action to approve all books after login
-      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_all' }));
+      await AsyncStorage.setItem(PENDING_APPROVE_ACTION_KEY, JSON.stringify({ type: 'approve_all' }));
       // Navigate to My Library tab which shows login screen
       navigation.navigate('MyLibrary' as never);
       return;
@@ -3166,7 +3935,7 @@ export const ScansTab: React.FC = () => {
     if (user && isGuestUser(user)) {
       // Store the selected book IDs to approve after login
       const bookIds = Array.from(selectedBooks);
-      await AsyncStorage.setItem('pending_approve_action', JSON.stringify({ type: 'approve_selected', bookIds }));
+      await AsyncStorage.setItem(PENDING_APPROVE_ACTION_KEY, JSON.stringify({ type: 'approve_selected', bookIds }));
       // Navigate to My Library tab which shows login screen
       navigation.navigate('MyLibrary' as never);
       return;
@@ -3200,7 +3969,7 @@ export const ScansTab: React.FC = () => {
   // Check for pending actions after login and complete them
   const checkAndCompletePendingActions = useCallback(async () => {
     try {
-      const pendingActionData = await AsyncStorage.getItem('pending_approve_action');
+      const pendingActionData = await AsyncStorage.getItem(PENDING_APPROVE_ACTION_KEY);
       if (!pendingActionData) return;
       
       const pendingAction = JSON.parse(pendingActionData);
@@ -3272,7 +4041,7 @@ export const ScansTab: React.FC = () => {
       }
       
       // Clear the pending action
-      await AsyncStorage.removeItem('pending_approve_action');
+      await AsyncStorage.removeItem(PENDING_APPROVE_ACTION_KEY);
       
       // Navigate back to Scans tab to show the result
       navigation.navigate('Scans' as never);
@@ -3280,6 +4049,10 @@ export const ScansTab: React.FC = () => {
       console.error('Error completing pending action:', error);
     }
   }, [user, pendingBooks, approvedBooks, rejectedBooks, photos, navigation, deduplicateBooks, saveUserData, fetchCoversForBooks]);
+
+  useEffect(() => {
+    checkAndCompletePendingActionsRef.current = checkAndCompletePendingActions;
+  }, [checkAndCompletePendingActions]);
 
   // Edit functions for pending books
   const handleRemoveCover = useCallback(async (bookId: string) => {
@@ -3311,7 +4084,7 @@ export const ScansTab: React.FC = () => {
     setPhotos(updatedPhotos);
 
     // Save to Supabase
-    await saveBookToSupabase(user.uid, updatedBook);
+    await saveBookToSupabase(user.uid, updatedBook, updatedBook.status ?? 'approved');
     await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
 
     // Clear selection and close edit mode
@@ -3330,15 +4103,46 @@ export const ScansTab: React.FC = () => {
     setCoverSearchResults([]);
 
     try {
-      // searchMultipleBooks is now imported at top
-      const results = await searchMultipleBooks(bookToUpdate.title, bookToUpdate.author, 20);
+      console.log(`🔍 Searching for covers: "${bookToUpdate.title}" by ${bookToUpdate.author || 'unknown'}`);
       
-      // Filter to only show results with covers
+      // Search for multiple books - try with author first, then without if needed
+      let results = await searchMultipleBooks(bookToUpdate.title, bookToUpdate.author, 20);
+      
+      // If no results with author, try without author (broader search)
+      if (results.length === 0 && bookToUpdate.author) {
+        console.log(`🔍 No results with author, trying without author...`);
+        results = await searchMultipleBooks(bookToUpdate.title, undefined, 20);
+      }
+      
+      console.log(`🔍 Found ${results.length} total results`);
+      
+      // Filter to only show results with covers and googleBooksId
       const resultsWithCovers = results.filter(r => r.coverUrl && r.googleBooksId);
-      setCoverSearchResults(resultsWithCovers);
+      console.log(`🔍 Found ${resultsWithCovers.length} results with covers`);
+      
+      // Only show alerts if we truly have no results at all
+      // If we have results but no covers, still show them (user can see what's available)
+      if (results.length === 0) {
+        Alert.alert(
+          'No Results',
+          'No books found. Try searching with a different title or author.',
+          [{ text: 'OK' }]
+        );
+      } else if (resultsWithCovers.length === 0) {
+        // If we have results but no covers, log a warning but don't show alert
+        // The user will see an empty list which is better than a blocking alert
+        console.warn(`⚠️ Found ${results.length} results but none have covers`);
+      }
+      
+      // Always set results (even if empty) so modal can show the current book
+      setCoverSearchResults(
+        resultsWithCovers
+          .filter((r): r is typeof r & { googleBooksId: string } => Boolean(r.googleBooksId))
+          .map(r => ({ googleBooksId: r.googleBooksId, coverUrl: r.coverUrl }))
+      );
     } catch (error) {
       console.error('Error searching for covers:', error);
-      Alert.alert('Error', 'Failed to search for covers. Please try again.');
+      Alert.alert('Error', `Failed to search for covers: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`);
     } finally {
       setIsLoadingCovers(false);
     }
@@ -3391,7 +4195,7 @@ export const ScansTab: React.FC = () => {
       setPhotos(updatedPhotos);
 
       // Save to Supabase
-      await saveBookToSupabase(user.uid, updatedBook);
+      await saveBookToSupabase(user.uid, updatedBook, updatedBook.status ?? 'approved');
       await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
 
       setShowSwitchCoversModal(false);
@@ -3478,7 +4282,7 @@ export const ScansTab: React.FC = () => {
     setPhotos(updatedPhotos);
 
     // Save to Supabase
-    await saveBookToSupabase(user.uid, updatedBook);
+    await saveBookToSupabase(user.uid, updatedBook, updatedBook.status ?? 'approved');
     await saveUserData(updatedPending, approvedBooks, rejectedBooks, updatedPhotos);
 
     setShowSwitchBookModal(false);
@@ -3565,7 +4369,7 @@ export const ScansTab: React.FC = () => {
       // Calculate new queue state
       const updatedQueue = [...prevQueue, newScanItem];
       const totalScans = updatedQueue.length;
-      const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+      const completedCount = updatedQueue.filter(item => item.status === 'completed' || item.status === 'failed' || item.status === 'canceled').length;
       
       console.log('📸 Adding image to queue, setting scan progress immediately', {
         totalScans,
@@ -3582,7 +4386,7 @@ export const ScansTab: React.FC = () => {
     setTimeout(() => {
       setScanQueue(currentQueue => {
         const currentTotalScans = currentQueue.length;
-        const currentCompletedCount = currentQueue.filter(item => item.status === 'completed' || item.status === 'failed').length;
+        const currentCompletedCount = currentQueue.filter(item => item.status === 'completed' || item.status === 'failed' || item.status === 'canceled').length;
         const progressData = {
           currentScanId: null,
           currentStep: 0,
@@ -3758,7 +4562,6 @@ export const ScansTab: React.FC = () => {
       const photo = await currentCameraRef.takePictureAsync({
           quality: 0.8,
           base64: false,
-          flashMode: 'on',
         });
         
         if (photo?.uri) {
@@ -3856,7 +4659,9 @@ export const ScansTab: React.FC = () => {
             .map(({ uri, scanId }) => ({
               id: scanId,
               uri,
-              status: 'pending' as const
+              status: 'pending' as const,
+              batchId: undefined, // Will be set when batch is enqueued
+              jobId: undefined // Will be set when job is created
             }));
           
           if (newItems.length === 0) {
@@ -3883,43 +4688,36 @@ export const ScansTab: React.FC = () => {
           return updatedQueue;
         });
         
-        // Set progress AFTER state update completes (defer to avoid render error)
+        // Progress will be updated automatically via useEffect watching scanQueue
+        
+        // ENQUEUE-FIRST: Enqueue all images first, then poll for completions
         // Use the items that were actually added (not stale scanQueue state)
-        setTimeout(() => {
-          const progressData = {
+        if (!isProcessing && actuallyAddedItems.length > 0) {
+          setIsProcessing(true);
+          
+          // Initialize progress tracking
+          setScanProgress({
             currentScanId: null,
             currentStep: 0,
             totalSteps: 10,
-            totalScans: actuallyAddedItems.length, // Only the NEW images that were actually added
-            completedScans: 0, // Reset for new batch
+            totalScans: actuallyAddedItems.length,
+            completedScans: 0,
             failedScans: 0,
-            startTimestamp: Date.now(), // New timestamp for new batch
-          };
+            startTimestamp: Date.now(),
+            jobIds: [],
+          } as any);
           
-          console.log('📊 About to set scanProgress with totalScans:', progressData.totalScans, 'type:', typeof progressData.totalScans);
-          // Update ref to track latest totalScans
-          totalScansRef.current = progressData.totalScans;
-          setScanProgress(progressData);
-          console.log('📊 scanProgress set, totalScans:', progressData.totalScans, 'ref updated to:', totalScansRef.current);
-          
-          // Start processing the first new image if not already processing
-          // Use the items that were actually added (not stale scanQueue state)
-          if (!isProcessing && actuallyAddedItems.length > 0) {
-            const firstItem = actuallyAddedItems[0];
-            setIsProcessing(true);
-            setTimeout(() => {
-              setScanQueue(currentQueue => 
-                currentQueue.map(item => 
-                  item.id === firstItem.scanId ? { ...item, status: 'processing' as const } : item
-                )
-              );
-              // Process sequentially with async/await to prevent simultaneous requests
-              (async () => {
-                await processImage(firstItem.uri, firstItem.scanId);
-              })();
-            }, 50);
-          }
-        }, 0);
+          // Start batch enqueue (this will enqueue all jobs, then poll for completions)
+          (async () => {
+            try {
+              await enqueueBatch(actuallyAddedItems);
+            } catch (error: any) {
+              console.error('❌ Batch enqueue failed:', error);
+            } finally {
+              setIsProcessing(false);
+            }
+          })();
+        }
         
         // Show caption modal for the first NEW image only
         // Use the items that were actually added (not stale scanQueue state)
@@ -3982,6 +4780,8 @@ export const ScansTab: React.FC = () => {
       lastZoomRef.current = zoom;
     });
 
+  // Auth gating is at root only (AppWrapper: session ? TabNavigator : AuthStack). No per-screen "if (!session) go login".
+
   if (isCameraActive) {
     return (
       <View style={styles.cameraContainer}>
@@ -3990,7 +4790,6 @@ export const ScansTab: React.FC = () => {
         <CameraView
               style={StyleSheet.absoluteFill}
           facing="back"
-          flashMode="on"
               zoom={zoom}
           ref={(ref) => setCameraRef(ref)}
         />
@@ -4050,21 +4849,55 @@ export const ScansTab: React.FC = () => {
   }
 
   // Sticky toolbar at bottom - always visible when there are pending books
-  // Position it directly above the React Navigation tab bar with zero gap
-  // React Navigation handles tab bar safe area, so we position at 0 and let it sit below
-  // Calculate sticky toolbar position - above scanning notification if it's visible
-  // Notification is at: insets.bottom + tabBarHeight (~49-56px)
-  // Position toolbar as low as possible - use minimal height to eliminate gap
+  // When scanning is active: position directly above scanning notification bar
+  // When scanning is NOT active: position directly above navigation tab bar
   const tabBarHeight = Platform.OS === 'ios' ? 49 : 56;
-  // When scanProgress exists, notification is above tab bar
-  // When scanProgress is null, toolbar should be directly above tab bar
-  const notificationHeight = scanProgress ? 75 : 0; // Actual measured height
-  // Ensure position is always valid (never negative, never undefined)
-  // When notification exists: position toolbar above notification
-  // When no notification: position toolbar directly above tab bar (at bottom: 0, React Navigation handles tab bar spacing)
-  const stickyBottomPosition = scanProgress 
-    ? Math.max(0, insets.bottom + tabBarHeight + notificationHeight) // Above notification
-    : 0; // Directly at bottom when no notification (React Navigation tab bar will be below it)
+  // Scanning notification height: paddingVertical (14*2=28) + content (~47) + borderTop (2) = 77px
+  const notificationHeight = 77; // Exact height including border
+  // Sticky pending toolbar height: paddingVertical (14*2) + header row + spacing ≈ 60
+  const stickyToolbarHeight = 60;
+  
+  // Calculate active scans (only pending/processing, not completed)
+  // This matches the logic in ScanningNotification component EXACTLY
+  const totalScans = scanProgress?.totalScans ?? 0;
+  const completedScans = (scanProgress as any)?.completedScans ?? 0;
+  const failedScans = (scanProgress as any)?.failedScans ?? 0;
+  const activeScans = totalScans - (completedScans + failedScans);
+  const currentScanId = (scanProgress as any)?.currentScanId;
+  
+  // Determine if scanning bar is visible (matches ScanningNotification visibility logic EXACTLY)
+  // ScanningNotification returns null (hides) when:
+  //   1. !scanProgress (line 142)
+  //   2. isCompleted (line 172) where isCompleted = totalScans > 0 && (completedScans + failedScans) >= totalScans && !currentScanId
+  // So scanning bar is visible ONLY when: scanProgress exists AND activeScans > 0
+  const isCompleted = totalScans > 0 && (completedScans + failedScans) >= totalScans && !currentScanId;
+  const isScanningBarVisible = !!(scanProgress && !isCompleted && activeScans > 0);
+  
+  // Position logic: pending bar must sit directly on top of scanning bar with no gap.
+  // ScanningNotification uses bottom: insets.bottom + tabBarHeight (same as tab bar top); height = notificationHeight.
+  // Tab content bottom = insets.bottom + tabBarHeight (content is above the tab bar). So scanning bar top = content bottom - notificationHeight.
+  // We want pending bar bottom = scanning bar top → stickyBottomPosition = notificationHeight.
+  const stickyBottomPosition = isScanningBarVisible
+    ? notificationHeight // no gap: pending bar sits flush on scanning bar
+    : 0; // sticky to top of nav bar
+  
+  if (__DEV__ && pendingBooks.length > 0) {
+    console.log('📌 Sticky toolbar position:', {
+      isScanningBarVisible,
+      activeScans,
+      totalScans,
+      completedScans,
+      failedScans,
+      hasScanProgress: !!scanProgress,
+      stickyBottomPosition,
+      insetsBottom: insets.bottom,
+      tabBarHeight,
+      notificationHeight,
+      expectedPosition: isScanningBarVisible ? 'above scanning bar' : 'above nav bar'
+    });
+  }
+
+  if (__DEV__) console.log('[RESULTS RENDER] pendingBooks', pendingBooks?.length);
 
   return (
     <View style={styles.safeContainer}>
@@ -4072,7 +4905,9 @@ export const ScansTab: React.FC = () => {
         <ScrollView 
           style={styles.container}
           contentContainerStyle={[
-            pendingBooks.length > 0 && { paddingBottom: 100 } // Add padding so content isn't hidden behind sticky toolbar
+            pendingBooks.length > 0 && { 
+              paddingBottom: stickyBottomPosition + stickyToolbarHeight + 20 // clear toolbar + buffer
+            }
           ]}
           bounces={false}
           overScrollMode="never"
@@ -4157,7 +4992,7 @@ export const ScansTab: React.FC = () => {
       {pendingBooks.length > 0 && (
         <View style={[
           styles.pendingSection,
-          scanProgress && scanProgress.totalScans > 0 && styles.pendingSectionWithScanning
+          isScanningBarVisible && styles.pendingSectionWithScanning
         ]}>
           <View style={styles.pendingHeader}>
             <View style={styles.pendingTitleContainer}>
@@ -4932,6 +5767,7 @@ export const ScansTab: React.FC = () => {
           style={[
             styles.stickyToolbar,
             styles.stickyToolbarBottom,
+            isScanningBarVisible && styles.stickyToolbarWithScanning,
             {
               bottom: stickyBottomPosition,
             }
@@ -5166,7 +6002,7 @@ export const ScansTab: React.FC = () => {
           <View style={styles.modalContent}>
             <View style={styles.searchContainer}>
               <TextInput
-                style={styles.searchInput}
+                style={styles.switchBookSearchInput}
                 placeholder="Search for a book..."
                 value={bookSearchQuery}
                 onChangeText={(text) => {
@@ -5249,8 +6085,8 @@ export const ScansTab: React.FC = () => {
                       {result.author && (
                         <Text style={styles.bookSearchResultAuthor}>{result.author}</Text>
                       )}
-                      {result.publishedDate && (
-                        <Text style={styles.bookSearchResultDate}>{result.publishedDate}</Text>
+                      {'publishedDate' in result && result.publishedDate && (
+                        <Text style={styles.bookSearchResultDate}>{String(result.publishedDate)}</Text>
                       )}
                     </View>
                   </TouchableOpacity>
@@ -5490,9 +6326,15 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     borderColor: '#e5e7eb', // Subtle gray border
   },
   pendingSectionWithScanning: {
-    marginBottom: 0, // Remove bottom margin when scanning notification is visible
-    borderBottomLeftRadius: 0, // Connect to scanning bar
-    borderBottomRightRadius: 0, // Connect to scanning bar
+    marginBottom: 0, // NO margin - connect directly to toolbar
+    paddingBottom: 0, // NO padding - connect directly to toolbar
+    borderBottomWidth: 0, // NO border - seamless connection
+    borderBottomLeftRadius: 0, // Connect seamlessly to sticky toolbar
+    borderBottomRightRadius: 0, // Connect seamlessly to sticky toolbar
+    // Remove any shadow that might create visual separation
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    elevation: 0,
   },
   recentSection: {
     backgroundColor: '#ffffff', // White card
@@ -5998,7 +6840,7 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3,
   },
-  modalDeleteButton: {
+  switchCoverModalDeleteButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -6317,6 +7159,13 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 1000,
+    // CRITICAL: Position is set via inline style `bottom: stickyBottomPosition`
+    // This ensures it's EXACTLY where calculated (no margins/padding affecting position)
+    marginTop: 0,
+    marginBottom: 0,
+    paddingTop: 14, // Internal padding for content
+    paddingBottom: 14, // Internal padding for content
+    // Border and shadow only when NOT scanning (normal state)
     borderTopWidth: 1,
     borderTopColor: '#e2e8f0',
     shadowColor: '#000',
@@ -6324,6 +7173,27 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 8,
+  },
+  stickyToolbarWithScanning: {
+    // When scanning bar is visible: remove ALL visual separators to connect seamlessly
+    borderTopWidth: 0, // NO top border - connect directly to pending section
+    borderBottomWidth: 0, // NO bottom border - connect directly to scanning notification
+    borderTopLeftRadius: 0, // Connect seamlessly to pending section
+    borderTopRightRadius: 0, // Connect seamlessly to pending section
+    marginTop: 0, // NO gap above
+    marginBottom: 0, // NO gap below
+    paddingTop: 14, // Keep internal padding for content
+    paddingBottom: 14, // Keep internal padding for content
+    // Remove ALL shadows that might create visual gap
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+  // When NOT scanning, ensure toolbar is positioned correctly above nav bar
+  stickyToolbarWithoutScanning: {
+    // No special styles needed - default stickyToolbarBottom handles it
+    // The bottom position is set dynamically via inline style
   },
   stickyToolbarHeader: {
     flexDirection: 'row',
@@ -6782,7 +7652,7 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
   },
-  searchInput: {
+  switchBookSearchInput: {
     flex: 1,
     height: 44,
     backgroundColor: '#f8f9fa',

@@ -13,7 +13,8 @@ import {
   Alert,
   Keyboard,
   InteractionManager,
-  AppState
+  AppState,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,7 +22,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import Constants from 'expo-constants';
 import { Book, Photo, UserProfile, Folder } from '../types/BookTypes';
 import { useAuth, isGuestUser } from '../auth/SimpleAuthContext';
 import SettingsModal from '../components/SettingsModal';
@@ -29,14 +29,9 @@ import BookDetailModal from '../components/BookDetailModal';
 import { LoginScreen } from '../auth/AuthScreens';
 import { LibraryView } from '../screens/LibraryView';
 import { loadBooksFromSupabase, deletePhotoFromSupabase, syncCompletedScanJobs } from '../services/supabaseSync';
-
-// Helper to read env vars
-const getEnvVar = (key: string): string => {
-  return Constants.expoConfig?.extra?.[key] || 
-         Constants.manifest?.extra?.[key] || 
-         process.env[key] || 
-         '';
-};
+import { dedupeBooks } from '../lib/dedupeBooks';
+import { getEnvVar } from '../lib/getEnvVar';
+import { SUPABASE_INSTANCE_ID } from '../lib/supabase';
 
 export const MyLibraryTab: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -54,7 +49,14 @@ export const MyLibraryTab: React.FC = () => {
   
   const styles = useMemo(() => getStyles(screenWidth), [screenWidth]);
   
-  const { user } = useAuth();
+  const { user, session, signOut, authReady, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    if (__DEV__) {
+      console.log('[SUPABASE_INSTANCE][MyLibraryTab]', SUPABASE_INSTANCE_ID, 'authReady', authReady, 'hasSession', !!session);
+    }
+  }, [authReady, session]);
+
   const navigation = useNavigation();
   const [books, setBooks] = useState<Book[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -87,11 +89,13 @@ export const MyLibraryTab: React.FC = () => {
   const [showUnreadBooks, setShowUnreadBooks] = useState(false);
   const [isAutoSorting, setIsAutoSorting] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(false);
+  const [sessionMissingForLibrary, setSessionMissingForLibrary] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const booksSectionRef = useRef<View>(null);
   const searchBarRef = useRef<View>(null);
   const [booksSectionY, setBooksSectionY] = useState(0);
   const searchBarScrollPosition = useRef<number | null>(null);
+  const previousUserIdRef = useRef<string | null>(null);
 
   const filteredBooks = useMemo(() => {
     const q = librarySearch.trim().toLowerCase();
@@ -114,6 +118,22 @@ export const MyLibraryTab: React.FC = () => {
   }, [books, librarySearch]);
 
   const displayedBooks = librarySearch.trim() ? filteredBooks : books;
+
+  // Data source diagnostic: why "Read 0/0" — separate data vs shared-but-empty vs filtered to zero
+  useEffect(() => {
+    const readFilterOn = showReadBooks || showUnreadBooks;
+    const obj = {
+      authReady,
+      hasSession: !!session,
+      userId: session?.user?.id ?? null,
+      approvedCount: books?.length ?? 0,
+      allCount: books?.length ?? 0,
+      displayedCount: displayedBooks?.length ?? 0,
+      readFilterOn,
+      searchActive: !!librarySearch?.trim(),
+    };
+    console.log('[MYLIB_SOURCE]', JSON.stringify(obj, null, 2));
+  }, [authReady, session, books?.length, displayedBooks?.length, showReadBooks, showUnreadBooks, librarySearch]);
 
   // Calculate top author (author with most books)
   const topAuthor = useMemo(() => {
@@ -171,26 +191,29 @@ export const MyLibraryTab: React.FC = () => {
     return byLast;
   }, [displayedBooks]);
 
-  // Load data immediately when component mounts or user changes
+  // Load data only after auth is stable (authReady). Never clear data just because session is temporarily null.
+  // Only clear when authReady and we know: signed out (no user / guest) or different user (user B must not see user A's data).
   useEffect(() => {
-    // Only load data if user is authenticated (not guest, not null)
-    if (user && !isGuestUser(user)) {
-      // Load data immediately on mount/user change
-      console.log('🔄 User changed in MyLibraryTab, loading data immediately...');
-      // Add a small delay to ensure component is fully mounted
-      const timeoutId = setTimeout(() => {
-        loadUserData().catch(error => {
-          console.error('❌ Error loading user data in MyLibraryTab:', error);
-        });
-      }, 100);
-      return () => clearTimeout(timeoutId);
-    } else {
-      // Clear data when user signs out or is a guest
-      console.log('🔄 User signed out or is guest, clearing data...');
+    if (!authReady) return; // Auth not stable — do nothing, don't clear
+    if (!user || isGuestUser(user)) {
       setBooks([]);
       setUserProfile(null);
+      previousUserIdRef.current = null;
+      return;
     }
-  }, [user]);
+    if (previousUserIdRef.current !== user.uid) {
+      setBooks([]);
+      setUserProfile(null);
+      previousUserIdRef.current = user.uid;
+    }
+    console.log('🔄 User changed in MyLibraryTab, loading data immediately...');
+    const timeoutId = setTimeout(() => {
+      loadUserData().catch(error => {
+        console.error('❌ Error loading user data in MyLibraryTab:', error);
+      });
+    }, 100);
+    return () => clearTimeout(timeoutId);
+  }, [user, authReady]);
 
   // Maintain scroll position when keyboard appears/disappears during search
   useEffect(() => {
@@ -267,11 +290,11 @@ export const MyLibraryTab: React.FC = () => {
   // Reload data when tab is focused
   useFocusEffect(
     React.useCallback(() => {
-      // Only load data if user is authenticated (not guest, not null)
-      if (user && !isGuestUser(user)) {
+      // Only load data if user is authenticated and auth init has finished
+      if (user && !isGuestUser(user) && authReady) {
         loadUserData();
       }
-    }, [user, navigation])
+    }, [user, authReady, navigation])
   );
 
   // Sync on Open: Check for completed scan_jobs when app opens or comes to foreground
@@ -339,39 +362,69 @@ export const MyLibraryTab: React.FC = () => {
   }, [user]);
 
   const loadUserData = async () => {
-    // Don't load data for null users or guest users
-    if (!user || isGuestUser(user)) {
-      console.log('⚠️ loadUserData called but user is null or guest');
+    if (!authReady) {
+      console.log('⏳ Auth not ready yet, delaying data load');
       return;
     }
-    
+    // Guest mode ONLY when authReady === true AND session === null; never earlier.
+    if (authReady && session === null) {
+      console.log('[GUEST_GATE]', JSON.stringify({
+        authReady,
+        hasSession: false,
+        reason: 'no_session_guest_ok',
+      }, null, 2));
+      console.log('📱 Guest user (authReady=true, session=null), using local data only');
+      return;
+    }
+    if (!user) return;
+
     setIsLoadingData(true);
-    
+    setSessionMissingForLibrary(false);
+
     try {
+      const userApprovedKeyForLog = `approved_books_${user.uid}`;
+      console.log('[MYLIB_SOURCE]', JSON.stringify({
+        source: 'loadUserData',
+        stateFrom: 'useState(books) in MyLibraryTab',
+        dataFlow: `AsyncStorage(${userApprovedKeyForLog}) → loadBooksFromSupabase(${user.uid}) → merge → setBooks`,
+        whenUpdates: 'on user change, tab focus, syncCompletedScanJobs',
+      }, null, 2));
       console.log('📥 Loading user data...');
-      
-      // Load from AsyncStorage FIRST (fast, shows data immediately)
+
+      // Same singleton as AuthContext — no second client
+      const { supabase } = await import('../lib/supabase');
+      let sess: { session: { access_token?: string } | null } | null = supabase ? (await supabase.auth.getSession()).data : null;
+      // Right after sign-in, session can be briefly unavailable; retry a few times before showing "sign in again"
+      for (let attempt = 0; attempt < 3 && !sess?.session?.access_token; attempt++) {
+        await new Promise(r => setTimeout(r, 600));
+        sess = supabase ? (await supabase.auth.getSession()).data : null;
+      }
+      if (!sess?.session?.access_token) {
+        setSessionMissingForLibrary(true);
+        setIsLoadingData(false);
+        return;
+      }
+
       const userApprovedKey = `approved_books_${user.uid}`;
       const userPhotosKey = `photos_${user.uid}`;
       const userFoldersKey = `folders_${user.uid}`;
-      
+
       const approvedData = await AsyncStorage.getItem(userApprovedKey);
       const photosData = await AsyncStorage.getItem(userPhotosKey);
       const foldersData = await AsyncStorage.getItem(userFoldersKey);
-      
+
       const localBooks: Book[] = approvedData ? JSON.parse(approvedData) : [];
       const loadedPhotos: Photo[] = photosData ? JSON.parse(photosData) : [];
       const loadedFolders: Folder[] = foldersData ? JSON.parse(foldersData) : [];
-      
-      // Show local data immediately (fast UI update)
+
       if (localBooks.length > 0) {
         console.log(`📚 Loading ${localBooks.length} books from AsyncStorage (showing immediately)`);
-        setBooks(localBooks);
+        setBooks(dedupeBooks(localBooks));
         setPhotos(loadedPhotos);
         setFolders(loadedFolders);
       }
-      
-      // Then load from Supabase in parallel (slower, but has latest data)
+
+      // Then load from Supabase (source of truth)
       let supabaseBooks = null;
       let supabaseError = null;
       try {
@@ -574,8 +627,17 @@ export const MyLibraryTab: React.FC = () => {
       
       // Always update with merged data (even if we already showed local books)
       // This ensures Supabase data is merged in when it arrives
+      console.log('[MYLIB_STATE_UPDATE]', JSON.stringify({
+        source: 'merge',
+        localCount: localBooks.length,
+        supabaseApprovedCount: supabaseBooks?.approved?.length ?? 0,
+        mergedCount: finalBooks.length,
+        finalCount: finalBooks.length,
+      }, null, 2));
       console.log(`📚 Setting final merged books: ${finalBooks.length} total`);
-      setBooks(finalBooks);
+      // Use canonical merge result only — do NOT merge with prev or we get duplicate books
+      // when local and Supabase use different ids (e.g. title_author_0 vs uuid), inflating the count
+      setBooks(dedupeBooks(finalBooks));
       setPhotos(loadedPhotos);
       setFolders(loadedFolders);
       
@@ -659,18 +721,12 @@ export const MyLibraryTab: React.FC = () => {
         });
       }
       
-      console.log(`✅ Successfully loaded ${mergedBooks.length} books, ${scansWithApprovedBooks.length} photos`);
+      console.log(`✅ Successfully loaded ${mergedBooks.length} books, ${scansWithApprovedBooks} photos`);
       setIsLoadingData(false);
     } catch (error) {
       console.error('Error loading user data:', error);
       setIsLoadingData(false);
-      // Even on error, try to show local data if available
-      if (localBooks && localBooks.length > 0) {
-        console.log('⚠️ Showing local books despite error');
-        setBooks(localBooks);
-        setPhotos(loadedPhotos);
-        setFolders(loadedFolders);
-      }
+      // Do not show cached/local data on error – avoid partial/stale library
     }
   };
 
@@ -808,7 +864,7 @@ export const MyLibraryTab: React.FC = () => {
             .then(success => {
               if (success) {
                 savedCount++;
-                console.log(`✅ Saved cover to Supabase: "${updatedBook.title}"`);
+                // Cover saved (no log to reduce noise)
               } else {
                 console.warn(`⚠️ Failed to save cover to Supabase: "${updatedBook.title}"`);
               }
@@ -1113,6 +1169,7 @@ export const MyLibraryTab: React.FC = () => {
         name: newFolderName.trim(),
         bookIds: [],
         photoIds: [],
+        createdAt: Date.now(),
       };
       
       const updatedFolders = [...folders, newFolder];
@@ -1622,18 +1679,53 @@ export const MyLibraryTab: React.FC = () => {
     return positions;
   }, [collageBooks, collageLayout, screenWidth, insets.top]);
 
-  // If user is signed out or is a guest, show login screen directly (not as a modal)
-  if (!user || isGuestUser(user)) {
+  // Library requires sign-in: show login when no session (guest). Other tabs allow guest (e.g. one free scan on Scans).
+  if (!authReady || authLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#2d3748" />
+        <Text style={{ marginTop: 12, color: '#6b7280' }}>Loading…</Text>
+      </View>
+    );
+  }
+  if (!session) {
     return (
       <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
         <LoginScreen onAuthSuccess={() => {
-          // After successful login, navigate back to Scans tab
-          // This will trigger checkAndCompletePendingActions in ScansTab
-          // to complete any pending approval actions
-          setTimeout(() => {
-            navigation.navigate('Scans' as never);
-          }, 100);
+          setTimeout(() => { navigation.navigate('Scans' as never); }, 100);
         }} />
+      </View>
+    );
+  }
+  if (user && isGuestUser(user)) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
+        <LoginScreen onAuthSuccess={() => {
+          setTimeout(() => { navigation.navigate('Scans' as never); }, 100);
+        }} />
+      </View>
+    );
+  }
+
+  if (sessionMissingForLibrary) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        <Text style={{ fontSize: 18, color: '#374151', textAlign: 'center', marginBottom: 16 }}>
+          Please sign in again
+        </Text>
+        <Text style={{ fontSize: 14, color: '#6b7280', textAlign: 'center', marginBottom: 24 }}>
+          Your session may have expired. Sign out and sign back in to load your library.
+        </Text>
+        <TouchableOpacity
+          onPress={async () => {
+            setSessionMissingForLibrary(false);
+            await signOut();
+            // After sign out, app will show auth screen so user can sign in again
+          }}
+          style={{ backgroundColor: '#2d3748', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }}
+        >
+          <Text style={{ color: '#fff', fontSize: 16 }}>Sign out and sign in again</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -2050,7 +2142,7 @@ export const MyLibraryTab: React.FC = () => {
                 ? updatedBook
                 : b
             );
-            setBooks(updatedBooks);
+            setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
             setSelectedBook(updatedBook);
             await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
             
@@ -2314,9 +2406,7 @@ export const MyLibraryTab: React.FC = () => {
                         setBookSearchLoading(true);
                         // Use proxy API route to get API key and rate limiting
                         // Canonical URL: always use www.bookshelfscan.app
-                        const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                                       Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                                       'https://www.bookshelfscan.app';
+                        const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
                         const response = await fetch(`${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(q)}&maxResults=8`);
                         const data = await response.json();
                         setBookSearchResults(data.items || []);
@@ -2380,14 +2470,14 @@ export const MyLibraryTab: React.FC = () => {
                               setPhotos(updatedPhotos);
 
                               const newApproved = [...books, newBook];
-                              setBooks(newApproved);
+                              setBooks(prev => dedupeBooks([...prev, ...newApproved]));
 
                               const userPhotosKey = `photos_${user.uid}`;
                               const userApprovedKey = `approved_books_${user.uid}`;
                               await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
                               await AsyncStorage.setItem(userApprovedKey, JSON.stringify(newApproved));
 
-                              setEditingPhoto({ ...editingPhoto, books: [...editingPhoto.books, { ...newBook, addedViaSearch: true }] });
+                              setEditingPhoto({ ...editingPhoto, books: [...editingPhoto.books, newBook] });
                               setBookSearchQuery('');
                               setBookSearchResults([]);
                             } catch (err) {
@@ -2797,7 +2887,7 @@ export const MyLibraryTab: React.FC = () => {
                     ? updatedBook
                     : b
                 );
-                setBooks(updatedBooks);
+                setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
                 setSelectedBook(updatedBook);
                 await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
                 
@@ -3267,21 +3357,6 @@ const getStyles = (screenWidth: number) => StyleSheet.create({
   removeFromFolderButtonText: {
     color: '#ffffff',
     fontSize: 12,
-    fontWeight: '600',
-  },
-  cancelSelectButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: 'transparent',
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#718096',
-  },
-  cancelSelectButtonText: {
-    color: '#718096',
-    fontSize: 14,
     fontWeight: '600',
   },
   // Bottom Delete Bar

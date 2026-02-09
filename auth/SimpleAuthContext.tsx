@@ -1,19 +1,21 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+/**
+ * Auth: email/password only. No Apple/Google OAuth or ID tokens.
+ *
+ * RULE: Auth state comes only from Supabase (email/password). We do not use or persist
+ * idToken, identityToken, provider_token, or any Apple/Google SDK token as session.
+ *
+ * Session is used as-is; we do not clear or reject based on JWT alg.
+ */
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
-import { supabase } from '../lib/supabaseClient';
+import type { Session } from '@supabase/supabase-js';
+import { supabase, SUPABASE_INSTANCE_ID, SUPABASE_ENV } from '../lib/supabase';
+import { getEnvVar } from '../lib/getEnvVar';
 import { Book, Photo, Folder } from '../types/BookTypes';
 import * as BiometricAuth from '../services/biometricAuth';
 import { saveBookToSupabase, savePhotoToSupabase } from '../services/supabaseSync';
-
-// Helper to read env vars
-const getEnvVar = (key: string): string => {
-  return Constants.expoConfig?.extra?.[key] || 
-         Constants.manifest?.extra?.[key] || 
-         process.env[key] || 
-         '';
-};
+import { PENDING_APPROVE_ACTION_KEY, ACTIVE_USER_ID_KEY } from '../lib/cacheKeys';
 
 interface User {
   uid: string;
@@ -34,7 +36,11 @@ export const isGuestUser = (user: User | null): boolean => {
 
 interface AuthContextType {
   user: User | null;
+  /** Supabase session — use this for gating (not user) so Library doesn't redirect before user is derived. */
+  session: Session | null;
   loading: boolean;
+  /** True only after init has finished (getSession retries done). Don't treat as guest until this is true. */
+  authReady: boolean;
   signIn: (email: string, password: string) => Promise<boolean>;
   signInWithDemoAccount: () => Promise<boolean>;
   signUp: (email: string, password: string, username: string, displayName: string) => Promise<boolean>;
@@ -47,8 +53,11 @@ interface AuthContextType {
   refreshAuthState: () => Promise<void>;
   biometricCapabilities: BiometricAuth.BiometricCapabilities | null;
   isBiometricEnabled: () => Promise<boolean>;
+  signInWithBiometric: () => Promise<boolean>;
   enableBiometric: (email: string, password: string) => Promise<void>;
   disableBiometric: () => Promise<void>;
+  /** Dev only: signOut(global) + clear Supabase auth storage keys. No-op in prod. */
+  hardResetAuthStorageDev: () => Promise<void>;
   demoCredentials: {
     username: string;
     email: string;
@@ -70,7 +79,50 @@ interface AuthProviderProps {
   children: React.ReactNode;
 }
 
+// Supabase auth storage key pattern: sb-<project-ref>-auth-token (project ref from Supabase URL).
+// We filter by sb- / supabase / auth-token so we clear the right keys regardless of ref.
+async function clearSupabaseStorage(): Promise<void> {
+  console.log('[SESSION_STORAGE_CLEAR] clearSupabaseStorage()', new Error().stack);
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const supabaseKeys = allKeys.filter(key =>
+      key.includes('supabase') || key.includes('sb-') || key.includes('auth-token')
+    );
+    // Step C: print the keys we're clearing so you can verify / add to hard reset if needed
+    if (supabaseKeys.length > 0) {
+      console.log('[SESSION_STORAGE_CLEAR] keys being removed:', supabaseKeys);
+      await AsyncStorage.multiRemove(supabaseKeys);
+    } else {
+      console.log('[SESSION_STORAGE_CLEAR] no Supabase keys found (already clear or different key names)');
+    }
+  } catch (e) {
+    console.warn('[SESSION_STORAGE_CLEAR] error:', e);
+  }
+}
+
+/** Dev only: signOut(global) + nuke everything auth-related in AsyncStorage. Then fully kill the app and relaunch. */
+export async function devResetAuth(supabaseClient: { auth: { signOut: (opts?: { scope?: string }) => Promise<{ error: unknown }> } }): Promise<void> {
+  try {
+    await supabaseClient.auth.signOut({ scope: 'global' });
+  } catch (e) {}
+
+  const keys = await AsyncStorage.getAllKeys();
+  const kill = keys.filter(k =>
+    k.includes('supabase') ||
+    k.includes('sb-') ||
+    k.includes('auth') ||
+    k.includes('apple') ||
+    k.includes('google') ||
+    k.includes('token')
+  );
+
+  await AsyncStorage.multiRemove(kill);
+  console.log('[DEV_RESET_AUTH] removed keys:', kill);
+}
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [biometricCapabilities, setBiometricCapabilities] = useState<BiometricAuth.BiometricCapabilities | null>(null);
@@ -89,7 +141,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     
     return () => clearTimeout(timer);
   }, []);
-  
+
+  // Definitive log: tells us if the UI is still flipping. Healthy: authReady false→true, then hasSession stable.
+  useEffect(() => {
+    if (__DEV__) {
+      console.log('[AUTH_SNAPSHOT]', { authReady, hasSession: !!session, userId: session?.user?.id ?? null });
+    }
+  }, [authReady, session?.user?.id]);
+
   const checkBiometricCapabilities = async () => {
     try {
       // Only check if we're on a native platform (not web)
@@ -255,188 +314,99 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   };
 
+  // authReady: false on first render. getSession() once on mount → set session → set authReady true → subscribe to onAuthStateChange.
+  const authUnsubRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
-    // Load any persisted session on mount and subscribe to auth changes
-    const init = async () => {
-      // Set a timeout to prevent infinite loading
-      const timeoutId = setTimeout(() => {
-        console.warn('Auth initialization timeout, loading from storage');
-        loadUserFromStorage();
-        setLoading(false);
-      }, 5000); // 5 second timeout
+    if (!supabase) {
+      setSession(null);
+      setAuthReady(true);
+      setLoading(false);
+      return;
+    }
+    if (__DEV__) console.log('[SUPABASE_INSTANCE][SimpleAuthContext]', SUPABASE_INSTANCE_ID);
 
-      try {
-        if (!supabase) {
-          clearTimeout(timeoutId);
-          await loadUserFromStorage();
-          setLoading(false);
-          return;
-        }
-        
-        try {
-          // Add timeout to getSession call - longer timeout for Expo Go (network can be slow)
-          const isExpoGo = Constants.appOwnership === 'expo';
-          const timeoutDuration = isExpoGo ? 10000 : 3000; // 10 seconds for Expo Go, 3 for builds
-          
-          const sessionPromise = supabase.auth.getSession();
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Session timeout')), timeoutDuration)
-          );
-          
-          const { data, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
-          
-          clearTimeout(timeoutId);
-          
-          // If there's an error with refresh token, clear the session and load from storage
-          if (error) {
-            console.warn('Session error (likely invalid refresh token):', error.message);
-            // Clear invalid session
-            await supabase.auth.signOut().catch(() => {});
-            // Clear any stored Supabase session data - find and remove all Supabase keys
-            try {
-              const allKeys = await AsyncStorage.getAllKeys();
-              const supabaseKeys = allKeys.filter(key => 
-                key.includes('supabase') || 
-                key.includes('sb-') || 
-                key.includes('auth-token')
-              );
-              if (supabaseKeys.length > 0) {
-                await AsyncStorage.multiRemove(supabaseKeys);
-              }
-            } catch (clearError) {
-              // Ignore errors when clearing
-            }
-            await loadUserFromStorage();
-            setLoading(false);
-            return;
-          }
-          
-          const sessionUser = data?.session?.user;
-          if (sessionUser) {
-            // Add timeout to fetchUserProfile (increased to 3 seconds for slower networks)
-            try {
-              const profilePromise = fetchUserProfile(sessionUser.id);
-              const profileTimeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Profile fetch timeout')), 3000)
-              );
-              const profile = await Promise.race([profilePromise, profileTimeoutPromise]) as any;
-              
-              const userData: User = {
-                uid: sessionUser.id,
-                email: sessionUser.email || '',
-                username: profile?.username || '',
-                displayName: profile?.displayName,
-                photoURL: profile?.photoURL,
-              };
-              setUser(userData);
-              await saveUserToStorage(userData);
-            } catch (profileError) {
-              console.warn('Profile fetch error, using session data:', profileError);
-              // Use session data even if profile fetch fails
-              const userData: User = {
-                uid: sessionUser.id,
-                email: sessionUser.email || '',
-                username: sessionUser.email?.split('@')[0] || '',
-                displayName: undefined,
-                photoURL: undefined,
-              };
-              setUser(userData);
-              await saveUserToStorage(userData);
-            }
-          } else {
-            await loadUserFromStorage();
-          }
-        } catch (sessionError: any) {
-          clearTimeout(timeoutId);
-          console.warn('Session loading error:', sessionError?.message || sessionError);
-          // If it's a timeout or network error, just load from storage
-          await loadUserFromStorage();
-        }
-      } catch (error: any) {
-        clearTimeout(timeoutId);
-        // Catch any errors during session loading
-        console.warn('Error loading session:', error?.message || error);
-        // Clear potentially invalid session
-        if (supabase) {
-          await supabase.auth.signOut().catch(() => {});
-        }
-        await loadUserFromStorage();
-      } finally {
-        clearTimeout(timeoutId);
-        setLoading(false);
-      }
-    };
-    init();
+    (async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) console.log('[AUTH] getSession error', error);
 
-    if (!supabase) return;
-    
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
-      try {
-        // Handle token refresh errors
-        if (event === 'TOKEN_REFRESHED' && !session) {
-          console.warn('Token refresh failed, signing out');
-          setUser(null);
-          await AsyncStorage.removeItem('user');
-          return;
-        }
-        
-        // Handle SIGNED_OUT event (which can happen on token refresh errors)
-        if (event === 'SIGNED_OUT') {
-          setUser(null);
-          await AsyncStorage.removeItem('user');
-          return;
-        }
-        
-        const sUser = session?.user;
-        if (sUser) {
-          try {
-            const profile = await fetchUserProfile(sUser.id);
-            const userData: User = {
-              uid: sUser.id,
-              email: sUser.email || '',
-              username: profile.username,
-              displayName: profile.displayName,
-              photoURL: profile.photoURL,
-            };
-            setUser(userData);
-            await saveUserToStorage(userData);
-            // Transfer guest data if user just signed in
-            await transferGuestDataToUser(sUser.id);
-          } catch (error) {
-            console.error('Error fetching user profile:', error);
-            // If profile fetch fails, still set basic user data
-            const userData: User = {
-              uid: sUser.id,
-              email: sUser.email || '',
-              username: sUser.email?.split('@')[0] || 'user',
-            };
-            setUser(userData);
-            await saveUserToStorage(userData);
-            // Transfer guest data if user just signed in
-            await transferGuestDataToUser(sUser.id);
-          }
-        } else {
-          setUser(null);
-          await AsyncStorage.removeItem('user');
-        }
-      } catch (error: any) {
-        // Catch any errors in auth state change handler (like refresh token errors)
-        console.warn('Error in auth state change:', error?.message || error);
-        // If it's a token error, clear the session
-        if (error?.message?.includes('refresh token') || error?.message?.includes('Refresh Token')) {
-          setUser(null);
-          await AsyncStorage.removeItem('user');
-          if (supabase) {
-            await supabase.auth.signOut().catch(() => {});
-          }
-        }
+      let sess: Session | null = data?.session ?? null;
+      if (error) {
+        sess = null;
       }
-    });
+
+      setSession(sess);
+      setAuthReady(true);
+      setLoading(false);
+
+      const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+        if (event === 'INITIAL_SESSION' && newSession == null) return;
+        setSession(newSession ?? null);
+      });
+      authUnsubRef.current = () => sub.subscription.unsubscribe();
+    })();
 
     return () => {
-      sub?.subscription?.unsubscribe();
+      authUnsubRef.current?.();
+      authUnsubRef.current = null;
     };
   }, []);
+
+  // Derive user from session only when authReady. Guest ONLY when authReady === true AND session === null; never earlier.
+  useEffect(() => {
+    if (!authReady) {
+      setUser(null);
+      return;
+    }
+    if (session?.user) {
+      const sessionUser = session.user;
+      fetchUserProfile(sessionUser.id)
+        .then(profile => {
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: profile?.username || '',
+            displayName: profile?.displayName,
+            photoURL: profile?.photoURL,
+          };
+          setUser(userData);
+          return saveUserToStorage(userData).then(() => transferGuestDataToUser(sessionUser.id));
+        })
+        .catch(() => {
+          const userData: User = {
+            uid: sessionUser.id,
+            email: sessionUser.email || '',
+            username: sessionUser.email?.split('@')[0] || '',
+            displayName: undefined,
+            photoURL: undefined,
+          };
+          setUser(userData);
+          return saveUserToStorage(userData).then(() => transferGuestDataToUser(sessionUser.id));
+        });
+    } else if (session === null) {
+      // Guest mode ONLY when authReady and we know there is no session (not during boot/transition).
+      AsyncStorage.removeItem('user');
+      setUser({
+        uid: GUEST_USER_ID,
+        email: '',
+        username: 'guest',
+        displayName: 'Guest',
+        isGuest: true,
+      });
+    } else {
+      // session undefined or not yet resolved — do not set guest; leave user null until resolved
+      setUser(null);
+    }
+  }, [session, authReady]);
+
+  // Keep active_user_id in sync so cache keys always match current user; clear when no user.
+  useEffect(() => {
+    if (user?.uid) {
+      AsyncStorage.setItem(ACTIVE_USER_ID_KEY, user.uid).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(ACTIVE_USER_ID_KEY).catch(() => {});
+    }
+  }, [user?.uid]);
 
   const loadUserFromStorage = async () => {
     try {
@@ -635,10 +605,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setLoading(true);
       
       if (!supabase) {
-        Alert.alert('Sign In Error', 'Supabase not configured. Please add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your .env file.');
+        Alert.alert('Sign In Error', 'Supabase not configured. In .env set dev vars (EXPO_PUBLIC_SUPABASE_URL_DEV, _ANON_KEY_DEV) or prod (EXPO_PUBLIC_SUPABASE_URL, _ANON_KEY). app.config chooses by env.');
         setLoading(false);
         return false;
       }
+
+      // Dev sign-in diagnostic: which Supabase and email vs username
+      const { SUPABASE_REF } = await import('../lib/supabase');
+      const isUsername = !emailOrUsername.trim().includes('@');
+      console.log('[AUTH DEV] signIn → Supabase ref:', SUPABASE_REF, 'input:', isUsername ? 'username' : 'email');
       
       // Allow username sign-in by resolving to email from Supabase
       let email = emailOrUsername.trim();
@@ -706,8 +681,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 console.log('API URL source check:', {
                   envVar: getEnvVar('EXPO_PUBLIC_API_BASE_URL'),
                   final: apiUrl,
-                  isProduction: process.env.EAS_ENV === 'production' || Constants.expoConfig?.extra?.EAS_ENV === 'production',
-                  supabaseUrl: supabase?.supabaseUrl?.substring(0, 30) + '...' || 'not configured'
+                  isProduction: process.env.EAS_ENV === 'production' || getEnvVar('EAS_ENV') === 'production',
+                  supabaseConfigured: !!supabase
                 });
                 
                 // Add timeout to API call to prevent infinite loading (reduced to 5 seconds)
@@ -833,32 +808,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
       }
       
-      // CRITICAL: Sign out any existing session first to prevent account switching issues
-      // This ensures we're signing in as the correct user, not reusing an old session
-      try {
-        await supabase.auth.signOut();
-        // Longer delay to ensure sign out completes and session is fully cleared
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Also clear any Supabase session data from AsyncStorage
-        try {
-          const allKeys = await AsyncStorage.getAllKeys();
-          const supabaseKeys = allKeys.filter(key => 
-            key.includes('supabase') || 
-            key.includes('sb-') || 
-            key.includes('auth-token')
-          );
-          if (supabaseKeys.length > 0) {
-            await AsyncStorage.multiRemove(supabaseKeys);
-          }
-        } catch (clearError) {
-          console.warn('Error clearing Supabase keys:', clearError);
-        }
-      } catch (signOutError) {
-        // Ignore sign out errors - might not have a session
-        console.log('No existing session to sign out:', signOutError);
-      }
-      
+      // Do not call signOut() before sign-in — it can trigger SIGNED_OUT during/after sign-in and cause a bounce.
+      // signInWithPassword will replace any existing session.
+
       // Sign in with timeout protection
       try {
         const signInPromise = supabase.auth.signInWithPassword({ email, password: cleanedPassword });
@@ -867,14 +819,70 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         );
         const signInResult = await Promise.race([signInPromise, signInTimeoutPromise]) as any;
         const { data, error } = signInResult;
-        
+        const res = signInResult;
+
+        console.log('[SIGNIN_RAW]', JSON.stringify({
+          hasDataSession: !!res.data?.session,
+          dataUserId: res.data?.user?.id ?? null,
+          sessionUserId: res.data?.session?.user?.id ?? null,
+          provider: res.data?.user?.app_metadata?.provider ?? null,
+          accessTokenHeader: res.data?.session?.access_token?.slice(0, 40) ?? null,
+          refreshTokenPresent: !!res.data?.session?.refresh_token,
+          error: res.error ? { message: res.error.message, status: (res.error as any).status } : null,
+        }, null, 2));
+
+        const token = res.data?.session?.access_token;
+        let payload: { iss?: string; aud?: string; sub?: string; exp?: number } | null = null;
+        if (token) {
+          try {
+            const b64 = token.split('.')[1]?.replace(/-/g, '+').replace(/_/g, '/') ?? '';
+            const decoded = (typeof globalThis !== 'undefined' && globalThis.atob ? globalThis.atob(b64) : '');
+            if (decoded) payload = JSON.parse(decoded);
+          } catch (_) {}
+        }
+        console.log('[JWT_PAYLOAD_DEBUG]', JSON.stringify({
+          iss: payload?.iss,
+          aud: payload?.aud,
+          sub: payload?.sub,
+          exp: payload?.exp,
+        }, null, 2));
+        // Supabase: iss like https://<ref>.supabase.co/auth/v1. Apple: iss would be https://appleid.apple.com
+
+        const { data: sessionAfterWrite } = await supabase.auth.getSession();
+        console.log('[SESSION_AFTER_WRITE]', JSON.stringify({
+          header: sessionAfterWrite.session?.access_token?.slice(0, 40),
+          hasRefresh: !!sessionAfterWrite.session?.refresh_token,
+        }, null, 2));
+
+        console.log('[AUTH_METHOD]', 'signInWithPassword');
+
+        console.log('[AUTH] signIn error=', error?.message, 'code=', error?.code);
+        console.log('[AUTH] signIn session userId=', data?.session?.user?.id);
+        console.log('[AUTH] signIn tokenLen=', data?.session?.access_token?.length);
+        if (!data?.session) console.log('[AUTH] signIn data.session is null — sign-in did not complete');
+
         if (error || !data?.user) {
           const errorMessage = getSignInErrorMessage(error);
+          // Dev: log raw error so you can see exact Supabase response (e.g. email_not_confirmed)
+          if (error) {
+            console.log('[AUTH DEV] signIn failed — raw error:', { message: error.message, code: error.code, status: error.status });
+            if ((error.message || '').includes('Email not confirmed') || (error as any).code === 'email_not_confirmed') {
+              console.log('[AUTH DEV] Email not confirmed → In Supabase Dashboard (dev): Auth → Providers → Email, disable "Confirm email" OR Auth → Users → confirm the user.');
+            }
+          }
           Alert.alert('Sign In Error', errorMessage);
           setLoading(false);
           return false;
         }
-        
+
+        const { data: s } = await supabase.auth.getSession();
+        console.log('[POST_SIGNIN_SESSION]', JSON.stringify({
+          hasSession: !!s.session,
+          userId: s.session?.user?.id ?? null,
+          accessTokenAlg: s.session?.access_token?.split('.')?.[0] ?? null,
+          tokenLen: s.session?.access_token?.length ?? 0,
+        }, null, 2));
+
         const sUser = data.user;
         
         // Fetch profile with error handling and timeout protection
@@ -909,8 +917,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           const signedInUsername = userData.username.toLowerCase();
           if (signedInUsername !== requestedUsername) {
             console.error(`❌ Username mismatch! Requested: "${requestedUsername}", Signed in: "${signedInUsername}"`);
-            // Sign out immediately - wrong account!
-            await supabase.auth.signOut();
+            await AsyncStorage.removeItem('user');
+            setSession(null);
             Alert.alert(
               'Sign In Error', 
               `Username mismatch. You requested "${requestedUsername}" but signed in as "${signedInUsername}". Please try again.`
@@ -920,7 +928,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           }
           console.log(`✅ Verified username match: "${requestedUsername}" = "${signedInUsername}"`);
         }
-        
+
+        // Do not call setSession manually — Supabase persists the session when signInWithPassword succeeds.
+
+        // Update React state so Library (which gates on session) sees the session immediately.
+        setSession(data.session);
         setUser(userData);
         await saveUserToStorage(userData);
         
@@ -1060,7 +1072,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setLoading(true);
       
       if (!supabase) {
-        Alert.alert('Sign Up Error', 'Supabase not configured. Please add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your .env file.');
+        Alert.alert('Sign Up Error', 'Supabase not configured. In .env set dev vars (EXPO_PUBLIC_SUPABASE_URL_DEV, _ANON_KEY_DEV) or prod (EXPO_PUBLIC_SUPABASE_URL, _ANON_KEY). app.config chooses by env.');
         setLoading(false);
         return false;
       }
@@ -1290,6 +1302,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           username: username.toLowerCase(),
           displayName,
         };
+        // So Library (which gates on session) doesn't show sign-in again
+        if (data.session) setSession(data.session);
         setUser(userData);
         await saveUserToStorage(userData);
         
@@ -1360,15 +1374,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   };
 
   const signOut = async (): Promise<void> => {
+    console.log('[SIGNOUT_CALLED]', new Error().stack);
     try {
       const currentUser = user;
       
       // Clear user state first
       setUser(null);
       
-      // Remove user from AsyncStorage
+      // Remove user from AsyncStorage and active-user / pending-action so next user never sees previous user's data
       await AsyncStorage.removeItem('user');
-      
+      await AsyncStorage.removeItem(ACTIVE_USER_ID_KEY).catch(() => {});
+      await AsyncStorage.removeItem(PENDING_APPROVE_ACTION_KEY).catch(() => {});
+
       // Clear biometric credentials on sign out
       await BiometricAuth.clearStoredCredentials().catch(() => {
         // Ignore errors - biometric clearing is optional
@@ -1378,6 +1395,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // For demo accounts (DEMO_UID), skip Supabase signOut since they're not in Supabase auth
       if (supabase && currentUser && currentUser.uid !== DEMO_UID) {
         try {
+          console.log('[SIGNOUT_CALLED] supabase.auth.signOut()', new Error().stack);
           await supabase.auth.signOut();
         } catch (supabaseError) {
           console.warn('Supabase signOut error (continuing anyway):', supabaseError);
@@ -1385,20 +1403,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
       }
       
-      // Clear any Supabase session data from AsyncStorage
+      // Only clear Supabase storage on explicit sign-out (not on INITIAL_SESSION, SIGNED_IN, startup, etc.)
       try {
-        const allKeys = await AsyncStorage.getAllKeys();
-        const supabaseKeys = allKeys.filter(key => 
-          key.includes('supabase') || 
-          key.includes('sb-') || 
-          key.includes('auth-token')
-        );
-        if (supabaseKeys.length > 0) {
-          await AsyncStorage.multiRemove(supabaseKeys);
-        }
+        const reason = 'signOut';
+        const env = SUPABASE_ENV ?? (__DEV__ ? 'dev' : 'prod');
+        console.log('[SESSION_STORAGE_CLEAR_TRIGGER]', {
+          reason,
+          env,
+          authReady,
+          hasSession: !!session,
+          userId: session?.user?.id ?? null,
+        });
+        console.trace('[SESSION_STORAGE_CLEAR_STACK]');
+        await clearSupabaseStorage();
       } catch (clearError) {
         console.warn('Error clearing Supabase keys:', clearError);
-        // Continue anyway
       }
       
       console.log('✅ Successfully signed out');
@@ -1409,6 +1428,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       await AsyncStorage.removeItem('user').catch(() => {});
       Alert.alert('Sign Out Error', 'Failed to sign out completely. Please try again.');
     }
+  };
+
+  const hardResetAuthStorageDev = async (): Promise<void> => {
+    if (!__DEV__) return;
+    console.log('[HARD_RESET_AUTH] dev only — devResetAuth then clear local state');
+    await devResetAuth(supabase);
+    await AsyncStorage.removeItem('user').catch(() => {});
+    await AsyncStorage.removeItem(ACTIVE_USER_ID_KEY).catch(() => {});
+    await AsyncStorage.removeItem(PENDING_APPROVE_ACTION_KEY).catch(() => {});
+    setUser(null);
+    console.log('[HARD_RESET_AUTH] done — fully kill the app and relaunch, then sign in with username/email');
   };
 
   const resetPassword = async (email: string): Promise<boolean> => {
@@ -1448,30 +1478,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return false;
       }
 
-      // Verify the recovery token - this will set the session
+      // Verify the recovery token — Supabase sets the session from this. Never call setSession with raw token (could be provider token).
       const { data, error: verifyError } = await supabase.auth.verifyOtp({
         token_hash: recoveryToken,
         type: 'recovery',
       });
 
       if (verifyError || !data) {
-        // If verifyOtp doesn't work, try using the token as a recovery token directly
-        // Some Supabase versions use the token differently
-        console.log('verifyOtp failed, trying alternative method:', verifyError);
-        
-        // Alternative: Try to exchange the token for a session
-        // The token from the URL might need to be used with exchangeCodeForSession
-        // But for recovery tokens, we can try setting it directly
-        const { error: sessionError } = await supabase.auth.setSession({
-          access_token: recoveryToken,
-          refresh_token: '',
-        });
-        
-        if (sessionError) {
-          console.error('Error setting session for password update:', sessionError);
-          Alert.alert('Password Update Error', 'Invalid or expired reset link. Please request a new one.');
-          return false;
-        }
+        console.log('verifyOtp failed:', verifyError);
+        Alert.alert('Password Update Error', 'Invalid or expired reset link. Please request a new one.');
+        return false;
       }
 
       // Update the user's password
@@ -1696,7 +1712,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const value: AuthContextType = {
     user,
+    session,
     loading,
+    authReady,
     signIn,
     signInWithDemoAccount,
     signUp,
@@ -1709,8 +1727,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     refreshAuthState,
     biometricCapabilities,
     isBiometricEnabled: BiometricAuth.isBiometricEnabled,
+    signInWithBiometric,
     enableBiometric,
     disableBiometric,
+    hardResetAuthStorageDev,
     demoCredentials: {
       username: DEMO_USERNAME,
       email: DEMO_EMAIL,

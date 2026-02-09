@@ -16,7 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth, isGuestUser } from '../auth/SimpleAuthContext';
 import { LoginScreen } from '../auth/AuthScreens';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 import * as BiometricAuth from '../services/biometricAuth';
 import { UpgradeModal } from './UpgradeModal';
 import { checkSubscriptionStatus as checkIAPSubscriptionStatus } from '../services/appleIAPService';
@@ -46,6 +46,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
     isBiometricEnabled,
     enableBiometric,
     disableBiometric,
+    hardResetAuthStorageDev,
   } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [loading, setLoading] = useState(false);
@@ -699,6 +700,34 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
               <Text style={styles.signOutButtonText}>Sign Out</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Dev only: hard reset auth storage (signOut global + clear Supabase keys) */}
+          {__DEV__ && (
+            <View style={styles.section}>
+              <TouchableOpacity
+                style={[styles.signOutButton, { backgroundColor: '#856404' }]}
+                onPress={async () => {
+                  Alert.alert(
+                    'Hard reset auth (dev)',
+                    'Sign out everywhere and clear Supabase auth storage keys. Use when token/env is stuck.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Reset',
+                        style: 'destructive',
+                        onPress: async () => {
+                          await hardResetAuthStorageDev();
+                          onClose();
+                        },
+                      },
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.signOutButtonText}>Hard reset auth (dev)</Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* Delete Account Section - At the very bottom - Only for authenticated users */}
           {user && !isGuestUser(user) && (

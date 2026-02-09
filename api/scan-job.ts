@@ -15,56 +15,71 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   
   if (req.method === 'POST') {
     try {
-      const { imageDataURL, userId, jobId } = req.body || {};
+      const { imageDataURL, jobId } = req.body || {};
       if (!imageDataURL || typeof imageDataURL !== 'string') {
         return res.status(400).json({ error: 'imageDataURL required' });
       }
-      
+
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+      if (!token) {
+        return res.status(401).json({ ok: false, error: 'reauth_required' });
+      }
+
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      
+
       if (!supabaseUrl || !supabaseServiceKey) {
-        return res.status(500).json({ error: 'Database not configured' });
+        return res.status(500).json({ error: 'Server not configured' });
       }
-      
+
       const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
+      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: { autoRefreshToken: false, persistSession: false }
       });
-      
+
+      let userId: string;
+      const { data, error } = await supabaseAdmin.auth.getUser(token);
+      if (error || !data?.user) {
+        try {
+          const { verifySupabaseJwt } = await import('./verifySupabaseJwt');
+          const authResult = await verifySupabaseJwt(token, supabaseUrl);
+          userId = authResult.userId;
+        } catch (verifyErr: any) {
+          console.error('[AUTH] getUser and JWKS verify failed:', error?.message ?? error, verifyErr?.message ?? verifyErr);
+          return res.status(401).json({ ok: false, error: 'reauth_required' });
+        }
+      } else {
+        userId = data.user.id;
+      }
+      const supabase = supabaseAdmin;
+
       // Generate job ID if not provided
       const finalJobId = jobId || `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      
-      // Create job record in database
+
+      // Create job record in database (user_id from JWT only)
       const { error: insertError } = await supabase
         .from('scan_jobs')
         .insert({
           id: finalJobId,
-          user_id: userId || null,
+          user_id: userId,
           image_data: imageDataURL,
           status: 'pending',
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         });
-      
+
       if (insertError) {
         console.error('[API] Error creating scan job:', insertError);
         return res.status(500).json({ error: 'Failed to create scan job' });
       }
-      
+
       // Start processing asynchronously - this will continue even if client disconnects
-      // If the function terminates early, a cron job will pick up pending jobs
       console.log(`[API] Starting background processing of scan job ${finalJobId}...`);
-      
-      // Get the host from the request to use for calling the scan API
+
       const hostHeader = req.headers.host || req.headers['x-forwarded-host'];
       const requestHost = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader || undefined;
-      
-      // Start processing but don't wait for it - return immediately
-      // This allows the function to work even if the app is closed
+
       processScanJob(finalJobId, imageDataURL, userId, requestHost).catch(async (err) => {
         console.error('[API] Background scan job failed:', err);
         // Update job status to failed in database
@@ -109,7 +124,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         req.query?.action === 'process-pending';
   
   // Handle cron job processing (GET or PUT from cron)
+  // DISABLED: Sweeper is disabled when QStash is configured to prevent double-processing
+  // QStash handles all job delivery via /api/scan-worker with idempotency
   if ((req.method === 'PUT' || req.method === 'GET') && isCronRequest) {
+    const qstashToken = process.env.QSTASH_TOKEN;
+    if (qstashToken) {
+      console.log('[API] [SWEEPER] Disabled: QStash is configured. All jobs are processed via QStash webhook (/api/scan-worker) with idempotency.');
+      return res.status(200).json({ 
+        message: 'Sweeper disabled - QStash is handling job processing',
+        disabled: true,
+        reason: 'qstash_configured'
+      });
+    }
+    
+    // Only run sweeper if QStash is NOT configured (fallback mode)
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -135,7 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .limit(10); // Process up to 10 at a time
       
       if (error) {
-        console.error('[API] Error fetching pending jobs:', error);
+        console.error('[API] [SWEEPER] Error fetching pending jobs:', error);
         return res.status(500).json({ error: 'Failed to fetch pending jobs' });
       }
       
@@ -143,7 +171,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ message: 'No pending jobs to process', processed: 0 });
       }
       
-      console.log(`[API] Processing ${pendingJobs.length} pending scan jobs...`);
+      console.log(`[API] [SWEEPER] Processing ${pendingJobs.length} pending scan jobs... (QStash not configured, using fallback mode)`);
       
       // Process each pending job
       // FIXED: Now passes null for imageDataURL - processScanJob will fetch from storage
@@ -163,7 +191,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       
     } catch (e: any) {
-      console.error('[API] Error processing pending jobs:', e);
+      console.error('[API] [SWEEPER] Error processing pending jobs:', e);
       return res.status(500).json({ error: 'process_failed', detail: e?.message || String(e) });
     }
   }

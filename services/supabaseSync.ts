@@ -6,11 +6,13 @@
  * persists across app versions and devices.
  */
 
-import { supabase } from '../lib/supabaseClient';
+import { supabase, SUPABASE_INSTANCE_ID } from '../lib/supabase';
 import { Book, Photo } from '../types/BookTypes';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Platform } from 'react-native';
+
+if (__DEV__) console.log('[SUPABASE_INSTANCE][supabaseSync]', SUPABASE_INSTANCE_ID);
 
 /**
  * Upload a book cover to Supabase Storage and return the public URL
@@ -98,7 +100,8 @@ export async function uploadBookCoverToStorage(
       });
 
     if (error) {
-      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      const err = error as { message?: string; code?: string };
+      const errorMessage = err?.message || err?.code || JSON.stringify(error) || String(error);
       console.error('Error uploading cover to storage:', errorMessage);
       return null;
     }
@@ -289,22 +292,23 @@ export async function uploadPhotoToStorage(
       });
 
     if (error) {
-      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+      const err = error as { message?: string; code?: string };
+      const errorMessage = err?.message || err?.code || JSON.stringify(error) || String(error);
       
-      if (error.code === '404' || errorMessage.includes('Bucket not found') || errorMessage.includes('does not exist')) {
+      if (err.code === '404' || errorMessage.includes('Bucket not found') || errorMessage.includes('does not exist')) {
         console.error('❌ Photo Storage Error: Storage bucket "photos" does not exist');
         console.error('   SOLUTION: Create the "photos" bucket in Supabase Dashboard:');
         console.error('   1. Go to Storage → New bucket');
         console.error('   2. Name: "photos"');
         console.error('   3. Make it Public');
         console.error('   4. Click Create bucket');
-      } else if (error.code === '42501' || errorMessage.includes('row-level security') || errorMessage.includes('violates row-level security policy')) {
+      } else if (err.code === '42501' || errorMessage.includes('row-level security') || errorMessage.includes('violates row-level security policy')) {
         console.error('❌ Photo Storage Error: RLS policy violation');
         console.error('   SOLUTION: Set up storage bucket policies in Supabase SQL Editor');
         console.error('   See SUPABASE_SETUP_INSTRUCTIONS.md for the policy SQL');
       } else {
         console.error('Error uploading photo to storage:', errorMessage);
-        console.error('   Error code:', error.code);
+        console.error('   Error code:', err.code);
         console.error('   Photo ID:', photoId);
         console.error('   User ID:', userId);
       }
@@ -603,25 +607,8 @@ export async function saveBookToSupabase(
   }
 
   try {
-    // CRITICAL: Verify user session before attempting to save
-    // RLS policies require auth.uid() to match user_id
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-    
-    if (sessionError || !sessionData?.session) {
-      console.error('❌ No Supabase session found. User must be authenticated to save books.');
-      console.error('   Session error:', sessionError?.message || 'No session');
-      console.error('   Attempted user_id:', userId);
-      return false;
-    }
-
-    const authenticatedUserId = sessionData.session.user.id;
-    if (authenticatedUserId !== userId) {
-      console.error('❌ User ID mismatch! Authenticated user does not match book user_id.');
-      console.error('   Authenticated user:', authenticatedUserId);
-      console.error('   Book user_id:', userId);
-      console.error('   This violates RLS policies. Book will not be saved.');
-      return false;
-    }
+    // Caller must pass userId from AuthContext/session — we do not call getSession() here as source of truth.
+    // RLS still enforces auth.uid() on the server.
     // Convert scannedAt to BIGINT (timestamp in milliseconds) for Supabase
     // scanned_at is BIGINT in database, not TIMESTAMPTZ
     const scannedAtValue = book.scannedAt 
@@ -630,16 +617,17 @@ export async function saveBookToSupabase(
 
     // Build bookData with patch semantics: only include fields when they have real values
     // Never overwrite existing good data with null/empty
+    // author is required for unique constraint (user_id, title, author) - always set for upsert
     const bookData: any = {
       user_id: userId,
       title: book.title,
+      author: book.author ?? '',
       status: status,
       scanned_at: scannedAtValue, // BIGINT timestamp in milliseconds
       updated_at: new Date().toISOString(),
     };
     
     // Only include optional fields if they have values (patch semantics)
-    if (book.author) bookData.author = book.author;
     if (book.isbn) bookData.isbn = book.isbn;
     if (book.confidence) bookData.confidence = book.confidence;
     if (book.coverUrl) bookData.cover_url = book.coverUrl;
@@ -657,14 +645,18 @@ export async function saveBookToSupabase(
     if (book.subtitle) bookData.subtitle = book.subtitle;
     if (book.printType) bookData.print_type = book.printType;
     
-    // Log cover persistence for debugging
-    console.log(`[DB] Upserting book: "${book.title}", coverUrl=${book.coverUrl ? 'YES (' + book.coverUrl.substring(0, 60) + '...)' : 'NO'}, googleBooksId=${book.googleBooksId || 'NO'}`);
+    // Optional: log only when __DEV__ and debugging (reduce noise)
+    if (__DEV__ && (global as any).__DEBUG_SUPABASE_BOOKS__) {
+      console.log(`[DB] Saving book: "${book.title}"`);
+    }
 
+    // SAFEGUARD: This function ONLY writes to library_books (books table)
+    // Scans NEVER call this - they only write to scan_jobs.books JSONB
     // Use upsert to insert or update based on user_id + title + author
     // First try to find existing book to avoid duplicate key errors and preserve existing data
     const authorForQuery = book.author || '';
     const { data: existingBook, error: findError } = await supabase
-      .from('books')
+      .from('books') // This is library_books - user's approved collection
       .select('id, cover_url, google_books_id, description, page_count, categories, publisher, published_date, language, average_rating, ratings_count, subtitle, print_type')
       .eq('user_id', userId)
       .eq('title', book.title)
@@ -778,108 +770,49 @@ export async function saveBookToSupabase(
         return false;
       }
       
-      // Successfully updated - log cover status
-      console.log(`[DB] ✅ Updated book in Supabase: "${book.title}", cover_url=${updateData.cover_url ? 'YES' : 'NO'}, google_books_id=${updateData.google_books_id ? 'YES' : 'NO'}`);
-      return true;
+      return true; // Updated successfully (no per-book log to reduce noise)
     } else {
-      // Insert new book - catch duplicate key errors and retry as update
+      // No existing row: insert (no upsert - DB may not have unique on user_id,title,author)
       const { error: insertError } = await supabase
         .from('books')
         .insert(bookData);
 
       if (insertError) {
-        // If we get a duplicate key error, the book exists but our query didn't find it
-        // (could be due to race condition or case sensitivity issues)
-        // Try to find and update it
+        // Duplicate key: row exists but find missed it (e.g. author '' vs NULL in DB). Find by user_id+title, try author='' then author IS NULL.
         if (insertError.code === '23505' || insertError.message?.includes('duplicate key') || insertError.message?.includes('idx_books_user_title_author_unique')) {
-          console.warn('Duplicate key error on insert, attempting to find and update existing book...');
-          
-          const { data: existingBookRetry, error: findErrorRetry } = await supabase
-            .from('books')
-            .select('id')
-            .eq('user_id', userId)
-            .eq('title', book.title)
-            .eq('author', authorForQuery)
-            .maybeSingle();
-
-          if (findErrorRetry && findErrorRetry.code !== 'PGRST116') {
-            const errorMessage = findErrorRetry?.message || findErrorRetry?.code || JSON.stringify(findErrorRetry) || String(findErrorRetry);
-            const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
-                                (findErrorRetry as any)?.name === 'AbortError' || 
-                                (findErrorRetry as any)?.constructor?.name === 'AbortError';
-            
-            if (isAbortError) {
-              console.warn('⚠️ Book lookup aborted after duplicate key error (likely timeout):', book.title);
-            } else {
-            console.error('Error finding existing book after duplicate key error:', errorMessage);
-            }
-            return false;
+          let existingRetry: { id: string } | null = null;
+          const { data: byEmpty } = await supabase.from('books').select('id').eq('user_id', userId).eq('title', book.title).eq('author', authorForQuery).maybeSingle();
+          if (byEmpty) existingRetry = byEmpty;
+          if (!existingRetry && authorForQuery === '') {
+            const { data: byNull } = await supabase.from('books').select('id').eq('user_id', userId).eq('title', book.title).is('author', null).maybeSingle();
+            if (byNull) existingRetry = byNull;
           }
-
-          if (existingBookRetry) {
-            // Update existing book
-            const { error: updateErrorRetry } = await supabase
-              .from('books')
-              .update(bookData)
-              .eq('id', existingBookRetry.id);
-
-            if (updateErrorRetry) {
-              const errorMessage = updateErrorRetry?.message || updateErrorRetry?.code || JSON.stringify(updateErrorRetry) || String(updateErrorRetry);
-              const isAbortError = errorMessage.includes('AbortError') || errorMessage.includes('Aborted') || 
-                                  (updateErrorRetry as any)?.name === 'AbortError' || 
-                                  (updateErrorRetry as any)?.constructor?.name === 'AbortError';
-              
-              if (isAbortError) {
-                console.warn('⚠️ Book update aborted after duplicate key retry (likely timeout):', book.title);
-                console.warn('   This is usually temporary - the book may sync on next attempt');
-              } else {
-              console.error('Error updating book after duplicate key error:', errorMessage);
-              console.error('Book data:', JSON.stringify(bookData, null, 2));
-              }
-              return false;
-            }
-            return true;
+          if (existingRetry) {
+            const { error: updateRetryErr } = await supabase.from('books').update(bookData).eq('id', existingRetry.id);
+            if (!updateRetryErr) return true; // Resolved via update, no log spam
           }
         }
-        
-        const errorMessage = insertError?.message || insertError?.code || JSON.stringify(insertError) || String(insertError);
+        const errorMessage = insertError?.message || insertError?.code || String(insertError);
         const isHtmlError = typeof errorMessage === 'string' && errorMessage.trim().startsWith('<!DOCTYPE');
         const isDateRangeError = typeof errorMessage === 'string' && errorMessage.includes('date/time field value out of range');
-        
         if (isHtmlError) {
-          console.error('❌ Error inserting book to Supabase: Received HTML error page (likely Cloudflare 500 error)');
-          console.error('   This usually indicates a database schema mismatch or server issue');
-          console.error('   Error code:', insertError?.code);
+          console.error('❌ Error inserting book to Supabase: Received HTML error page');
           console.error('   Book title:', book.title);
-          console.error('   scanned_at value type:', typeof bookData.scanned_at, 'value:', bookData.scanned_at);
         } else if (isDateRangeError) {
           console.error('❌ Error inserting book to Supabase: Date/time field value out of range');
-          console.error('   This indicates scanned_at column is TIMESTAMPTZ but we sent BIGINT');
-          console.error('   SOLUTION: Run the migration supabase-migration-fix-scanned-at-type.sql');
-          console.error('   Book title:', book.title);
-          console.error('   scanned_at value:', bookData.scanned_at);
-          // Don't log full book data for this error to reduce noise
-        } else if (insertError.code === '42501' || errorMessage.includes('row-level security') || errorMessage.includes('violates row-level security policy')) {
-          console.error('❌ RLS Policy Violation: Cannot insert book - row-level security policy violation');
-          console.error('   This usually means:');
-          console.error('   1. The user session is invalid or expired');
-          console.error('   2. The user_id does not match auth.uid()');
-          console.error('   3. RLS policies are not set up correctly in Supabase');
-          console.error('   Authenticated user:', authenticatedUserId);
-          console.error('   Book user_id:', userId);
-          console.error('   Book title:', book.title);
-          console.error('   SOLUTION: Ensure user is properly authenticated and RLS policies allow inserts');
+          console.error('   Book title:', book.title, 'scanned_at:', bookData.scanned_at);
+        } else if (insertError.code === '42501' || errorMessage.includes('row-level security')) {
+          console.error('❌ RLS Policy Violation: Cannot insert book');
+          console.error('   Book user_id:', userId, 'title:', book.title);
         } else {
           console.error('Error inserting book to Supabase:', errorMessage);
           console.error('Book data:', JSON.stringify(bookData, null, 2));
         }
         return false;
       }
+      return true; // Inserted successfully (no per-book log to reduce noise)
+      return true;
     }
-
-    // If we get here, the insert was successful
-    console.log(`[DB] ✅ Inserted book into Supabase: "${book.title}", cover_url=${bookData.cover_url ? 'YES' : 'NO'}, google_books_id=${bookData.google_books_id ? 'YES' : 'NO'}`);
-    return true;
   } catch (error) {
     console.error('Error saving book to Supabase:', error);
     return false;
@@ -902,26 +835,39 @@ export async function loadBooksFromSupabase(
   }
 
   try {
-    // Fetch ALL books for the user (no limit - users should be able to have unlimited books)
-    // Add index on user_id + scanned_at for better performance
+    // Caller passes userId from AuthContext/session — do not call getSession() here as source of truth.
+    const { SUPABASE_REF } = await import('../lib/supabase');
+    if (__DEV__) console.log('[LIB] loadBooksFromSupabase → ref:', SUPABASE_REF, 'user_id:', userId);
+
+    const table = 'books';
+    const limit = 5000;
+    const filters = { user_id: userId, deleted_at: null };
+    if (__DEV__) console.log('[MYLIB_QUERY]', JSON.stringify({ from: table, select: '*', filters, order: 'created_at', orderAscending: false, limit }, null, 2));
+
     const { data, error } = await supabase
-      .from('books')
+      .from(table)
       .select('*')
       .eq('user_id', userId)
-      .order('scanned_at', { ascending: false, nullsFirst: false });
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(limit);
 
     if (error) {
-      console.error('Error loading books from Supabase:', error);
+      console.error('[loadBooksFromSupabase] Error loading books:', error);
       return { pending: [], approved: [], rejected: [] };
     }
 
-    if (!data) {
+    const allBooks: any[] = data ?? [];
+    const rawCount = allBooks.length;
+
+    if (allBooks.length === 0) {
+      if (__DEV__) console.log('[MYLIB_QUERY_RESULT]', JSON.stringify({ from: table, filters, rawCount, finalCount: 0, grouped: { pending: 0, approved: 0, rejected: 0 } }, null, 2));
       return { pending: [], approved: [], rejected: [] };
     }
 
     // Convert Supabase data to Book objects and group by status
     // Use the database UUID as the ID to ensure uniqueness
-    const books: Book[] = data.map((row) => ({
+    const books: Book[] = allBooks.map((row) => ({
       id: row.id || `${row.title}_${row.author || ''}_${row.scanned_at || Date.now()}`,
       title: row.title,
       author: row.author || undefined,
@@ -947,9 +893,37 @@ export async function loadBooksFromSupabase(
       readAt: row.read_at ? (typeof row.read_at === 'number' ? row.read_at : (typeof row.read_at === 'string' ? parseInt(row.read_at, 10) : new Date(row.read_at).getTime())) : undefined, // Map read_at from Supabase to readAt in Book (BIGINT -> number)
     }));
 
+    if (__DEV__) console.log('[BOOKS_POSTFILTER_COUNT]', books.length);
+
     const pending = books.filter((b) => b.status === 'pending' || b.status === 'incomplete');
     const approved = books.filter((b) => b.status === 'approved');
     const rejected = books.filter((b) => b.status === 'rejected');
+
+    const finalCount = pending.length + approved.length + rejected.length;
+    if (__DEV__) {
+      console.log('[MYLIB_QUERY_RESULT]', JSON.stringify({
+        from: table,
+        filters,
+        rawCount,
+        finalCount,
+        grouped: { pending: pending.length, approved: approved.length, rejected: rejected.length },
+      }, null, 2));
+      console.log(`[loadBooksFromSupabase] Grouped: ${pending.length} pending, ${approved.length} approved, ${rejected.length} rejected`);
+    }
+    
+    // Verify we didn't lose any books during grouping
+    if (pending.length + approved.length + rejected.length !== books.length) {
+      console.warn(`[loadBooksFromSupabase] ⚠️ WARNING: Book count mismatch! Input: ${books.length}, Output: ${pending.length + approved.length + rejected.length}`);
+      const ungrouped = books.filter(b => 
+        b.status !== 'pending' && 
+        b.status !== 'incomplete' && 
+        b.status !== 'approved' && 
+        b.status !== 'rejected'
+      );
+      if (ungrouped.length > 0) {
+        console.warn(`[loadBooksFromSupabase] Found ${ungrouped.length} books with unexpected status:`, ungrouped.map(b => ({ title: b.title, status: b.status })));
+      }
+    }
 
     return { pending, approved, rejected };
   } catch (error) {
@@ -1017,31 +991,90 @@ export async function deletePhotoFromSupabase(
 }
 
 /**
- * Delete a book from Supabase
+ * Delete a book from Supabase library (soft-delete with audit log)
+ * 
+ * SAFEGUARD: This function uses the delete_library_book RPC function which:
+ * - Verifies user owns the book
+ * - Inserts audit log entry
+ * - Performs soft-delete (sets deleted_at) instead of hard delete
+ * - Only works for authenticated users
+ * 
+ * Scans NEVER call this - only explicit user actions can delete books.
  */
 export async function deleteBookFromSupabase(
   userId: string,
-  book: Book
+  book: Book,
+  reason?: string
 ): Promise<boolean> {
   if (!supabase) {
     console.warn('Supabase not available, skipping book deletion');
     return false;
   }
 
-  try {
-    const authorForQuery = book.author || '';
-    const { error } = await supabase
-      .from('books')
-      .delete()
-      .eq('user_id', userId)
-      .eq('title', book.title)
-      .eq('author', authorForQuery);
+  // Skip for guest users
+  if (userId === 'guest_user') {
+    return false;
+  }
 
-    if (error) {
-      console.error('Error deleting book from Supabase:', error);
+  try {
+    // Caller must pass userId from AuthContext/session — we do not call getSession() here as source of truth.
+    // Get book ID - prefer book.id, otherwise find by title+author
+    let bookId: string | null = null;
+    
+    if (book.id) {
+      // Verify the book exists and belongs to user
+      const { data: existingBook } = await supabase
+        .from('books')
+        .select('id')
+        .eq('id', book.id)
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (existingBook) {
+        bookId = existingBook.id;
+      }
+    }
+
+    // If no ID match, try to find by title+author
+    if (!bookId) {
+      const authorForQuery = book.author || '';
+      const { data: foundBook } = await supabase
+        .from('books')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('title', book.title)
+        .eq('author', authorForQuery)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (foundBook) {
+        bookId = foundBook.id;
+      }
+    }
+
+    if (!bookId) {
+      console.warn(`⚠️ Book not found in library: "${book.title}" by ${book.author || 'Unknown'}`);
       return false;
     }
 
+    // Call RPC function for safe deletion (soft-delete + audit log)
+    const { data, error } = await supabase.rpc('delete_library_book', {
+      p_book_id: bookId,
+      p_reason: reason || 'User deleted from library'
+    });
+
+    if (error) {
+      console.error('❌ Error calling delete_library_book RPC:', error);
+      return false;
+    }
+
+    if (!data || !data.success) {
+      console.error('❌ delete_library_book returned error:', data?.error || 'unknown');
+      return false;
+    }
+
+    console.log(`✅ Book soft-deleted: "${book.title}" (ID: ${bookId})`);
     return true;
   } catch (error) {
     console.error('Error deleting book from Supabase:', error);
@@ -1088,10 +1121,12 @@ export async function syncCompletedScanJobs(
     console.log(`📚 Found ${completedJobs.length} completed scan jobs to check`);
 
     // Get all existing book titles/authors from the books table to avoid duplicates
+    // SAFEGUARD: Only check non-deleted books (deleted_at IS NULL)
     const { data: existingBooks, error: existingError } = await supabase
       .from('books')
       .select('title, author')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .is('deleted_at', null); // Only non-deleted books
 
     if (existingError) {
       console.error('Error fetching existing books for deduplication:', existingError);

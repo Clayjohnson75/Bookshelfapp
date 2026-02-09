@@ -276,8 +276,6 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             )}
           </TouchableOpacity>
 
-          {/* Face ID now works automatically - no button needed */}
-
           <TouchableOpacity
             style={styles.linkButton}
             onPress={() => setShowForgotPassword(true)}
@@ -366,7 +364,6 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             autoCapitalize="none"
             autoCorrect={false}
             maxLength={20}
-            required
           />
 
           <TextInput

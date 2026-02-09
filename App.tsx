@@ -12,7 +12,7 @@ import {
   Modal,
   TextInput,
 } from 'react-native';
-import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -23,6 +23,7 @@ import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
 import { LoginScreen, PasswordResetScreen } from './auth/AuthScreens';
 import { TabNavigator } from './TabNavigator';
 import { Book, Photo } from './types/BookTypes';
+import { dedupeBooks } from './lib/dedupeBooks';
 // Lazy import IAP service to avoid loading in Expo Go
 const getIAPService = async () => {
   if (Constants.appOwnership === 'expo') {
@@ -35,15 +36,10 @@ const getIAPService = async () => {
     return null;
   }
 };
-import Constants from 'expo-constants';
 
-// Helper to read env vars
-const getEnvVar = (key: string): string => {
-  return Constants.expoConfig?.extra?.[key] || 
-         Constants.manifest?.extra?.[key] || 
-         process.env[key] || 
-         '';
-};
+import Constants from 'expo-constants';
+import { getEnvVar } from './lib/getEnvVar';
+import { supabase } from './lib/supabase';
 
 const BookshelfScannerAppInner: React.FC = () => {
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
@@ -125,7 +121,7 @@ const BookshelfScannerAppInner: React.FC = () => {
       const savedPhotos = await AsyncStorage.getItem(userPhotosKey);
       
       if (savedBooks) {
-        setBooks(JSON.parse(savedBooks));
+        setBooks(prev => dedupeBooks([...prev, ...JSON.parse(savedBooks)]));
       }
       if (savedPhotos) {
         setPhotos(JSON.parse(savedPhotos));
@@ -174,13 +170,7 @@ const BookshelfScannerAppInner: React.FC = () => {
       // Crop the image to the section
       const croppedImage = await ImageManipulator.manipulateAsync(
         uri,
-        [{
-          type: 'crop',
-          originX: section.x,
-          originY: section.y,
-          width: section.width,
-          height: section.height,
-        }],
+        [{ crop: { originX: section.x, originY: section.y, width: section.width, height: section.height } }],
         { 
           compress: 0.7, 
           format: ImageManipulator.SaveFormat.JPEG,
@@ -205,13 +195,18 @@ const BookshelfScannerAppInner: React.FC = () => {
     try {
       console.log('🤖 Scanning image with AI via server API...');
       
-      // Use server API endpoint instead of direct OpenAI calls (security)
       const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://bookshelfscan.app';
-      
-      const response = await fetch(`${baseUrl}/api/scan`, {
+
+      const { getScanAuthHeaders } = await import('./lib/authHeaders');
+      const headers = await getScanAuthHeaders();
+
+      const scanUrl = `${baseUrl}/api/scan`;
+      console.log('[ENQUEUE_URL]', scanUrl);
+      const response = await fetch(scanUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...headers,
         },
         body: JSON.stringify({
           imageDataURL,
@@ -219,16 +214,28 @@ const BookshelfScannerAppInner: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.status} - ${await response.text()}`);
+        const text = await response.text();
+        if (response.status === 401) {
+          try {
+            const errBody = JSON.parse(text);
+            if (errBody?.error === 'reauth_required') {
+              Alert.alert('Session expired', 'Please sign in again to scan.', [{ text: 'OK' }]);
+            }
+          } catch (_) {}
+        }
+        throw new Error(`API error: ${response.status} - ${text}`);
       }
 
-      const data = await response.json();
-      const detectedBooks = data.books || [];
+      const responseData = await response.json();
+      const detectedBooks = responseData.books || [];
       console.log('✅ AI detected books:', detectedBooks);
       
       return Array.isArray(detectedBooks) ? detectedBooks : [];
-    } catch (error) {
+    } catch (error: any) {
       console.error('AI scanning error:', error);
+      if (error?.message?.includes('re-auth') || error?.message?.includes('session')) {
+        Alert.alert('Sign in required', 'Please sign in again to scan.', [{ text: 'OK' }]);
+      }
       return [];
     }
   };
@@ -679,8 +686,8 @@ const BookshelfScannerAppInner: React.FC = () => {
       }));
 
       if (newBooks.length > 0 && user) {
-        const updatedBooks = [...books, ...newBooks];
-        setBooks(updatedBooks);
+        const updatedBooks = dedupeBooks([...books, ...newBooks]);
+        setBooks(prev => dedupeBooks([...prev, ...newBooks]));
         await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
 
         const newPhoto: Photo = {
@@ -870,7 +877,7 @@ const BookshelfScannerAppInner: React.FC = () => {
     const updatedBooks = books.map(book => 
       book.title === oldBook.title ? newBook : book
     );
-    setBooks(updatedBooks);
+    setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
     await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
     setShowReplaceModal(false);
   };
@@ -884,7 +891,7 @@ const BookshelfScannerAppInner: React.FC = () => {
         ? updatedBook 
         : book
     );
-    setBooks(updatedBooks);
+    setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
     await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
     setEditingBook(null);
     setEditAuthorText('');
@@ -1359,7 +1366,7 @@ const BookshelfScannerAppInner: React.FC = () => {
             <CameraView
               ref={setCameraRef}
               style={styles.camera}
-              facing={CameraType.back}
+              facing="back"
             />
             <View style={styles.cameraControls}>
                 <TouchableOpacity 
@@ -1429,6 +1436,8 @@ const BookshelfScannerAppInner: React.FC = () => {
     </View>
   );
 }
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
   container: {
@@ -1722,7 +1731,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  userInfo: {
+  headerUserInfo: {
     fontSize: 14,
     color: '#666',
     marginTop: 4,
@@ -1812,7 +1821,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   bookBubble: {
-    width: (screenWidth - 40) / 2,
+    width: (SCREEN_WIDTH - 40) / 2,
     backgroundColor: '#fff',
     borderRadius: 15,
     marginBottom: 15,
@@ -1892,8 +1901,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 20,
     padding: 20,
-    width: screenWidth * 0.9,
-    maxHeight: screenHeight * 0.8,
+    width: SCREEN_WIDTH * 0.9,
+    maxHeight: SCREEN_HEIGHT * 0.8,
   },
   modalTitle: {
     fontSize: 20,

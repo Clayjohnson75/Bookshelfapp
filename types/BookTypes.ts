@@ -56,3 +56,6 @@ export interface Folder {
   photoIds: string[]; // Array of photo IDs that belong to this folder
   createdAt: number;
 }
+
+/** Wishlist entry (same shape as Book for display). */
+export type WishlistItem = Book;

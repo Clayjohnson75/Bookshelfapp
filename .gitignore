@@ -42,3 +42,7 @@ yarn-error.*
 
 .env
 .vercel
+
+# API build artifacts (Vercel compiles TS to JS, don't commit)
+api/**/*.js
+api/**/*.js.map

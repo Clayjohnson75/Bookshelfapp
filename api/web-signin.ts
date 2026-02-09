@@ -93,6 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .single();
 
       if (userProfile?.username?.toLowerCase() !== username.toLowerCase()) {
+        console.log('[SIGNOUT_CALLED] supabase.auth.signOut() (web-signin account mismatch)', new Error().stack);
         await supabase.auth.signOut();
         return res.status(403).json({ 
           error: 'Account mismatch',

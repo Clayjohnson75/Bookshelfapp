@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import Constants from 'expo-constants';
+import { getEnvVar } from '../lib/getEnvVar';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,6 +38,9 @@ interface BookResult {
     imageLinks?: {
       thumbnail?: string;
     };
+    averageRating?: number;
+    ratingsCount?: number;
+    description?: string;
   };
 }
 
@@ -89,9 +92,7 @@ export const ExploreTab: React.FC = () => {
       // Actually, 'relevance' should work better for popular books, but let's add langRestrict for English
       // Use proxy API route to get API key and rate limiting
       // Canonical URL: always use www.bookshelfscan.app
-      const baseUrl = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                     Constants.manifest?.extra?.EXPO_PUBLIC_API_BASE_URL || 
-                     'https://www.bookshelfscan.app';
+      const baseUrl = getEnvVar('EXPO_PUBLIC_API_BASE_URL') || 'https://www.bookshelfscan.app';
       const response = await fetch(
         `${baseUrl}/api/google-books?path=/volumes&q=${encodeURIComponent(queryParam)}&maxResults=20&startIndex=${startIndex}&orderBy=relevance&langRestrict=en`
       );
@@ -423,6 +424,8 @@ export const ExploreTab: React.FC = () => {
       </View>
     );
   };
+
+  // Auth gating is at root only (AppWrapper: session ? TabNavigator : AuthStack). No per-screen "if (!session) go login".
 
   return (
     <View style={styles.safeContainer}>

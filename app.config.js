@@ -1,13 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-// Load .env file manually
-const envPath = path.join(__dirname, '.env');
-let envVars = {};
-console.log('📋 Loading .env from:', envPath);
-if (fs.existsSync(envPath)) {
-  const envContent = fs.readFileSync(envPath, 'utf8');
-  console.log('📋 .env file content length:', envContent.length);
+// Load .env then .env.local (local overrides). Required for device testing (ngrok URL in .env.local).
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const envContent = fs.readFileSync(filePath, 'utf8');
   envContent.split('\n').forEach(line => {
     const trimmedLine = line.trim();
     if (trimmedLine && !trimmedLine.startsWith('#')) {
@@ -15,20 +12,24 @@ if (fs.existsSync(envPath)) {
       if (match) {
         const key = match[1].trim();
         let value = match[2].trim();
-        // Remove quotes if present
-        if ((value.startsWith('"') && value.endsWith('"')) || 
-            (value.startsWith("'") && value.endsWith("'"))) {
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
           value = value.slice(1, -1);
         }
         envVars[key] = value;
-        console.log(`📋 Loaded env var: ${key} (length: ${value.length})`);
       }
     }
   });
-  console.log('📋 Total env vars loaded:', Object.keys(envVars).length);
-} else {
-  console.error('❌ .env file not found at:', envPath);
 }
+const envPath = path.join(__dirname, '.env');
+const envLocalPath = path.join(__dirname, '.env.local');
+let envVars = {};
+console.log('📋 Loading .env from:', envPath);
+loadEnvFile(envPath);
+if (fs.existsSync(envLocalPath)) {
+  console.log('📋 Loading .env.local (overrides) from:', envLocalPath);
+  loadEnvFile(envLocalPath);
+}
+console.log('📋 Total env vars loaded:', Object.keys(envVars).length);
 
 // Also try dotenv as fallback
 try {
@@ -41,7 +42,7 @@ module.exports = {
   expo: {
     name: "Bookshelf Scanner",
     slug: "bookshelf-scanner",
-    version: "1.0.6",
+    version: "1.0.7",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
@@ -56,7 +57,7 @@ module.exports = {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-      buildNumber: "48",
+      buildNumber: "2",
       infoPlist: {
         ITSAppUsesNonExemptEncryption: false,
         NSCameraUsageDescription: "Bookshelf Scanner needs access to your camera to take photos of your bookshelf. When you take a photo, the app uses AI to automatically identify book titles and authors from the book spines visible in the image. For example, if you photograph a bookshelf containing 'The Great Gatsby' by F. Scott Fitzgerald, the app will detect and catalog this book automatically.",
@@ -73,16 +74,41 @@ module.exports = {
     web: {
       favicon: "./assets/favicon.png"
     },
-    extra: {
-      eas: {
-        projectId: "b558ee2d-5af2-481c-82af-669e79311aab"
-      },
-      EXPO_PUBLIC_SUPABASE_URL: envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co',
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0',
-      EXPO_PUBLIC_API_BASE_URL: envVars.EXPO_PUBLIC_API_BASE_URL || process.env.EXPO_PUBLIC_API_BASE_URL || 'https://www.bookshelfscan.app',
-      // SECURITY: OpenAI and Gemini API keys are server-side only (in Vercel env vars)
-      // They should NEVER be exposed to the client with EXPO_PUBLIC_ prefix
-    }
+    extra: (function () {
+      // Expo dev (npx expo start) / EAS development → dev Supabase + dev API. TestFlight / App Store → prod Supabase + prod API.
+      const isDev = process.env.EAS_ENV === 'development' ||
+        process.env.EAS_BUILD_PROFILE === 'development' ||
+        process.env.APP_ENV === 'development' ||
+        process.env.NODE_ENV === 'development';
+
+      // Dev build → dev API (ngrok/LAN) or prod API (Option A). Terminal export wins over .env so "export EXPO_PUBLIC_API_BASE_URL=..." works.
+      const EXPO_PUBLIC_API_BASE_URL = isDev
+        ? (process.env.EXPO_PUBLIC_API_BASE_URL_DEV || process.env.EXPO_PUBLIC_API_BASE_URL || envVars.EXPO_PUBLIC_API_BASE_URL_DEV || envVars.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:3000')
+        : (process.env.EXPO_PUBLIC_API_BASE_URL || envVars.EXPO_PUBLIC_API_BASE_URL || 'https://www.bookshelfscan.app');
+
+      // When dev build points at deployed API (Vercel/prod URL), use prod Supabase so JWT matches API and scans work.
+      const devApiIsDeployed = /bookshelfscan\.app|\.vercel\.app/i.test(EXPO_PUBLIC_API_BASE_URL || '');
+      const supabaseUrl = isDev
+        ? (devApiIsDeployed ? (envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co') : (envVars.EXPO_PUBLIC_SUPABASE_URL_DEV || process.env.EXPO_PUBLIC_SUPABASE_URL_DEV || ''))
+        : (envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co');
+      const supabaseAnonKey = isDev
+        ? (devApiIsDeployed ? (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0') : (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV || ''))
+        : (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0');
+
+      console.log('📋 Supabase env:', isDev ? 'development' : 'production', '→ ref', supabaseUrl ? supabaseUrl.replace(/^https?:\/\//, '').split('.')[0] : '(none)');
+      console.log('📋 API base URL:', isDev ? 'development' : 'production', '→', EXPO_PUBLIC_API_BASE_URL);
+
+      return {
+        eas: {
+          projectId: "b558ee2d-5af2-481c-82af-669e79311aab"
+        },
+        // Canonical Supabase config — app reads these via expo-constants (no .env juggling at runtime)
+        supabaseUrl,
+        supabaseAnonKey,
+        EXPO_PUBLIC_API_BASE_URL,
+        // SECURITY: OpenAI and Gemini API keys are server-side only (in Vercel env vars)
+      };
+    })(),
   }
 };
 

@@ -9,26 +9,28 @@
  * 5. Check server-side Supabase cache before calling Google Books API
  */
 
-// Server-side Supabase client (only available in Node.js/Vercel environment)
-// Uses service role key to bypass RLS and query across all users
+// Server-side Supabase client (ONLY created when SUPABASE_SERVICE_ROLE_KEY is set = Vercel/server).
+// In the app we NEVER create a client here — use the single singleton from lib/supabase only.
 let supabaseClient: any = null;
 
-// Initialize Supabase client (deferred to avoid module load errors)
+// Initialize Supabase client only on server. In app, never call createClient — kill if attempted.
 function initSupabaseClient() {
   if (supabaseClient !== null) {
-    return; // Already initialized
+    return;
   }
-  
-  if (typeof process === 'undefined' || !process.env || typeof process.env !== 'object') {
-    return; // Not server-side
+  // Kill: if the app singleton exists (lib/supabase already loaded), do not create a second client.
+  if (typeof globalThis !== 'undefined' && (globalThis as any).__SUPABASE_APP_CLIENT) {
+    supabaseClient = false;
+    return;
   }
-  
+  if (typeof process === 'undefined' || !process.env?.SUPABASE_SERVICE_ROLE_KEY) {
+    supabaseClient = false;
+    return;
+  }
   try {
     const { createClient } = require('@supabase/supabase-js');
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    // Prefer service role key for cache queries (bypasses RLS to query across all users)
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-    
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (supabaseUrl && supabaseKey) {
       supabaseClient = createClient(supabaseUrl, supabaseKey, {
         auth: {
@@ -36,20 +38,16 @@ function initSupabaseClient() {
           autoRefreshToken: false,
         },
       });
-      const hasServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
-      // Use console.log during initialization to avoid log() issues
       if (typeof console !== 'undefined' && console.log) {
-        console.log(`[GoogleBooks] Server-side Supabase cache ${hasServiceRole ? 'enabled (service role)' : 'enabled (anon key)'}`);
+        console.log('[GoogleBooks] Server-side Supabase cache enabled (service role)');
       }
     } else {
-      supabaseClient = false; // Mark as attempted but failed
+      supabaseClient = false;
     }
   } catch (e) {
-    // Supabase not available (client-side or missing deps) - that's fine
-    supabaseClient = false; // Mark as attempted but failed
-    // Use console.log during initialization to avoid log() issues
+    supabaseClient = false;
     if (typeof console !== 'undefined' && console.log) {
-      console.log('[GoogleBooks] Supabase cache not available (client-side or missing deps)');
+      console.log('[GoogleBooks] Supabase cache not available (server init failed)');
     }
   }
 }
@@ -94,6 +92,9 @@ interface GoogleBooksVolume {
     printType?: string;
     description?: string;
     imageLinks?: {
+      extraLarge?: string;
+      large?: string;
+      medium?: string;
       thumbnail?: string;
       smallThumbnail?: string;
     };
@@ -294,8 +295,10 @@ interface GoogleBooksQueueItem {
 
 let googleBooksQueue: GoogleBooksQueueItem[] = [];
 let googleBooksProcessing = false;
+let googleBooksActiveWorkers = 0;
 let lastGoogleBooksRequestTime = 0;
-const MIN_GOOGLE_BOOKS_INTERVAL_MS = 1200; // 1.2 seconds minimum between requests (very conservative to prevent 429s)
+const MIN_GOOGLE_BOOKS_INTERVAL_MS = 350; // Minimum ms between *starts* of search requests
+const GOOGLE_BOOKS_CONCURRENCY = 4; // Up to 4 search requests in flight (covers load ~4x faster)
 const MAX_GOOGLE_BOOKS_RETRIES = 2; // Max 2 retries for 429 errors
 
 /**
@@ -320,6 +323,7 @@ export function clearGoogleBooksQueue() {
   
   // Stop processing
   googleBooksProcessing = false;
+  googleBooksActiveWorkers = 0;
 }
 
 // Cache for cover results (7 days for success, 24h for no match)
@@ -332,9 +336,9 @@ const coverCache = new Map<string, CacheEntry>();
 const CACHE_TTL_SUCCESS_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const CACHE_TTL_NEGATIVE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// Rate limiting: queue requests with delays (legacy, kept for backward compatibility)
+// Rate limiting: queue requests with delays (legacy, used by searchMultipleBooks / searchBooksByQuery)
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
+const MIN_REQUEST_INTERVAL = 300; // 300ms between requests for search features (cover fetch uses queue or ID path)
 
 /**
  * Wait for rate limit cooldown (legacy function, kept for backward compatibility)
@@ -350,89 +354,71 @@ async function waitForRateLimit(): Promise<void> {
 }
 
 /**
- * Process Google Books queue - ensures single-flight execution
- * Only ONE Google Books request runs at a time, globally
- * With proper spacing and exponential backoff on 429
+ * Process Google Books queue - up to GOOGLE_BOOKS_CONCURRENCY requests in flight
+ * With spacing between *starts* and exponential backoff on 429
  */
 async function processGoogleBooksQueue(): Promise<void> {
-  // If already processing or queue is empty, return
-  if (googleBooksProcessing || googleBooksQueue.length === 0) {
+  if (googleBooksQueue.length === 0) {
     return;
   }
-  
-  googleBooksProcessing = true;
-  
-  while (googleBooksQueue.length > 0) {
+  // Start up to CONCURRENCY workers; each processes one item then calls back
+  while (googleBooksQueue.length > 0 && googleBooksActiveWorkers < GOOGLE_BOOKS_CONCURRENCY) {
     const item = googleBooksQueue.shift()!;
     const now = Date.now();
     
-    // Enforce minimum interval between requests (CRITICAL: prevents burst 429s)
+    // Enforce minimum interval between *starts* (prevents burst 429s)
     const timeSinceLastRequest = now - lastGoogleBooksRequestTime;
     if (timeSinceLastRequest < MIN_GOOGLE_BOOKS_INTERVAL_MS) {
       const waitTime = MIN_GOOGLE_BOOKS_INTERVAL_MS - timeSinceLastRequest;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     
-    try {
-      lastGoogleBooksRequestTime = Date.now();
-      
-      // Use the direct search function (bypassing queue to avoid recursion)
-      const result = await searchBookDirect(item.title, item.author, item.googleBooksId, item.retryCount);
-      item.resolve(result);
-      
-      // Add spacing after successful request (prevents burst - increased to 400ms)
-      await new Promise(resolve => setTimeout(resolve, 400));
-    } catch (error: any) {
-      // Handle 429 errors - re-queue with exponential backoff
-      if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
-        if (item.retryCount < MAX_GOOGLE_BOOKS_RETRIES) {
-          // Check for Retry-After header first
-          let retryDelay: number;
-          if (error?.retryAfter && typeof error.retryAfter === 'number') {
-            retryDelay = error.retryAfter * 1000; // Convert seconds to ms
-            log('warn', `[GoogleBooks] Rate limited (429), using Retry-After: ${error.retryAfter}s`);
-          } else {
-            // Exponential backoff: 2s → 4s → 8s (cap at 30s)
-            retryDelay = Math.min(2000 * Math.pow(2, item.retryCount), 30000);
-            const jitter = Math.random() * 1000; // 0-1s random
-            retryDelay += jitter;
-            
-            // Only log once per batch to avoid spam
-            if (item.retryCount === 0) {
-              log('warn', `[GoogleBooks] Rate limited (429), throttling cover fetch queue`);
+    lastGoogleBooksRequestTime = Date.now();
+    googleBooksActiveWorkers++;
+    googleBooksProcessing = true;
+    
+    (async () => {
+      try {
+        const result = await searchBookDirect(item.title, item.author, item.googleBooksId, item.retryCount);
+        item.resolve(result);
+        await new Promise(resolve => setTimeout(resolve, 80));
+      } catch (error: any) {
+        if (error?.status === 429 || error?.message?.includes('429') || error?.statusCode === 429) {
+          if (item.retryCount < MAX_GOOGLE_BOOKS_RETRIES) {
+            let retryDelay: number;
+            if (error?.retryAfter && typeof error.retryAfter === 'number') {
+              retryDelay = error.retryAfter * 1000;
+              log('warn', `[GoogleBooks] Rate limited (429), using Retry-After: ${error.retryAfter}s`);
+            } else {
+              retryDelay = Math.min(2000 * Math.pow(2, item.retryCount), 30000);
+              retryDelay += Math.random() * 1000;
+              if (item.retryCount === 0) {
+                log('warn', `[GoogleBooks] Rate limited (429), throttling cover fetch queue`);
+              }
             }
+            log('debug', `[GoogleBooks] Re-queuing "${item.title}" with ${Math.ceil(retryDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GOOGLE_BOOKS_RETRIES})`);
+            setTimeout(() => {
+              googleBooksQueue.push({ ...item, retryCount: item.retryCount + 1, timestamp: Date.now() });
+              processGoogleBooksQueue();
+            }, retryDelay);
+          } else {
+            log('warn', `[GoogleBooks] Failed after ${MAX_GOOGLE_BOOKS_RETRIES} retries for: "${item.title}"`);
+            item.resolve({});
           }
-          
-          log('debug', `[GoogleBooks] Re-queuing "${item.title}" with ${Math.ceil(retryDelay/1000)}s delay (retry ${item.retryCount + 1}/${MAX_GOOGLE_BOOKS_RETRIES})`);
-          
-          // Add back to queue with delay (don't continue processing immediately)
-          setTimeout(() => {
-            googleBooksQueue.push({
-              ...item,
-              retryCount: item.retryCount + 1,
-              timestamp: Date.now(),
-            });
-            processGoogleBooksQueue(); // Process queue again
-          }, retryDelay);
-          
-          // Stop processing this batch - wait for retry
-          break;
         } else {
-          log('warn', `[GoogleBooks] Failed after ${MAX_GOOGLE_BOOKS_RETRIES} retries for: "${item.title}"`);
-          item.resolve({}); // Return empty instead of failing
+          log('error', `[GoogleBooks] Non-429 error for "${item.title}":`, error?.message || error);
+          item.resolve({});
         }
-      } else {
-        // Non-429 error - fail immediately
-        log('error', `[GoogleBooks] Non-429 error for "${item.title}":`, error?.message || error);
-        item.resolve({}); // Return empty on other errors too
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } finally {
+        googleBooksActiveWorkers--;
+        if (googleBooksActiveWorkers <= 0) {
+          googleBooksProcessing = false;
+        }
+        processGoogleBooksQueue(); // Start next worker if queue has more
       }
-      
-      // Add spacing after error (prevents hammering)
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
+    })();
   }
-  
-  googleBooksProcessing = false;
 }
 
 /**
@@ -701,7 +687,7 @@ function pickBestVolume(
   inputTitle: string,
   inputAuthor?: string
 ): { id: string; volumeInfo: any } | null {
-  const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+  const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true'; // Only when explicitly enabled (no isDev to reduce log noise)
   const candidates: Array<{ item: any; score: number; titleScore: number; authorScore: number; bonuses: { imageLinks: number; description: number; categories: number } }> = [];
 
   for (const book of items || []) {
@@ -887,7 +873,7 @@ async function fetchByGoogleBooksId(
 
   const requestPromise = (async () => {
     try {
-      await waitForRateLimit();
+      // Skip global rate limit for ID lookups - they're fast single GETs; allow parallel cover loading
       
       // Add timeout to prevent hanging requests (8 second timeout)
       const controller = new AbortController();
@@ -917,7 +903,7 @@ async function fetchByGoogleBooksId(
       // Handle new resilient response format
       if (responseData.ok === false) {
         // Proxy returned error gracefully - log and return empty
-        const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+        const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true'; // Only when explicitly enabled (no isDev to reduce log noise)
         if (DEBUG_GOOGLE_BOOKS) {
           console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Proxy returned ok:false - ${responseData.error || 'Unknown error'}`);
         }
@@ -929,7 +915,7 @@ async function fetchByGoogleBooksId(
       const volumeInfo = data.volumeInfo || {};
 
       // Enhanced DEBUG_GOOGLE_BOOKS logging for direct ID lookup
-      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
+      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true'; // Only when explicitly enabled (no isDev to reduce log noise)
       
       if (DEBUG_GOOGLE_BOOKS) {
         console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
@@ -1097,231 +1083,268 @@ async function searchBook(
   // Also create a version without punctuation for fallback
   const authorNormalized = author ? author.replace(/[^\w\s]/g, '').trim() : '';
   
-  // Try with original author first (preserves hyphens/apostrophes)
-  let query = author 
-    ? `intitle:"${cleanTitle}" inauthor:"${authorWithHyphens}"` 
-    : `intitle:"${cleanTitle}"`;
+  // Build query strategies to try in order
+  const queryStrategies: string[] = [];
   
-  // Log the query being used (for debugging)
-  log('debug', `[GoogleBooks] Searching: "${query}" (title: "${title}", author: "${author || 'none'}", normalized: "${authorWithHyphens}")`);
+  // Strategy 1: Exact match with quotes (most specific)
+  if (author && authorWithHyphens && authorWithHyphens.toLowerCase() !== 'unknown') {
+    queryStrategies.push(`intitle:"${cleanTitle}" inauthor:"${authorWithHyphens}"`);
+  }
+  queryStrategies.push(`intitle:"${cleanTitle}"`);
+  
+  // Strategy 2: Without quotes (broader match)
+  if (author && authorNormalized && authorNormalized.toLowerCase() !== 'unknown') {
+    queryStrategies.push(`intitle:${cleanTitle} inauthor:${authorNormalized}`);
+  }
+  queryStrategies.push(`intitle:${cleanTitle}`);
+  
+  // Strategy 3: Simple text search (fallback)
+  if (author && authorNormalized && authorNormalized.toLowerCase() !== 'unknown') {
+    queryStrategies.push(`${cleanTitle} ${authorNormalized}`);
+  }
+  queryStrategies.push(cleanTitle);
 
   const requestPromise = (async () => {
     try {
-      await waitForRateLimit();
-
-      // Add timeout to prevent hanging requests (8 second timeout)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-
-      // Add fields parameter to limit payload to only needed fields
-      // Add projection=full to improve chances of getting description/categories
-      const fields = 'items(id,volumeInfo(title,authors,pageCount,categories,publisher,publishedDate,language,averageRating,ratingsCount,subtitle,printType,description,imageLinks))';
-      const url = buildGoogleBooksUrl('/volumes', {
-        q: query,
-        maxResults: '10',
-        fields: fields,
-        projection: 'full'
-      });
-
-      let response: Response;
+    // Try each query strategy until we get results
+    for (let strategyIndex = 0; strategyIndex < queryStrategies.length; strategyIndex++) {
+      const query = queryStrategies[strategyIndex];
+      
+      // Log the query being used (for debugging)
+      log('debug', `[GoogleBooks] Searching (strategy ${strategyIndex + 1}/${queryStrategies.length}): "${query}" (title: "${title}", author: "${author || 'none'}")`);
+      
       try {
-        response = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-      } catch (fetchError: any) {
-        clearTimeout(timeoutId);
-        if (fetchError.name === 'AbortError') {
-          // Let queue retry once, then fail gracefully
-          if (retryCount < 1) {
-            throw new Error('Request timeout - retrying...');
-          }
-          throw new Error('Request timeout - please check your internet connection');
-        }
-        throw fetchError;
-      }
+        await waitForRateLimit();
 
-      // DEBUG: Log response status and URL
-      const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true' || isDev;
-      if (DEBUG_GOOGLE_BOOKS) {
-        console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
-        console.log(`[DEBUG_GOOGLE_BOOKS] Response Debug:`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Status: ${response.status}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   OK: ${response.ok}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   URL: ${url}`);
-      }
+        // Add timeout to prevent hanging requests (8 second timeout)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
 
-      // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
-      // Parse response and check ok flag
-      const responseData = await response.json() as GoogleBooksProxyResponse;
-      
-      // Handle new resilient response format
-      if (responseData.ok === false) {
-        // Proxy returned error gracefully - log and return empty
-        if (DEBUG_GOOGLE_BOOKS) {
-          console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Proxy returned ok:false - ${responseData.error || 'Unknown error'}`);
-        }
-        // If retryAfterMs is provided and we have retries left, wait and retry
-        if (responseData.retryAfterMs && retryCount < 2) {
-          await new Promise(resolve => setTimeout(resolve, responseData.retryAfterMs));
-          throw new Error('Rate limited - retrying...');
-        }
-        return {}; // Gracefully fail - no cover, but don't crash
-      }
+        // Add fields parameter to limit payload to only needed fields
+        // Add projection=full to improve chances of getting description/categories
+        const fields = 'items(id,volumeInfo(title,authors,pageCount,categories,publisher,publishedDate,language,averageRating,ratingsCount,subtitle,printType,description,imageLinks))';
+        const url = buildGoogleBooksUrl('/volumes', {
+          q: query,
+          maxResults: '10',
+          fields: fields,
+          projection: 'full'
+        });
 
-      // Success - extract data from response
-      const data = (responseData.data || responseData) as GoogleBooksResponse;
-      
-      // DEBUG: Log items count and top 3 candidates
-      if (DEBUG_GOOGLE_BOOKS) {
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Items exists: ${!!data.items}`);
-        console.log(`[DEBUG_GOOGLE_BOOKS]   Items length: ${data.items?.length || 0}`);
-        
-        if (data.items && data.items.length > 0) {
-          console.log(`[DEBUG_GOOGLE_BOOKS]   Top 3 Candidates:`);
-          for (const [i, item] of data.items.slice(0, 3).entries()) {
-            const v = item.volumeInfo || {};
-            const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
-            const hasDescription = !!v.description;
-            const hasCategories = !!(v.categories && v.categories.length > 0);
-            
-            console.log(`[DEBUG_GOOGLE_BOOKS]     Candidate #${i}:`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       ID: ${item.id}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       Title: "${v.title || 'NO TITLE'}"`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       hasDescription: ${hasDescription ? `YES (${v.description.length} chars)` : 'NO'}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]       hasCategories: ${hasCategories ? `YES [${v.categories.join(', ')}]` : 'NO'}`);
-          }
-        }
-      }
-
-      if (data.items?.length) {
-        // Pick best volume using improved scoring (no hard cover requirement)
-        // This function includes detailed debug logging for top 3 candidates
-        const picked = pickBestVolume(data.items, title, author);
-        
-        // DEBUG: Log selection result
-        if (DEBUG_GOOGLE_BOOKS) {
-          if (picked) {
-            const v = picked.volumeInfo || {};
-            const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
-            const rawCoverUrl = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail;
-            const coverUrl = rawCoverUrl ? rawCoverUrl.replace('http:', 'https:') : '';
-            const isValidCover = coverUrl ? isValidBookCover(coverUrl) : false;
-            
-            console.log(`[DEBUG_GOOGLE_BOOKS]   ✅ Selected Item:`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     ID: ${picked.id}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     Title: "${v.title || 'NO TITLE'}"`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     isValidCover: ${isValidCover ? 'YES' : 'NO'}`);
-            if (!isValidCover && hasImageLinks) {
-              console.log(`[DEBUG_GOOGLE_BOOKS]     ⚠️ Cover URL rejected by validation: ${coverUrl.substring(0, 100)}...`);
+        let response: Response;
+        try {
+          response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
+        } catch (fetchError: any) {
+          clearTimeout(timeoutId);
+          if (fetchError.name === 'AbortError') {
+            // Let queue retry once, then fail gracefully
+            if (retryCount < 1) {
+              throw new Error('Request timeout - retrying...');
             }
-          } else {
-            console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ No candidate selected`);
-            console.log(`[DEBUG_GOOGLE_BOOKS]     Reason: pickBestVolume returned null (no items or all scored 0)`);
+            throw new Error('Request timeout - please check your internet connection');
           }
-          console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+          throw fetchError;
         }
 
-        if (picked) {
-          const volumeInfo = picked.volumeInfo || {};
-          
-          log('debug', `[GoogleBooks] ✅ Picked best match: "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.id})`);
+        // DEBUG: Log response status and URL
+        const DEBUG_GOOGLE_BOOKS = process.env.DEBUG_GOOGLE_BOOKS === 'true'; // Only when explicitly enabled (no isDev to reduce log noise)
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+          console.log(`[DEBUG_GOOGLE_BOOKS] Response Debug:`);
+          console.log(`[DEBUG_GOOGLE_BOOKS]   Status: ${response.status}`);
+          console.log(`[DEBUG_GOOGLE_BOOKS]   OK: ${response.ok}`);
+          console.log(`[DEBUG_GOOGLE_BOOKS]   URL: ${url}`);
+        }
 
-          // Extract cover URL - only set if valid
+        // CRITICAL: Proxy now always returns 200 with { ok: true/false, data: ... }
+        // Parse response and check ok flag
+        const responseData = await response.json() as GoogleBooksProxyResponse;
+        
+        // Handle new resilient response format
+        if (responseData.ok === false) {
+          // Proxy returned error gracefully - log and try next strategy
+          if (DEBUG_GOOGLE_BOOKS) {
+            console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ Proxy returned ok:false - ${responseData.error || 'Unknown error'}`);
+          }
+          // If retryAfterMs is provided and we have retries left, wait and retry
+          if (responseData.retryAfterMs && retryCount < 2) {
+            await new Promise(resolve => setTimeout(resolve, responseData.retryAfterMs));
+            throw new Error('Rate limited - retrying...');
+          }
+          // Try next strategy
+          continue;
+        }
+
+        // Success - extract data from response
+        const data = (responseData.data || responseData) as GoogleBooksResponse;
+        
+        // DEBUG: Log items count and top 3 candidates
+        if (DEBUG_GOOGLE_BOOKS) {
+          console.log(`[DEBUG_GOOGLE_BOOKS]   Items exists: ${!!data.items}`);
+          console.log(`[DEBUG_GOOGLE_BOOKS]   Items length: ${data.items?.length || 0}`);
+          
+          if (data.items && data.items.length > 0) {
+            console.log(`[DEBUG_GOOGLE_BOOKS]   Top 3 Candidates:`);
+            for (const [i, item] of data.items.slice(0, 3).entries()) {
+              const v = item.volumeInfo || {};
+              const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
+              const hasDescription = !!v.description;
+              const hasCategories = !!(v.categories && v.categories.length > 0);
+              
+              console.log(`[DEBUG_GOOGLE_BOOKS]     Candidate #${i}:`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       ID: ${item.id}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       Title: "${v.title || 'NO TITLE'}"`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       hasDescription: ${hasDescription ? `YES (${v.description.length} chars)` : 'NO'}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]       hasCategories: ${hasCategories ? `YES [${v.categories.join(', ')}]` : 'NO'}`);
+            }
+          }
+        }
+
+        if (data.items?.length) {
+          // Pick best volume using improved scoring (no hard cover requirement)
+          // This function includes detailed debug logging for top 3 candidates
+          const picked = pickBestVolume(data.items, title, author);
+          
+          // DEBUG: Log selection result
+          if (DEBUG_GOOGLE_BOOKS) {
+            if (picked) {
+              const v = picked.volumeInfo || {};
+              const hasImageLinks = !!(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail));
+              const rawCoverUrl = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail;
+              const coverUrl = rawCoverUrl ? rawCoverUrl.replace('http:', 'https:') : '';
+              const isValidCover = coverUrl ? isValidBookCover(coverUrl) : false;
+              
+              console.log(`[DEBUG_GOOGLE_BOOKS]   ✅ Selected Item:`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     ID: ${picked.id}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     Title: "${v.title || 'NO TITLE'}"`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     Authors: ${(v.authors || []).join(', ') || 'NO AUTHORS'}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     hasImageLinks: ${hasImageLinks ? 'YES' : 'NO'}`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     isValidCover: ${isValidCover ? 'YES' : 'NO'}`);
+              if (!isValidCover && hasImageLinks) {
+                console.log(`[DEBUG_GOOGLE_BOOKS]     ⚠️ Cover URL rejected by validation: ${coverUrl.substring(0, 100)}...`);
+              }
+            } else {
+              console.log(`[DEBUG_GOOGLE_BOOKS]   ❌ No candidate selected`);
+              console.log(`[DEBUG_GOOGLE_BOOKS]     Reason: pickBestVolume returned null (no items or all scored 0)`);
+            }
+            console.log(`[DEBUG_GOOGLE_BOOKS] ========================================`);
+          }
+
+          if (picked) {
+            const volumeInfo = picked.volumeInfo || {};
+            
+            log('debug', `[GoogleBooks] ✅ Picked best match (strategy ${strategyIndex + 1}): "${volumeInfo.title}" by ${volumeInfo.authors?.[0] || 'unknown'} (ID: ${picked.id})`);
+
+            // Extract cover URL - only set if valid
+            let coverUrl: string | undefined = undefined;
+            if (volumeInfo.imageLinks) {
+              const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+              if (rawCoverUrl) {
+                const normalizedCoverUrl = rawCoverUrl.replace('http:', 'https:');
+                // Only set coverUrl if it passes validation
+                if (isValidBookCover(normalizedCoverUrl)) {
+                  coverUrl = normalizedCoverUrl;
+                } else if (DEBUG_GOOGLE_BOOKS) {
+                  console.log(`[DEBUG_GOOGLE_BOOKS] ⚠️ Cover URL failed validation: ${normalizedCoverUrl.substring(0, 100)}...`);
+                }
+              }
+            }
+
+            // Extract all data from the best volume
+            const result: GoogleBooksData = {
+              googleBooksId: picked.id,
+              coverUrl, // Only set if valid, otherwise undefined
+              pageCount: volumeInfo.pageCount,
+              categories: volumeInfo.categories,
+              publisher: volumeInfo.publisher,
+              publishedDate: volumeInfo.publishedDate,
+              language: volumeInfo.language,
+              averageRating: volumeInfo.averageRating,
+              ratingsCount: volumeInfo.ratingsCount,
+              subtitle: volumeInfo.subtitle,
+              printType: volumeInfo.printType,
+              description: volumeInfo.description,
+            };
+
+            // Cache the result (aggressive caching - normalize for cache key)
+            const normalizedTitle = norm(title);
+            const normalizedAuthor = author ? norm(author) : '';
+            const normalizedCacheKey = `search:${normalizedTitle}|${normalizedAuthor}`;
+            cache.set(normalizedCacheKey, result);
+            cache.set(cacheKey, result); // Also cache with original query
+            // Also cache by ID for future lookups
+            if (picked.id) {
+              cache.set(`id:${picked.id}`, result);
+            }
+            
+            // Save to Supabase cache (server-side only, shared across all users)
+            if (result.googleBooksId) {
+              await saveToSupabaseCache(result, title, author);
+            }
+            
+            return result;
+          }
+
+          // Fallback: if pickBestVolume returned null (shouldn't happen if items.length > 0)
+          log('debug', `[GoogleBooks] ⚠️ No volume selected, returning top result`);
+          const topBook = data.items[0];
+          const topVolumeInfo = topBook.volumeInfo || {};
+          
+          // Extract cover URL if valid
           let coverUrl: string | undefined = undefined;
-          if (volumeInfo.imageLinks) {
-            const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+          if (topVolumeInfo.imageLinks) {
+            const rawCoverUrl = topVolumeInfo.imageLinks.thumbnail || topVolumeInfo.imageLinks.smallThumbnail;
             if (rawCoverUrl) {
               const normalizedCoverUrl = rawCoverUrl.replace('http:', 'https:');
-              // Only set coverUrl if it passes validation
               if (isValidBookCover(normalizedCoverUrl)) {
                 coverUrl = normalizedCoverUrl;
-              } else if (DEBUG_GOOGLE_BOOKS) {
-                console.log(`[DEBUG_GOOGLE_BOOKS] ⚠️ Cover URL failed validation: ${normalizedCoverUrl.substring(0, 100)}...`);
               }
             }
           }
-
-          // Extract all data from the best volume
-          const result: GoogleBooksData = {
-            googleBooksId: picked.id,
-            coverUrl, // Only set if valid, otherwise undefined
-            pageCount: volumeInfo.pageCount,
-            categories: volumeInfo.categories,
-            publisher: volumeInfo.publisher,
-            publishedDate: volumeInfo.publishedDate,
-            language: volumeInfo.language,
-            averageRating: volumeInfo.averageRating,
-            ratingsCount: volumeInfo.ratingsCount,
-            subtitle: volumeInfo.subtitle,
-            printType: volumeInfo.printType,
-            description: volumeInfo.description,
+          
+          const fallbackResult = {
+            googleBooksId: topBook.id,
+            coverUrl,
+            pageCount: topVolumeInfo.pageCount,
+            categories: topVolumeInfo.categories,
+            publisher: topVolumeInfo.publisher,
+            publishedDate: topVolumeInfo.publishedDate,
+            language: topVolumeInfo.language,
+            averageRating: topVolumeInfo.averageRating,
+            ratingsCount: topVolumeInfo.ratingsCount,
+            subtitle: topVolumeInfo.subtitle,
+            printType: topVolumeInfo.printType,
+            description: topVolumeInfo.description,
           };
-
-          // Cache the result (aggressive caching - normalize for cache key)
-          const normalizedTitle = norm(title);
-          const normalizedAuthor = author ? norm(author) : '';
-          const normalizedCacheKey = `search:${normalizedTitle}|${normalizedAuthor}`;
-          cache.set(normalizedCacheKey, result);
-          cache.set(cacheKey, result); // Also cache with original query
-          // Also cache by ID for future lookups
-          if (picked.id) {
-            cache.set(`id:${picked.id}`, result);
+          
+          // Save to Supabase cache (server-side only)
+          if (fallbackResult.googleBooksId) {
+            await saveToSupabaseCache(fallbackResult, title, author);
           }
           
-          // Save to Supabase cache (server-side only, shared across all users)
-          if (result.googleBooksId) {
-            await saveToSupabaseCache(result, title, author);
-          }
-          
-          return result;
+          return fallbackResult;
         }
 
-        // Fallback: if pickBestVolume returned null (shouldn't happen if items.length > 0)
-        log('debug', `[GoogleBooks] ⚠️ No volume selected, returning top result`);
-        const topBook = data.items[0];
-        const topVolumeInfo = topBook.volumeInfo || {};
-        
-        // Extract cover URL if valid
-        let coverUrl: string | undefined = undefined;
-        if (topVolumeInfo.imageLinks) {
-          const rawCoverUrl = topVolumeInfo.imageLinks.thumbnail || topVolumeInfo.imageLinks.smallThumbnail;
-          if (rawCoverUrl) {
-            const normalizedCoverUrl = rawCoverUrl.replace('http:', 'https:');
-            if (isValidBookCover(normalizedCoverUrl)) {
-              coverUrl = normalizedCoverUrl;
-            }
-          }
+        // No results for this strategy - try next one
+        log('debug', `[GoogleBooks] No results for strategy ${strategyIndex + 1}: "${query}"`);
+      } catch (error: any) {
+        // Handle network errors - try next strategy unless it's a retryable error
+        const errorMessage = error?.message || String(error);
+        if (errorMessage.includes('Request timeout - retrying...') || errorMessage.includes('Rate limited - retrying...')) {
+          // Retryable error - throw to let queue retry
+          throw error;
         }
-        
-        const fallbackResult = {
-          googleBooksId: topBook.id,
-          coverUrl,
-          pageCount: topVolumeInfo.pageCount,
-          categories: topVolumeInfo.categories,
-          publisher: topVolumeInfo.publisher,
-          publishedDate: topVolumeInfo.publishedDate,
-          language: topVolumeInfo.language,
-          averageRating: topVolumeInfo.averageRating,
-          ratingsCount: topVolumeInfo.ratingsCount,
-          subtitle: topVolumeInfo.subtitle,
-          printType: topVolumeInfo.printType,
-          description: topVolumeInfo.description,
-        };
-        
-        // Save to Supabase cache (server-side only)
-        if (fallbackResult.googleBooksId) {
-          await saveToSupabaseCache(fallbackResult, title, author);
-        }
-        
-        return fallbackResult;
+        // Non-retryable error - try next strategy
+        log('debug', `[GoogleBooks] Error with strategy ${strategyIndex + 1}, trying next: ${errorMessage}`);
+        continue;
       }
+    }
 
-      // No results found - log for debugging
-      console.log(`[GB] ❌ No results for query: "${query}"`);
-      return {};
+    // All strategies failed - log for debugging
+    console.log(`[GB] ❌ No results after trying ${queryStrategies.length} strategies for: "${title}"${author ? ` by ${author}` : ''}`);
+    return {};
     } catch (error: any) {
       // Handle network errors more gracefully - don't log as errors, just return empty
       const errorMessage = error?.message || String(error);
@@ -1492,7 +1515,15 @@ export async function searchMultipleBooks(
         return [];
       }
 
-      const data = await response.json() as GoogleBooksResponse;
+      const body = await response.json();
+      // Proxy returns { ok: true, data } — unwrap so we get the actual Google Books response
+      if (body && (body as any).ok === false) {
+        if (__DEV__) console.warn('[GoogleBooks] searchMultipleBooks proxy returned ok:false', (body as any).error);
+        return [];
+      }
+      const data: GoogleBooksResponse = (body && (body as any).ok === true && (body as any).data != null)
+        ? (body as any).data
+        : (body as GoogleBooksResponse);
 
       if (data.items && data.items.length > 0) {
         const results: GoogleBooksData[] = data.items.map((book: GoogleBooksVolume) => {
@@ -1512,16 +1543,22 @@ export async function searchMultipleBooks(
             description: volumeInfo.description,
           };
 
-          // Extract cover URL - only use if it's a valid book cover (not placeholder)
+          // Extract cover URL - try multiple sizes, prefer larger ones
           if (volumeInfo.imageLinks) {
-            const rawCoverUrl = volumeInfo.imageLinks.thumbnail || volumeInfo.imageLinks.smallThumbnail;
+            // Try larger sizes first (better quality for cover selection)
+            const rawCoverUrl = volumeInfo.imageLinks.extraLarge ||
+                               volumeInfo.imageLinks.large || 
+                               volumeInfo.imageLinks.medium || 
+                               volumeInfo.imageLinks.thumbnail || 
+                               volumeInfo.imageLinks.smallThumbnail;
             if (rawCoverUrl) {
               const coverUrl = rawCoverUrl.replace('http:', 'https:');
-              // Validate that it's a real book cover (not placeholder/default image)
-              if (isValidBookCover(coverUrl)) {
-                result.coverUrl = coverUrl;
-              } else {
-                console.log(`⚠️ Skipping invalid cover URL for "${volumeInfo.title}": ${coverUrl}`);
+              // For cover switching, ALWAYS include the cover URL regardless of validation
+              // The user can see it and decide if they want to use it
+              result.coverUrl = coverUrl;
+              if (!isValidBookCover(coverUrl)) {
+                // Log a warning but still include it
+                console.log(`⚠️ Cover URL may be placeholder for "${volumeInfo.title}": ${coverUrl.substring(0, 50)}...`);
               }
             }
           }
@@ -1643,7 +1680,14 @@ export async function searchBooksByQuery(
         return [];
       }
 
-      const data = await response.json() as GoogleBooksResponse;
+      const body = await response.json();
+      if (body && (body as any).ok === false) {
+        if (__DEV__) console.warn('[GoogleBooks] searchBooksByQuery proxy returned ok:false', (body as any).error);
+        return [];
+      }
+      const data: GoogleBooksResponse = (body && (body as any).ok === true && (body as any).data != null)
+        ? (body as any).data
+        : (body as GoogleBooksResponse);
 
       if (data.items && data.items.length > 0) {
         const results = data.items.map((book: GoogleBooksVolume) => {

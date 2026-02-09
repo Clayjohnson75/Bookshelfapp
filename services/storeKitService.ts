@@ -56,7 +56,7 @@ export async function getSubscriptionProducts(): Promise<SubscriptionProduct[]> 
       description: product.localizedDescription,
       price: product.localizedPrice,
       currencyCode: product.priceCurrencyCode || 'USD',
-      subscriptionPeriod: product.subscriptionPeriod,
+      subscriptionPeriod: product.subscriptionPeriod as SubscriptionProduct['subscriptionPeriod'],
     }));
   } catch (error) {
     console.error('Error fetching subscription products:', error);

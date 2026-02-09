@@ -1,25 +1,28 @@
 import React from 'react';
-import { View, StyleSheet, Image } from 'react-native';
+import { View, StyleSheet, Image, Text } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { useNavigation } from '@react-navigation/native';
 import { ScansTab } from './tabs/ScansTab';
 import { ExploreTab } from './tabs/ExploreTab';
 import { MyLibraryTab } from './tabs/MyLibraryTab';
 import { ScanningNotification } from './components/ScanningNotification';
-import { useAuth, isGuestUser } from './auth/SimpleAuthContext';
 import { useCamera } from './contexts/CameraContext';
+import { SUPABASE_REF } from './lib/supabase';
 
 const Tab = createBottomTabNavigator();
 
 export const TabNavigator = () => {
-  const { user } = useAuth();
-  const navigation = useNavigation();
   const { isCameraActive } = useCamera();
   
   return (
     <GestureHandlerRootView style={styles.container}>
+      {__DEV__ && (
+        <View style={styles.devBadge} pointerEvents="none">
+          <Text style={styles.devBadgeText}>DEV DB: {SUPABASE_REF || '—'}</Text>
+        </View>
+      )}
       <Tab.Navigator
+        id={undefined}
         initialRouteName="Scans" // Always start on Scans tab (especially for guests)
         screenOptions={{
           tabBarActiveTintColor: '#2c3e50',
@@ -71,14 +74,6 @@ export const TabNavigator = () => {
               />
             ),
           }}
-          listeners={{
-            tabPress: (e) => {
-              // If user is signed out (null) or is a guest, navigate and show login
-              if (!user || isGuestUser(user)) {
-                // Don't prevent navigation - let it navigate, then MyLibraryTab will auto-show login
-              }
-            },
-          }}
         />
       </Tab.Navigator>
       <ScanningNotification />
@@ -89,6 +84,22 @@ export const TabNavigator = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  devBadge: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  devBadgeText: {
+    color: '#7fdbff',
+    fontSize: 11,
+    fontWeight: '600',
   },
 });
 

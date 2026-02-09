@@ -4,7 +4,7 @@
  * Handles subscription management, scan limits, and upgrade prompts
  */
 
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 
 /**
  * 🎛️ FEATURE FLAG: Enable Pro Features for Everyone
