@@ -140,6 +140,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // Profile photo: read from profile_photos only (not profiles.avatar_url).
+    // Filter deleted_at IS NULL so "Clear Account Data" soft-deletes are respected.
+    const { data: profilePhoto } = await supabase
+      .from('profile_photos')
+      .select('uri')
+      .eq('user_id', profile.id)
+      .is('deleted_at', null)
+      .maybeSingle();
+
     // Get user's public books (only approved books)
     const { data: books, error: booksError } = await supabase
       .from('books')
@@ -175,7 +184,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: profile.id,
         username: profile.username,
         displayName: profile.display_name || profile.username,
-        avatarUrl: profile.avatar_url,
+        avatarUrl: profilePhoto?.uri ?? null,
         bio: profile.profile_bio,
         createdAt: profile.created_at,
       },

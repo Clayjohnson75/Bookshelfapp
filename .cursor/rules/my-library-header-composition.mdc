@@ -1,0 +1,47 @@
+# My Library header: identity row + divider (no pill, no collage)
+
+Single cohesive surface and typography hierarchy. No giant dark pill, no book-cover collage.
+
+---
+
+## Theme behavior (tokens only, no per-screen hacks)
+
+**Light mode:**
+- **bg** — parchment/off-white
+- **surface** — slightly warmer (not stark white)
+- **text** — high contrast (textPrimary / textSecondary)
+
+**Dark mode:**
+- **bg** — deep charcoal
+- **surface** — slightly lighter charcoal
+- **text** — near-white
+- **divider** — subtle but visible
+
+Use **theme.colors.*** everywhere. No hardcoded colors for light/dark.
+
+---
+
+## Header layout
+
+- **Container:** paddingTop safe area, paddingHorizontal 16, paddingBottom 12, backgroundColor: bg
+- **Row 1 (identity):** Left: avatar monogram (40×40, surface) + name block (name 22 semibold textPrimary, username 15 medium textSecondary). Right: gear (36×36, surface, icon textPrimary). Gap 12. Compact.
+- **Row 2 (optional):** Thin divider — height 1, color divider, marginTop 12
+
+---
+
+## Acceptance criteria
+
+- Looks **premium and intentional** in both themes
+- **No collage/covers** in header
+- **No giant empty header space**
+- **Name / @ readable** (typography hierarchy)
+- **One-pane vibe** — no stack of random cards; single cohesive surface
+
+---
+
+## Do NOT
+
+- Do NOT add a huge dark pill or full-width bar
+- Do NOT add book-cover strip/collage to header
+- Do NOT use hardcoded colors (e.g. rgba(0,0,0,0.55)) — use tokens
+- Do NOT create giant empty header area

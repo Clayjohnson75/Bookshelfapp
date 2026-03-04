@@ -1,0 +1,57 @@
+---
+description: CRITICAL - Persist image_hash on photos + enforce canonical photo identity
+alwaysApply: true
+---
+
+# 🚨 CRITICAL: Persist image_hash on photos + enforce canonical photo identity
+
+1. Add image_hash column to photos table
+
+```sql
+alter table photos
+add column image_hash text;
+
+create index photos_image_hash_idx
+on photos(user_id, image_hash);
+```
+
+   **Bonus (enforce uniqueness):** Prevents regressions — at most one photo per (user_id, image_hash).
+
+   ```sql
+   drop index if exists photos_image_hash_idx;
+   create unique index unique_photo_per_user_hash
+   on photos(user_id, image_hash);
+   ```
+   (If duplicate (user_id, image_hash) rows exist, dedupe before applying.)
+
+2. When creating / deduping photos (after computing imageHash on client):
+
+   **BEFORE inserting photo:**
+   ```sql
+   select id from photos where user_id = ? and image_hash = ? limit 1;
+   ```
+   - If exists → reuse that photo id (do not insert a new row).
+   - If not → insert new photo with `image_hash` set.
+
+3. **NEVER** create a new photo row if a row with that `(user_id, image_hash)` already exists. This replaces weak client-only dedupe.
+
+4. **After dedupe, ALWAYS patch scan_jobs.photo_id.** No exceptions.
+
+   ```ts
+   await supabase
+     .from('scan_jobs')
+     .update({ photo_id: canonicalPhotoId })
+     .eq('id', jobId);
+   ```
+
+   (Client: call `patchScanJobPhotoId(userId, jobId, canonicalPhotoId)` after every dedupe path that produces `canonicalPhotoId`.)
+
+5. **Books must inherit canonical photo id.** Every book row:
+
+   - `source_photo_id = canonicalPhotoId`
+
+   No exceptions. All inserts/updates for books from a scan must set `source_photo_id` to the same canonical photo id used for that job.
+
+6. **Prevent deleting approved books via photo cleanup.**  
+   - `deleteLibraryPhotoAndBooks` / DELETE_LIBRARY_PHOTO: use **cascadeBooks = false** (default) unless the user explicitly deletes the photo manually.  
+   - Auto-cleanup must **NEVER** delete approved books. Only pass **cascadeBooks = true** when the user explicitly confirms "Delete photo" in the UI (e.g. Library delete confirmation).

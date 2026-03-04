@@ -1,231 +1,238 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
+import { checkRateLimit, sendRateLimitResponse } from '../lib/rateLimit';
+import { getCredentialedOrigin } from '../lib/corsCredentialed';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Max-Age', '86400');
+ res.setHeader('Access-Control-Allow-Origin', getCredentialedOrigin(req));
+ res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+ res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+ res.setHeader('Access-Control-Max-Age', '86400');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+ if (req.method === 'OPTIONS') {
+ return res.status(200).end();
+ }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+ if (req.method !== 'POST') {
+ return res.status(405).json({ error: 'Method not allowed' });
+ }
 
-  try {
-    const { email } = req.body;
+ const rateLimitResult = await checkRateLimit(req, 'auth');
+ if (!rateLimitResult.success) {
+ sendRateLimitResponse(res, rateLimitResult);
+ return;
+ }
 
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: 'Email is required' });
-    }
+ try {
+ const { email } = req.body;
 
-    // Get Supabase credentials
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+ if (!email || typeof email !== 'string') {
+ return res.status(400).json({ error: 'Email is required' });
+ }
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('[API] Missing Supabase credentials');
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+ // Get Supabase credentials
+ const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    // Create Supabase admin client
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
+ if (!supabaseUrl || !supabaseServiceKey) {
+ console.error('[API] Missing Supabase credentials');
+ return res.status(500).json({ error: 'Server configuration error' });
+ }
 
-    // Generate confirmation link from Supabase
-    // Note: For signup links, password is required but not used since we handle signup separately
-    const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'signup',
-      email: email,
-      password: 'temp-password-not-used', // Required by API but not used for email confirmation links
-      options: {
-        redirectTo: 'https://bookshelfscan.app/api/confirm-email',
-      },
-    });
+ // Create Supabase admin client
+ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+ auth: {
+ autoRefreshToken: false,
+ persistSession: false
+ }
+ });
 
-    if (supabaseError) {
-      console.error('[API] Supabase generateLink error:', supabaseError);
-      
-      // Check if user doesn't exist or already confirmed
-      if (supabaseError.message?.includes('User not found') || 
-          supabaseError.message?.includes('user_not_found') ||
-          supabaseError.message?.includes('already confirmed')) {
-        // Still return success to prevent email enumeration
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a confirmation link has been sent.'
-        });
-      }
-      
-      // For other errors, fallback to Supabase's default email
-      console.log('[API] Falling back to Supabase default confirmation email...');
-      try {
-        await supabaseAdmin.auth.resend({
-          type: 'signup',
-          email: email,
-          options: {
-            emailRedirectTo: 'bookshelfscanner://confirm-email',
-          },
-        });
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a confirmation link has been sent.'
-        });
-      } catch (fallbackError) {
-        console.error('[API] Fallback confirmation email also failed:', fallbackError);
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a confirmation link has been sent.'
-        });
-      }
-    }
+ // Generate confirmation link from Supabase
+ // Note: For signup links, password is required but not used since we handle signup separately
+ const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
+ type: 'signup',
+ email: email,
+ password: 'temp-password-not-used', // Required by API but not used for email confirmation links
+ options: {
+ redirectTo: 'https://bookshelfscan.app/api/confirm-email',
+ },
+ });
 
-    if (!data?.properties?.action_link) {
-      console.error('[API] No action_link generated by Supabase');
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a confirmation link has been sent.'
-      });
-    }
+ if (supabaseError) {
+ console.error('[API] Supabase generateLink error:', supabaseError);
+ 
+ // Check if user doesn't exist or already confirmed
+ if (supabaseError.message?.includes('User not found') || 
+ supabaseError.message?.includes('user_not_found') ||
+ supabaseError.message?.includes('already confirmed')) {
+ // Still return success to prevent email enumeration
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
+ 
+ // For other errors, fallback to Supabase's default email
+ console.log('[API] Falling back to Supabase default confirmation email...');
+ try {
+ await supabaseAdmin.auth.resend({
+ type: 'signup',
+ email: email,
+ options: {
+ emailRedirectTo: 'bookshelfscanner://confirm-email',
+ },
+ });
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ } catch (fallbackError) {
+ console.error('[API] Fallback confirmation email also failed:', fallbackError);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
+ }
 
-    // Extract the token from the confirmation link
-    const confirmationLink = data.properties.action_link;
-    const url = new URL(confirmationLink);
-    const token = url.searchParams.get('token');
-    const type = url.searchParams.get('type');
+ if (!data?.properties?.action_link) {
+ console.error('[API] No action_link generated by Supabase');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
 
-    if (!token || type !== 'signup') {
-      console.error('[API] Invalid confirmation link format');
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a confirmation link has been sent.'
-      });
-    }
+ // Extract the token from the confirmation link
+ const confirmationLink = data.properties.action_link;
+ const url = new URL(confirmationLink);
+ const token = url.searchParams.get('token');
+ const type = url.searchParams.get('type');
 
-    // Create web URL that will verify and redirect to app
-    // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
-    const baseUrl = 'https://bookshelfscan.app';
-    const webConfirmUrl = `${baseUrl}/api/confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
-    const deepLink = `bookshelfscanner://confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
+ if (!token || type !== 'signup') {
+ console.error('[API] Invalid confirmation link format');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
 
-    // Send custom email using Resend
-    const emailApiKey = process.env.EMAIL_API_KEY?.trim();
-    const emailFrom = process.env.EMAIL_FROM?.trim() || 'noreply@bookshelfscan.app';
+ // Create web URL that will verify and redirect to app
+ // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
+ const baseUrl = 'https://bookshelfscan.app';
+ const webConfirmUrl = `${baseUrl}/api/confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
+ const deepLink = `bookshelfscanner://confirm-email?token=${encodeURIComponent(token)}&type=${type}`;
 
-    console.log('[API] Email configuration check:', {
-      hasEmailApiKey: !!emailApiKey,
-      emailApiKeyLength: emailApiKey?.length || 0,
-      emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
-      emailFrom: emailFrom,
-    });
+ // Send custom email using Resend
+ const emailApiKey = process.env.EMAIL_API_KEY?.trim();
+ const emailFrom = process.env.EMAIL_FROM?.trim() || 'noreply@bookshelfscan.app';
 
-    if (emailApiKey && emailApiKey.length > 0) {
-      try {
-        const resend = new Resend(emailApiKey);
-        
-        const emailHtml = `
-          <!DOCTYPE html>
-          <html>
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Confirm Your Email</title>
-            </head>
-            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-              <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
-                <h1 style="color: #2c3e50; margin-bottom: 20px;">Confirm Your Email</h1>
-                <p style="color: #666; margin-bottom: 30px;">
-                  Thanks for signing up for Bookshelf Scanner! Click the button below to confirm your email address and activate your account.
-                </p>
-                <a href="${webConfirmUrl}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
-                  Confirm Email
-                </a>
-                <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                  If the button doesn't work, copy and paste this link into your browser:
-                  <br>
-                  <a href="${webConfirmUrl}" style="color: #007AFF; text-decoration: underline;">${webConfirmUrl}</a>
-                </p>
-                <p style="color: #999; font-size: 12px; margin-top: 20px;">
-                  If you didn't create an account, please ignore this email.
-                </p>
-              </div>
-            </body>
-          </html>
-        `;
-        
-        const result = await resend.emails.send({
-          from: emailFrom,
-          to: email,
-          subject: 'Confirm Your Bookshelf Scanner Account',
-          html: emailHtml,
-        });
+ console.log('[API] Email configuration check:', {
+ hasEmailApiKey: !!emailApiKey,
+ emailApiKeyLength: emailApiKey?.length || 0,
+ emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
+ emailFrom: emailFrom,
+ });
 
-        if (result.error) {
-          console.error('[API] Resend error:', result.error);
-          throw new Error(result.error.message || 'Failed to send email');
-        }
-        console.error('[API] ✅ Confirmation email sent successfully via Resend:', result.data?.id);
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a confirmation link has been sent.'
-        });
-      } catch (customEmailError: any) {
-        console.error('[API] ❌ Error sending custom confirmation email via Resend:', customEmailError);
-        console.error('[API] Falling back to Supabase default email...');
-        
-        // Fallback to Supabase's default email
-        try {
-          await supabaseAdmin.auth.resend({
-            type: 'signup',
-            email: email,
-            options: {
-              emailRedirectTo: 'bookshelfscanner://confirm-email',
-            },
-          });
-          console.error('[API] ✅ Confirmation email sent via Supabase fallback');
-          return res.status(200).json({ 
-            success: true,
-            message: 'If an account exists with this email, a confirmation link has been sent.'
-          });
-        } catch (fallbackError: any) {
-          console.error('[API] ❌ All confirmation email methods failed:', fallbackError);
-          return res.status(200).json({ 
-            success: true,
-            message: 'If an account exists with this email, a confirmation link has been sent.'
-          });
-        }
-      }
-    } else {
-      // If Resend not configured, use Supabase's default email
-      console.log('[API] ⚠️ EMAIL_API_KEY not configured, using Supabase default email');
-      console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
-      await supabaseAdmin.auth.resend({
-        type: 'signup',
-        email: email,
-        options: {
-          emailRedirectTo: 'bookshelfscanner://confirm-email',
-        },
-      });
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a confirmation link has been sent.'
-      });
-    }
-  } catch (error: any) {
-    console.error('[API] Error in send-confirmation-email:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      message: error?.message 
-    });
-  }
+ if (emailApiKey && emailApiKey.length > 0) {
+ try {
+ const resend = new Resend(emailApiKey);
+ 
+ const emailHtml = `
+ <!DOCTYPE html>
+ <html>
+ <head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <title>Confirm Your Email</title>
+ </head>
+ <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+ <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
+ <h1 style="color: #2c3e50; margin-bottom: 20px;">Confirm Your Email</h1>
+ <p style="color: #666; margin-bottom: 30px;">
+ Thanks for signing up for Bookshelf Scanner! Click the button below to confirm your email address and activate your account.
+ </p>
+ <a href="${webConfirmUrl}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
+ Confirm Email
+ </a>
+ <p style="color: #999; font-size: 12px; margin-top: 30px;">
+ If the button doesn't work, copy and paste this link into your browser:
+ <br>
+ <a href="${webConfirmUrl}" style="color: #007AFF; text-decoration: underline;">${webConfirmUrl}</a>
+ </p>
+ <p style="color: #999; font-size: 12px; margin-top: 20px;">
+ If you didn't create an account, please ignore this email.
+ </p>
+ </div>
+ </body>
+ </html>
+ `;
+ 
+ const result = await resend.emails.send({
+ from: emailFrom,
+ to: email,
+ subject: 'Confirm Your Bookshelf Scanner Account',
+ html: emailHtml,
+ });
+
+ if (result.error) {
+ console.error('[API] Resend error:', result.error);
+ throw new Error(result.error.message || 'Failed to send email');
+ }
+ console.error('[API] Confirmation email sent successfully via Resend:', result.data?.id);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ } catch (customEmailError: any) {
+ console.error('[API] Error sending custom confirmation email via Resend:', customEmailError);
+ console.error('[API] Falling back to Supabase default email...');
+ 
+ // Fallback to Supabase's default email
+ try {
+ await supabaseAdmin.auth.resend({
+ type: 'signup',
+ email: email,
+ options: {
+ emailRedirectTo: 'bookshelfscanner://confirm-email',
+ },
+ });
+ console.error('[API] Confirmation email sent via Supabase fallback');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ } catch (fallbackError: any) {
+ console.error('[API] All confirmation email methods failed:', fallbackError);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
+ }
+ } else {
+ // If Resend not configured, use Supabase's default email
+ console.log('[API] EMAIL_API_KEY not configured, using Supabase default email');
+ console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
+ await supabaseAdmin.auth.resend({
+ type: 'signup',
+ email: email,
+ options: {
+ emailRedirectTo: 'bookshelfscanner://confirm-email',
+ },
+ });
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a confirmation link has been sent.'
+ });
+ }
+ } catch (error: any) {
+ console.error('[API] Error in send-confirmation-email:', error);
+ return res.status(500).json({ 
+ error: 'Internal server error',
+ message: error?.message 
+ });
+ }
 }
 

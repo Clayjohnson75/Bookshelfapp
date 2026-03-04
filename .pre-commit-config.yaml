@@ -1,0 +1,10 @@
+# Secret scanning before commit. Install: pip install pre-commit && pre-commit install
+# Requires gitleaks on PATH: https://github.com/zricethezav/gitleaks
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks
+        entry: gitleaks protect --staged --no-banner
+        language: system
+        pass_filenames: false

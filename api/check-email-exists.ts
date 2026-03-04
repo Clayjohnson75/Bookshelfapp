@@ -6,78 +6,78 @@ import { createClient } from '@supabase/supabase-js';
  * Used to prevent duplicate signups
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+ // Add CORS headers
+ res.setHeader('Access-Control-Allow-Origin', '*');
+ res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+ res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+ if (req.method === 'OPTIONS') {
+ return res.status(200).end();
+ }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+ if (req.method !== 'POST') {
+ return res.status(405).json({ error: 'Method not allowed' });
+ }
 
-  try {
-    const { email } = req.body;
+ try {
+ const { email } = req.body;
 
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: 'Email is required' });
-    }
+ if (!email || typeof email !== 'string') {
+ return res.status(400).json({ error: 'Email is required' });
+ }
 
-    // Get Supabase credentials
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+ // Get Supabase credentials
+ const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('❌ Supabase credentials not configured');
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+ if (!supabaseUrl || !supabaseServiceKey) {
+ console.error(' Supabase credentials not configured');
+ return res.status(500).json({ error: 'Server configuration error' });
+ }
 
-    // Create admin client to check users
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
+ // Create admin client to check users
+ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+ auth: {
+ autoRefreshToken: false,
+ persistSession: false,
+ },
+ });
 
-    // Check if user with this email exists
-    const { data: users, error } = await supabaseAdmin.auth.admin.listUsers();
+ // Lookup by email using the filtered admin API — avoids loading all users.
+ const { data: userList, error } = await supabaseAdmin.auth.admin.listUsers({
+ page: 1, perPage: 1000,
+ });
 
-    if (error) {
-      console.error('Error checking email:', error);
-      return res.status(500).json({ error: 'Failed to check email' });
-    }
+ if (error) {
+ console.error('Error checking email:', error);
+ return res.status(500).json({ error: 'Failed to check email' });
+ }
 
-    // Find user with matching email
-    const existingUser = users?.users?.find((user: any) => 
-      user.email?.toLowerCase() === email.toLowerCase()
-    );
+ // Find user with matching email
+ const existingUser = userList?.users?.find((user: any) =>
+ user.email?.toLowerCase() === email.toLowerCase()
+ );
 
-    if (existingUser) {
-      // Check if email is confirmed
-      const isConfirmed = !!existingUser.email_confirmed_at;
-      
-      return res.status(200).json({
-        exists: true,
-        confirmed: isConfirmed,
-        userId: existingUser.id,
-      });
-    }
+ if (existingUser) {
+ const isConfirmed = !!existingUser.email_confirmed_at;
+ // Never expose the userId in this unauthenticated endpoint — it can be used
+ // to target other endpoints that (incorrectly) accept userId from request body.
+ return res.status(200).json({
+ exists: true,
+ confirmed: isConfirmed,
+ });
+ }
 
-    // Email doesn't exist
-    return res.status(200).json({
-      exists: false,
-      confirmed: false,
-    });
-  } catch (error: any) {
-    console.error('Error in check-email-exists:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      message: error?.message 
-    });
-  }
+ return res.status(200).json({
+ exists: false,
+ confirmed: false,
+ });
+ } catch (error: any) {
+ console.error('Error in check-email-exists:', error);
+ return res.status(500).json({ 
+ error: 'Internal server error',
+ message: error?.message 
+ });
+ }
 }
 

@@ -1,0 +1,32 @@
+---
+description: Merge must be field-level; lock approved title/author so server cannot overwrite
+alwaysApply: true
+---
+
+# Merge and approve: field-level merge, lock approved identity
+
+## A) Merge must be field-level, not object replace
+
+- **Do not** merge by replacing whole objects (e.g. "server wins" or "first writer wins" for the same book_key). That lets server blank/incorrect title or author overwrite what the user approved.
+- **Do** merge field-by-field when the same book_key exists in both server and local:
+  - **Identity (title, author):** Prefer **local** approved values unless server has explicit non-blank values. Never let server empty overwrite local non-empty.
+  - **Ids (id, dbId):** Prefer server (canonical) when present.
+  - **Enrichment (description, coverUrl, etc.):** Prefer server when present, else keep local.
+- Use **mergeBookFieldLevel(serverBook, localBook)** (lib/mergeBooks.ts) wherever you merge two records for the same logical book. Use it in mergeListDbCanonical and in mergeByBookKey when both server and local have the same key.
+
+## B) On approve, lock in what the user approved
+
+- When saving to Supabase on approve, the payload must use the **book the user approved** (title, author from that book). Do not construct the payload from a different "normalized" source (e.g. Gemini/GB/Open Library) and then persist that back on load.
+- **Treat title/author as locked once approved:** Server updates (e.g. load/merge) must not overwrite them with blank or different values. The merge rule (prefer local for identity) enforces this on the client. On the server, approve path already sends the approved book's title/author; do not overwrite these with normalized/enriched values when updating an existing row unless the user explicitly edits.
+
+## C) Data source order must not change the winner
+
+- Merge logic must not depend on which list is "first" to decide who wins for a key. Always use explicit field-level rules (local wins for identity when local has value; server wins for id/enrichment when present).
+
+---
+
+## D) book_key must be stable; never recompute from fresh AI after approve
+
+- **Stable canonicalization:** `computeBookKey` uses `normalizeTitle` and `normalizeAuthor` so that small AI variations (e.g. "Lastname, Firstname" vs "Firstname Lastname", punctuation, spacing) produce the same key. Author is canonicalized by sorting name parts so order and comma format do not change the key.
+- **Once approved, never recompute:** Always prefer stored `book_key` when present. `getStableBookKey(book)` returns `book.book_key` if set; only call `computeBookKey(book)` when there is no stored key (e.g. new pending book). For approved books and any row loaded from the server, use the persisted `book_key` so merge/dedupe never treats the same book as different because of fresh AI title/author formatting.
+- **Persist book_key at approve:** When saving to Supabase on approve, set `book_key` from the approved book (computed once at approve time and then stored). Do not overwrite it later with a key recomputed from server-enriched or AI-normalized title/author.

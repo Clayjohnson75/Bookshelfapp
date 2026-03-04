@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, ScrollView } from 'react-native';
+import { useTheme } from '../theme/ThemeProvider';
 
 interface PendingScanCardProps {
   scan: {
@@ -20,6 +21,7 @@ export const PendingScanCard: React.FC<PendingScanCardProps> = ({
   onApproveSelected,
   onReject,
 }) => {
+  const { t } = useTheme();
   const [selectedBooks, setSelectedBooks] = React.useState<Set<string>>(new Set());
   
   const toggleBook = (bookTitle: string) => {
@@ -66,7 +68,7 @@ export const PendingScanCard: React.FC<PendingScanCardProps> = ({
         </TouchableOpacity>
         {selectedBooks.size > 0 && (
           <TouchableOpacity
-            style={[styles.button, styles.approveSelectedButton]}
+            style={[styles.button, styles.approveSelectedButton, { backgroundColor: t.colors.primary }]}
             onPress={handleApproveSelected}
           >
             <Text style={styles.buttonText}>Approve Selected ({selectedBooks.size})</Text>
@@ -142,7 +144,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#27ae60',
   },
   approveSelectedButton: {
-    backgroundColor: '#007AFF',
+    // backgroundColor from theme (inline in component)
   },
   rejectButton: {
     backgroundColor: '#e74c3c',

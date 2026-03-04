@@ -1,0 +1,75 @@
+---
+description: Scan dedupe + provenance fix — root cause analysis and minimal patch target
+alwaysApply: true
+---
+
+# Scan dedupe + sync/provenance fix (Cursor target)
+
+We have a Bookshelf Scanner app (Expo/React Native + Supabase). After recent "photo dedupe" + "sync/import" changes, rescanning the same image causes:
+
+* photos disappearing from library (photos count drops after refresh)
+* books showing without metadata/description (BookDetailModal opens with `dbId: null`, `hasDescription: false`)
+* old images reappearing after approving
+* many `scan_jobs` rows with `photo_id = NULL`
+* dedupe logs like: `[PHOTO_DEDUPE] imageHash=101 existingPhotoId=6f1df... canonicalPhotoId=6f1df... reused=true`
+* later verification mismatch: `source_photo_id verification expected=7 actual=0`
+* and auto-deletes: `[DELETE_LIBRARY_PHOTO_AND_BOOKS] photoDeleted=1 approvedBooksDeleted=0` for photoIds that were just used.
+
+**Hypothesis:** Photo dedupe rewires the canonical photoId but we do NOT consistently backfill `scan_jobs.photo_id` and/or we're writing `books.source_photo_id` / `source_scan_job_id` inconsistently. Then a cleanup routine (delete orphan photos / delete duplicates) incorrectly deletes canonical photos. Also UI merge keeps local "phantom" book IDs (e.g. `photoId_TITLE_p_#_random`) instead of replacing them with DB rows after approve, so BookDetail opens local objects with no description.
+
+---
+
+## Please do all of this
+
+### 1. Trace the full lifecycle of a scan
+
+* create scan_job
+* create/upload photo
+* dedupe to canonical photoId (by image hash)
+* patch scan_job.photo_id
+* upsert books with `source_photo_id` and `source_scan_job_id`
+* approve writes
+* sync/import on open
+* any cleanup/deletion
+
+### 2. Find where `scan_jobs.photo_id` can remain NULL after dedupe and fix it
+
+* Ensure when dedupe returns `canonicalPhotoId`, we update `scan_jobs.photo_id = canonicalPhotoId` for that job.
+* Add guardrails: never insert into `scan_job_imports` unless `scan_jobs.photo_id` is non-null OR immediately retry after patch.
+
+### 3. Find the code that calls `DELETE_LIBRARY_PHOTO_AND_BOOKS` and stop deleting photos automatically
+
+* Only delete on explicit user action.
+* Never delete a photoId that is referenced by any books OR is the canonical photo for a hash.
+
+### 4. Fix provenance mismatch
+
+* After upsert books, verify by BOTH `source_scan_job_id` and `source_photo_id`.
+* If `countByPhoto=0` but `countByJob>0`, it means `source_photo_id` wasn't set on the rows being written/updated (likely because approve uses `update by user_id, book_key` and doesn't include provenance fields in update set). Ensure provenance fields are always written on approve/update.
+
+### 5. UI: After approve/sync, replace local pending items with real DB rows
+
+* Ensure the list uses DB `id` as key.
+* Don't leave local-only ids in approved library.
+* BookDetailModal should always have a DB id for approved books.
+
+---
+
+## Deliverables
+
+* **Exact root cause(s)** with file/line references.
+* **A minimal patch** that:
+  a) guarantees `scan_jobs.photo_id` is never left null for completed jobs  
+  b) prevents auto photo deletion  
+  c) ensures approve updates set `source_photo_id` / `source_scan_job_id`  
+  d) fixes the UI merge so `dbId` is not null for approved books  
+
+---
+
+## Relevant logs to match
+
+* `[SYNC] skipping 1 job(s) without scan_jobs.photo_id`
+* `[PHOTO_DEDUPE] ... reused=true`
+* `[SYNC] source_photo_id verification expected=7 actual=0`
+* `[DELETE_LIBRARY_PHOTO_AND_BOOKS] photoDeleted=1`
+* `BookDetailModal ... dbId:null hasDescription:false`

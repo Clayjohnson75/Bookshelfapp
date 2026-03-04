@@ -1,0 +1,96 @@
+---
+description: CRITICAL - Photo↔book relationship invariants; rehydrate merges rows only; no composite IDs in approved
+alwaysApply: true
+---
+
+# 🚨 CRITICAL: Photo–book relationship invariants (no regression)
+
+These rules keep the photo↔book relationship stable. Violating them causes disappearing photos, wrong counts, and phantom books.
+
+---
+
+## 0. Ownership of a book by a photo
+
+- **Every scanned book row must store which photo it came from:** `books.source_photo_id` (required). Optionally `books.source_scan_job_id`.
+- **Set at creation only:** When creating book rows (scan completion / approve), set `source_photo_id` and optionally `source_scan_job_id`. Never leave them null for books that came from a scan/photo.
+- **"Delete photo" means:** (1) Soft-delete (or delete) the photo row. (2) Soft-delete all books where `source_photo_id = :photoId` (and `user_id = :authedUserId`). Optionally delete/clean up `scan_job` rows for that photo/job. Implemented in `api/delete-library-photo.ts` (cascade by `source_photo_id`).
+
+---
+
+## 0b. Option A — One book row per photo (no merging photos into one row)
+
+- **Never merge two photos into one book row.** A book row is always tied to exactly one `source_photo_id`. If the same logical book (same title/author) appears in multiple photos, you may have multiple book rows (one per photo); do not collapse them into a single row.
+- **Unified library view:** Aggregate by `book_key` at **read time** only (e.g. display one card per book_key, or dedupe for count). Do not merge DB rows. A separate "canonical_books" or view can be added later if needed.
+- **Dedupe by (photo_id, page_index)** for "same book" within one photo; do not dedupe across photos by book_key into one row.
+
+---
+
+## 1. Never rebuild photo→book links from scratch during rehydrate/merge
+
+- **Rehydrate must merge rows, not relationships.** Load books from local storage and DB; merge by `book.id` (or stable key). Do NOT infer or rewrite which books belong to which photo during merge.
+- **The relationship is persisted:** either `book.source_photo_id` (or `book.photo_id`) on the book row, or a join table (e.g. `book_photos`). Use that stored relationship only.
+- **Never** “match” photos to books by title/author/hash during rehydrate or during render. If you match by title/author, enrichment or OCR variation will break the link. Build `photosById` and for each photo get its books by **book.source_photo_id === photo.id** (or join table). If the relationship exists in data, render is trivial and stable.
+
+---
+
+## 2. Never change photo_id on a book row (except dedupe migration)
+
+- **Set it once** when the book row is created (scan completion / approve). Do not update it during rehydrate or merge “fixup” logic.
+- **Exception — photo dedupe migration (fixes "photo changes on reload"):** Whenever oldPhotoId → canonicalPhotoId you MUST migrate books. **Server:** `UPDATE books SET source_photo_id = :canonicalPhotoId WHERE source_photo_id = :oldPhotoId` (and patch scan_jobs.photo_id). Implemented in `api/scan-job-patch-photo` and in `savePhotoToSupabase` when reusing by hash. **Client:** Rewrite `source_photo_id` on every book in the approved and pending lists (in-memory and persist to AsyncStorage) before any other persist; then refreshProfileStats. Implemented in ScansTab adoption block after `onAdoptedCanonical`. This keeps the invariant “no book references a missing photo” after adoption.
+
+---
+
+## 3. When deduping duplicates, dedupe by (photo_id, page_index) not by title/author
+
+- **Title and author can vary** with enrichment and OCR. Deduping by title/author causes the same logical book (same photo, same page) to be treated as different books or to flip between duplicates.
+- Use **(photo_id, page_index)** (or equivalent: same photo + spine order) as the dedupe key for “same book” when merging or resolving duplicates.
+
+---
+
+## 4. Approved list must reference book row id only (UUID)
+
+- **Approved list = list of book row IDs (UUIDs).** No composite IDs (e.g. `photoId_title_p_0_xxxxx`) in the persisted approved list.
+- If you need composite IDs, keep them **only in a temporary queue structure** (e.g. pending scan results) **before** the book row exists. Once the book row is created and you have a persisted UUID, **replace** the composite id with that UUID in approved and in any alias map. Never persist composite IDs as the canonical approved id.
+
+---
+
+## 5. Target flow (how it should work)
+
+**On scan completion (server job processor):**
+
+1. Create photo row (or upsert by image_hash).
+2. Create book rows with **source_photo_id = that photo.id** for each detected book/page.
+3. Return those **book IDs (UUIDs)** to the client.
+
+**On client rehydrate:**
+
+1. Load books from local storage and DB.
+2. Merge **by book.id** (and id alias for temp→canonical).
+3. Build **photosById** from photos.
+4. For each photo: get its books by **book.source_photo_id === photo.id** (or join). Do **not** match by title/author/hash during render.
+5. Render: if the relationship exists in data, render is trivial and stable.
+
+**Invariant:** Relationship is stored; rehydrate only merges rows. No rebuilding of photo→book links during merge.
+
+---
+
+## 6. Photo ↔ book integrity (cascade delete + invariant)
+
+- **User deletes a photo (explicit UI only):** Must delete the photo AND all books from that photo. Server: soft-delete books WHERE source_photo_id = :photoId, then soft-delete photo row and storage. Client: remove those books from approved_books_${uid}, remove photo from photos_${uid}, add deleted book IDs to tombstone, then refreshProfileStats().
+- **System actions (dedupe / reconcile / cleanup / sync):** Must never delete photos or books. Only UI "Delete photo" may cascade.
+- **Hard invariant (must always hold):** There must never be a book referencing a missing photo. books.source_photo_id must always exist in photos.id (locally and in Supabase). Enforce by: (1) on rehydrate/merge, remove from approved any book whose source_photo_id is not in the current photos list; tombstone those book IDs. (2) In cleanup (e.g. prune photos without approved books), never remove a photo that any book references (currentBooks.some(b => b.source_photo_id === photo.id)).
+- **Integrity guard:** Do not remove/drop a photo row unless either (1) its books were migrated to the canonical photo (dedupe path), or (2) you are in explicit delete intent (cascade path: books soft-deleted then photo). Server: when cascadeBooks=false and any book references the photo, skip photo delete. Client: never delete a photo from the list if any book references it.
+
+---
+
+## 7. End-to-end invariant (photo → scan job → books)
+
+For a given **photoId**, the pipeline must satisfy (in order):
+
+1. **photos row exists** (draft or complete) — created by upload queue or scan API.
+2. **File exists in storage** at `photos.storage_path`.
+3. **scan_job row exists** with `photo_id = photoId` and `user_id = current user`.
+4. **scan_job completes** (status = completed).
+5. **books rows** inserted with `source_photo_id = photoId` and `user_id = current user` (on approve or worker).
+
+**Diagnostic:** When "complete but no books" (photosWithBooks=0), call **GET /api/photo-invariant?photoId=xxx** (with auth). It returns `step1_photosRow`, `step2_storageExists`, `step3_scanJobExists`, `step4_scanJobCompleted`, `step5_booksCount` so you see where the chain breaks (e.g. stuck between 1 and 3, or 3 and 5). Client: `supabaseSync` calls this and logs `[PHOTO_INVARIANT]` when PHOTO_ATTACH_SUMMARY has photosWithBooks=0.

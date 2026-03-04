@@ -1,0 +1,47 @@
+# Upload worker: timestamp bigint + status enum only
+
+## A) Timestamp: bigint (Unix ms)
+
+When writing to the **photos** table, column **timestamp** is **BIGINT** (epoch milliseconds). Never send null or timestamptz.
+
+**Do NOT use:**
+```ts
+timestamp: new Date().toISOString()
+timestamp: null
+// or SQL: now() for timestamp column
+```
+
+**Use:**
+```ts
+timestamp: Date.now()
+```
+
+If the row already has a timestamp, use it when updating: `timestamp: (typeof photo.timestamp === 'number' && photo.timestamp > 0) ? photo.timestamp : Date.now()`.
+
+## B) Status: DB enum only
+
+**photos.status** has constraint: `status IN ('draft', 'complete', 'discarded')`. No other values (e.g. 'uploaded', 'uploading', 'processing', 'pending', 'completed').
+
+**Do NOT send:**
+```ts
+status: 'uploaded'
+status: 'uploading'
+status: 'processing'
+```
+
+**Use:**
+- `status: 'draft'` when upload/pipeline in progress.
+- `status: 'complete'` when scan is done and ready to display.
+- `status: 'discarded'` when user/system discards.
+
+Pipeline state (queued/uploading/uploaded/processing/failed) goes in **photos.processing_stage** (text, nullable), not in status.
+
+**Guard:** Use `normalizePhotoStatusForDb(status)` from `lib/photoStatusGuard.ts` before every photos insert/upsert so app status is mapped to draft|complete|discarded and pipeline state goes to processing_stage.
+
+## C) Logging
+
+Right before photos upsert/insert in the upload worker, log the payload: photoId, status, timestamp, storage_path, user_id. If status_check or timestamp fails again, the log shows the exact value sent.
+
+## updated_at
+
+If the schema uses **timestamptz** for `updated_at`, keep using `new Date().toISOString()` for that column.

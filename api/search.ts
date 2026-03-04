@@ -9,6 +9,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <link rel="icon" href="/logo.png" type="image/png">
+      <link rel="apple-touch-icon" href="/logo.png">
       <title>Search - Bookshelf Scanner</title>
       <style>
         * {

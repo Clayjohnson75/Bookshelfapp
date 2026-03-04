@@ -1,0 +1,16 @@
+# Extend default gitleaks config; add allowlist for Supabase anon JWT only where expected.
+# Do not allowlist service role, OpenAI, or other secrets.
+# See: docs/SERVICE_ROLE_NEVER_REACHES_CLIENT.md, docs/CLIENT_BUNDLE_SECRET_CHECK.md
+title = "gitleaks allowlist (anon JWT only)"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow Supabase anon key only in app config and CI placeholder"
+# app.config.js: fallback anon key (public, required for client)
+# .github/workflows/ci.yml: placeholder anon key in env (example only, not a real secret)
+paths = [
+  '''app\.config\.js''',
+  '''\.github/workflows/ci\.yml''',
+]

@@ -1,0 +1,28 @@
+# Durable queue: do not mark canceled for worker
+
+## Rule
+
+**Do NOT persist `state: 'canceled'` (or equivalent) on durable queue items unless the user explicitly cancels uploads or logs out.**
+
+- **Upload queue** (`lib/photoUploadQueue.ts`): Items are stored in AsyncStorage (`upload_queue_${userId}`). The worker skips items with `state === 'canceled'`. If you mark items canceled (e.g. from ScansTab cleanup, blur, or batch cancel), they will **never** be processed again — the worker will not resume them.
+- **Approve queue** (`lib/approveQueue.ts`): Same idea; do not mark jobs canceled except on explicit user action or sign-out.
+
+## Allowed
+
+- **Explicit user cancel**: If the product specifies "Cancel uploads" and the user taps it, you may call `cancelAllForUser(userId)` so in-flight queue items are marked canceled. Document that this is the only UI path that may do so.
+- **Sign-out / user switch**: Clear the queue with `clearQueueForUser(userId)` (removes the queue entirely). No need to persist "canceled" — the queue is gone.
+
+## Forbidden
+
+- **On navigation / tab blur**: Do NOT call `cancelAllForUser` or set any persistent "canceled" state. The worker must continue and resume correctly when the user comes back.
+- **On batch clear / dismiss / cleanup**: Do NOT mark the durable upload queue canceled. Only clear in-memory UI (activeBatch, scanQueue) and abort tab-scoped AbortControllers.
+
+## ScansTab
+
+When the cancel callback runs (user tapped Cancel in ScanningNotification):
+
+1. Abort UI fetch/poll controllers.
+2. Clear activeBatch and mark in-memory scanQueue items as canceled (UI only).
+3. **Do NOT** call `cancelAllForUser` — durable queue items stay `queued`/`uploading` so the worker resumes.
+
+Log message should say: "durable queue NOT marked canceled — worker resumes correctly".

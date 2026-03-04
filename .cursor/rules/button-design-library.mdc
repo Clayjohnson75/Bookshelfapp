@@ -1,0 +1,20 @@
+# Button design: library furniture, not banking app
+
+This app is about **books, scanning, collections**. Buttons and controls should feel like **library furniture** — warm, soft, intentional — not like a banking or system app.
+
+## Avoid
+
+- **Bright blue** — no `#007AFF`, `#0056CC`, or other system blue. Use theme `primary` / `accent` (beige/gold) for actions.
+- **Sharp corners** — no `borderRadius: 0` or very small radius (e.g. 4) on buttons or chips. Use **soft rounded pills** (e.g. `borderRadius: 999` or 12–24 for cards).
+- **Heavy borders** — avoid `borderWidth: 2` on primary actions. Use `1` or none; prefer subtle separation.
+
+## Lean into
+
+- **Soft rounded pills** — pill-shaped buttons/chips: large radius (999 or 20–26), comfortable tap targets (e.g. minHeight 44–48).
+- **Beige / parchment tones** — primary buttons: `t.colors.primary` (accent beige). Inactive/secondary: `t.colors.surface2` or `t.colors.secondary` (warm gray/beige). Surfaces: `t.colors.accentSurface` for bars/strips.
+- **Charcoal text** — primary text: `t.colors.text`. On accent buttons: `t.colors.accentTextOn` or `t.colors.primaryText`. Muted: `t.colors.textMuted`.
+- **Subtle elevation only where needed** — avoid heavy shadows on every button. Use `elevation: 0` / `shadowOpacity: 0` for flat, integrated controls; light shadow only for cards or modals when separation is needed.
+
+## Summary
+
+Buttons should feel **warm, soft, and intentional** — like library furniture. Use theme tokens (no hardcoded blue), pill shapes, beige/parchment surfaces, and charcoal text. Prefer subtle borders and minimal elevation.

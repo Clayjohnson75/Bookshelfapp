@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/logo.png" type="image/png">
+  <title>Admin – User Stats | Bookshelf Scanner</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #f8f6f0;
+      min-height: 100vh;
+      color: #2c3e50;
+    }
+    .header {
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 16px 0;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo-link {
+      display: flex;
+      align-items: center;
+      text-decoration: none;
+      color: #2c3e50;
+      font-weight: 700;
+      font-size: 18px;
+    }
+    .logo-link img { width: 32px; height: 32px; margin-right: 10px; }
+    .admin-title { font-size: 18px; font-weight: 600; color: #2c3e50; }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #007AFF;
+      text-decoration: none;
+      border-radius: 8px;
+      background: #f0f4f8;
+    }
+    .back-link:hover { background: #e8eef4; color: #0056b3; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .search-input {
+      padding: 10px 14px;
+      font-size: 14px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      width: 260px;
+      max-width: 100%;
+    }
+    .search-input:focus { outline: none; border-color: #007AFF; }
+    .btn {
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      border: none;
+      background: #34495e;
+      color: white;
+    }
+    .btn:hover { background: #2c3e50; }
+    .btn:disabled { background: #ccc; cursor: not-allowed; }
+    .meta { font-size: 13px; color: #666; margin-bottom: 12px; }
+    .table-wrap { overflow-x: auto; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #eee; }
+    th {
+      background: #f5f5f5;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #555;
+      white-space: nowrap;
+    }
+    th.sortable { cursor: pointer; }
+    th.sortable:hover { color: #007AFF; }
+    td { font-size: 14px; }
+    tr:hover { background: #fafafa; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .message { padding: 24px; text-align: center; color: #666; }
+    .error { color: #c33; padding: 20px; text-align: center; }
+    .loading { padding: 40px; text-align: center; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-content">
+      <a href="/" class="logo-link">
+        <img src="/logo.png" alt="Bookshelf Scanner">
+        <span>Bookshelf Scanner</span>
+      </a>
+      <a href="/profile" class="back-link" title="Back to my profile">← Back to my profile</a>
+      <span class="admin-title">Admin – User Stats</span>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="toolbar">
+      <input type="text" class="search-input" id="searchInput" placeholder="Search username, display name, email…" />
+      <button type="button" class="btn" id="refreshBtn">Refresh</button>
+    </div>
+    <div class="meta" id="meta">Last updated: —</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="username">username</th>
+            <th class="sortable" data-sort="display_name">display_name</th>
+            <th class="sortable" data-sort="email">email</th>
+            <th class="sortable num" data-sort="total_completed_scans">total_completed_scans</th>
+            <th class="sortable num" data-sort="scans_last_7d">scans_last_7d</th>
+            <th class="sortable num" data-sort="scans_last_30d">scans_last_30d</th>
+            <th class="sortable num" data-sort="total_books">total_books</th>
+            <th class="sortable num" data-sort="avg_books_per_completed_scan">avg_books/scan</th>
+            <th class="sortable" data-sort="last_scan_at">last_scan_at</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div id="message" class="message" style="display:none;"></div>
+    <div id="error" class="error" style="display:none;"></div>
+    <div id="loading" class="loading" style="display:none;">Loading…</div>
+  </div>
+
+  <script>
+    (function() {
+      const tbody = document.getElementById('tbody');
+      const meta = document.getElementById('meta');
+      const messageEl = document.getElementById('message');
+      const errorEl = document.getElementById('error');
+      const loadingEl = document.getElementById('loading');
+      const searchInput = document.getElementById('searchInput');
+      const refreshBtn = document.getElementById('refreshBtn');
+
+      let allRows = [];
+      let sortKey = 'scans_last_7d';
+      let sortDir = 'desc';
+      let refreshTimer = null;
+      const REFRESH_MS = 60000;
+
+      function hideAll() {
+        tbody.innerHTML = '';
+        messageEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        loadingEl.style.display = 'none';
+      }
+
+      function showMessage(msg) {
+        hideAll();
+        messageEl.textContent = msg;
+        messageEl.style.display = 'block';
+      }
+
+      function showError(msg) {
+        hideAll();
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+      }
+
+      function showLoading() {
+        errorEl.style.display = 'none';
+        messageEl.style.display = 'none';
+        loadingEl.style.display = 'block';
+        loadingEl.textContent = 'Loading…';
+      }
+
+      function getSession() {
+        try {
+          const raw = localStorage.getItem('supabase_session');
+          if (!raw) return null;
+          const s = JSON.parse(raw);
+          return s && s.access_token ? s : null;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function redirectToSignIn() {
+        window.location.href = '/signin?returnUrl=' + encodeURIComponent('/admin');
+      }
+
+      function formatDate(v) {
+        if (v == null || v === '') return '—';
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? v : d.toLocaleString();
+      }
+
+      function compare(a, b, key) {
+        const va = a[key];
+        const vb = b[key];
+        if (va == null && vb == null) return 0;
+        if (va == null) return sortDir === 'asc' ? -1 : 1;
+        if (vb == null) return sortDir === 'asc' ? 1 : -1;
+        if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+        const sa = String(va);
+        const sb = String(vb);
+        return sa.localeCompare(sb, undefined, { numeric: true });
+      }
+
+      function sortRows(rows) {
+        return [...rows].sort(function(a, b) {
+          const c = compare(a, b, sortKey);
+          return sortDir === 'asc' ? c : -c;
+        });
+      }
+
+      function filterRows(rows, q) {
+        if (!q || !q.trim()) return rows;
+        const lower = q.trim().toLowerCase();
+        return rows.filter(function(r) {
+          return [r.username, r.display_name, r.email].some(function(v) {
+            return v != null && String(v).toLowerCase().indexOf(lower) !== -1;
+          });
+        });
+      }
+
+      function render(rows) {
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        messageEl.style.display = 'none';
+        const filtered = filterRows(rows, searchInput.value.trim());
+        const sorted = sortRows(filtered);
+        tbody.innerHTML = '';
+        if (sorted.length === 0) {
+          showMessage('No rows to show.');
+          return;
+        }
+        sorted.forEach(function(r) {
+          const tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td>' + (r.username != null ? escapeHtml(String(r.username)) : '—') + '</td>' +
+            '<td>' + (r.display_name != null ? escapeHtml(String(r.display_name)) : '—') + '</td>' +
+            '<td>' + (r.email != null ? escapeHtml(String(r.email)) : '—') + '</td>' +
+            '<td class="num">' + (r.total_completed_scans != null ? r.total_completed_scans : '—') + '</td>' +
+            '<td class="num">' + (r.scans_last_7d != null ? r.scans_last_7d : '—') + '</td>' +
+            '<td class="num">' + (r.scans_last_30d != null ? r.scans_last_30d : '—') + '</td>' +
+            '<td class="num">' + (r.total_books != null ? r.total_books : '—') + '</td>' +
+            '<td class="num">' + (r.avg_books_per_completed_scan != null ? r.avg_books_per_completed_scan : '—') + '</td>' +
+            '<td>' + formatDate(r.last_scan_at) + '</td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      function escapeHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function fetchStats(params) {
+        const session = getSession();
+        if (!session) {
+          redirectToSignIn();
+          return;
+        }
+        showLoading();
+        const qs = new URLSearchParams(params || {}).toString();
+        const url = '/api/admin/user-stats' + (qs ? '?' + qs : '');
+        fetch(url, {
+          method: 'GET',
+          headers: { 'Authorization': 'Bearer ' + session.access_token },
+        })
+          .then(function(res) {
+            if (res.status === 401) {
+              redirectToSignIn();
+              return;
+            }
+            if (res.status === 403) {
+              showError('Access denied. Admin only.');
+              return;
+            }
+            if (!res.ok) {
+              return res.json().then(function(j) {
+                showError(j.message || j.error || 'Request failed');
+              }).catch(function() {
+                showError('Request failed');
+              });
+              return;
+            }
+            return res.json();
+          })
+          .then(function(data) {
+            if (!data) return;
+            allRows = data.data || [];
+            meta.textContent = 'Last updated: ' + new Date().toLocaleString();
+            render(allRows);
+          })
+          .catch(function(err) {
+            showError(err.message || 'Network error');
+          });
+      }
+
+      function refresh() {
+        const q = searchInput.value.trim();
+        fetchStats({ limit: 500, q: q || undefined });
+      }
+
+      refreshBtn.addEventListener('click', function() {
+        refresh();
+      });
+
+      searchInput.addEventListener('input', function() {
+        render(allRows);
+      });
+      searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') refresh();
+      });
+
+      document.querySelectorAll('th.sortable').forEach(function(th) {
+        th.addEventListener('click', function() {
+          const key = th.getAttribute('data-sort');
+          if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+          else { sortKey = key; sortDir = 'desc'; }
+          render(allRows);
+        });
+      });
+
+      refreshTimer = setInterval(refresh, REFRESH_MS);
+
+      window.addEventListener('DOMContentLoaded', function() {
+        if (!getSession()) {
+          redirectToSignIn();
+          return;
+        }
+        fetchStats({ limit: 500 });
+      });
+    })();
+  </script>
+</body>
+</html>

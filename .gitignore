@@ -30,8 +30,9 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (never commit secrets)
 .env*.local
+.env*
 
 # typescript
 *.tsbuildinfo
@@ -46,3 +47,6 @@ yarn-error.*
 # API build artifacts (Vercel compiles TS to JS, don't commit)
 api/**/*.js
 api/**/*.js.map
+
+# Local secret-scan outputs (may contain redacted findings)
+docs/secret-scan-outputs/

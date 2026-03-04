@@ -1,8 +1,9 @@
 import React from 'react';
-import { Modal, StyleSheet, View, TouchableOpacity, Text } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { Modal, StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LoginScreen } from '../auth/AuthScreens';
+import { useTheme } from '../theme/ThemeProvider';
+import { AppHeader } from './AppHeader';
 
 interface LoginModalProps {
   visible: boolean;
@@ -10,7 +11,7 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ visible, onClose }) => {
-  const insets = useSafeAreaInsets();
+  const { t } = useTheme();
 
   return (
     <Modal
@@ -19,18 +20,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ visible, onClose }) => {
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
-        <View style={{ height: insets.top, backgroundColor: '#f8f6f0' }} />
-        <View style={styles.header}>
-          <TouchableOpacity 
-            style={styles.closeButton} 
-            onPress={onClose}
-            activeOpacity={0.8}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Ionicons name="close" size={28} color="#2c3e50" />
-          </TouchableOpacity>
-        </View>
+      <SafeAreaView style={[styles.container, { backgroundColor: t.colors.bg }]} edges={['left', 'right', 'bottom']}>
+        <AppHeader title="Sign In" onBack={onClose} />
         <LoginScreen onAuthSuccess={onClose} />
       </SafeAreaView>
     </Modal>
@@ -40,17 +31,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ visible, onClose }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f6f0',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-  },
-  closeButton: {
-    padding: 8,
   },
 });
 

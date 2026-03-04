@@ -2,307 +2,314 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { URL } from 'url';
 import { Resend } from 'resend';
+import { checkRateLimit, sendRateLimitResponse } from '../lib/rateLimit';
+import { getCredentialedOrigin } from '../lib/corsCredentialed';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Max-Age', '86400');
+ res.setHeader('Access-Control-Allow-Origin', getCredentialedOrigin(req));
+ res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+ res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+ res.setHeader('Access-Control-Max-Age', '86400');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+ if (req.method === 'OPTIONS') {
+ return res.status(200).end();
+ }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+ if (req.method !== 'POST') {
+ return res.status(405).json({ error: 'Method not allowed' });
+ }
 
-  try {
-    const { email } = req.body;
+ const rateLimitResult = await checkRateLimit(req, 'auth');
+ if (!rateLimitResult.success) {
+ sendRateLimitResponse(res, rateLimitResult);
+ return;
+ }
 
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: 'Email is required' });
-    }
+ try {
+ const { email } = req.body;
 
-    // Get Supabase credentials from environment
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+ if (!email || typeof email !== 'string') {
+ return res.status(400).json({ error: 'Email is required' });
+ }
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('[API] Missing Supabase credentials');
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+ // Get Supabase credentials from environment
+ const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    // Create Supabase admin client
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
+ if (!supabaseUrl || !supabaseServiceKey) {
+ console.error('[API] Missing Supabase credentials');
+ return res.status(500).json({ error: 'Server configuration error' });
+ }
 
-    // First, check if user exists
-    const { data: users, error: listError } = await supabaseAdmin.auth.admin.listUsers();
-    
-    if (listError) {
-      console.error('[API] Error listing users:', listError);
-    } else {
-      const userExists = users?.users?.some((user: any) => 
-        user.email?.toLowerCase() === email.toLowerCase()
-      );
-      
-      if (!userExists) {
-        console.log('[API] User not found, but returning success to prevent email enumeration');
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      }
-    }
+ // Create Supabase admin client
+ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+ auth: {
+ autoRefreshToken: false,
+ persistSession: false
+ }
+ });
 
-    // Request a password reset from Supabase to get the token
-    const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'recovery',
-      email: email,
-      options: {
-        redirectTo: 'https://bookshelfscan.app/api/password-reset',
-      },
-    });
+ // First, check if user exists
+ const { data: users, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+ 
+ if (listError) {
+ console.error('[API] Error listing users:', listError);
+ } else {
+ const userExists = users?.users?.some((user: any) => 
+ user.email?.toLowerCase() === email.toLowerCase()
+ );
+ 
+ if (!userExists) {
+ console.log('[API] User not found, but returning success to prevent email enumeration');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ }
 
-    if (supabaseError) {
-      console.error('[API] Supabase generateLink error:', supabaseError);
-      
-      // Check if user doesn't exist
-      if (supabaseError.message?.includes('User not found') || 
-          supabaseError.message?.includes('user_not_found')) {
-        // Still return success to prevent email enumeration
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      }
-      
-      // For other errors, try fallback method
-      console.log('[API] Trying fallback password reset method...');
-      try {
-        await supabaseAdmin.auth.resetPasswordForEmail(email, {
-          redirectTo: 'https://bookshelfscan.app/api/password-reset',
-        });
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      } catch (fallbackError) {
-        console.error('[API] Fallback password reset also failed:', fallbackError);
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      }
-    }
+ // Request a password reset from Supabase to get the token
+ const { data, error: supabaseError } = await supabaseAdmin.auth.admin.generateLink({
+ type: 'recovery',
+ email: email,
+ options: {
+ redirectTo: 'https://bookshelfscan.app/api/password-reset',
+ },
+ });
 
-    if (!data?.properties?.action_link) {
-      console.error('[API] No action_link generated by Supabase');
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a password reset link has been sent.'
-      });
-    }
+ if (supabaseError) {
+ console.error('[API] Supabase generateLink error:', supabaseError);
+ 
+ // Check if user doesn't exist
+ if (supabaseError.message?.includes('User not found') || 
+ supabaseError.message?.includes('user_not_found')) {
+ // Still return success to prevent email enumeration
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ 
+ // For other errors, try fallback method
+ console.log('[API] Trying fallback password reset method...');
+ try {
+ await supabaseAdmin.auth.resetPasswordForEmail(email, {
+ redirectTo: 'https://bookshelfscan.app/api/password-reset',
+ });
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ } catch (fallbackError) {
+ console.error('[API] Fallback password reset also failed:', fallbackError);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ }
 
-    // Extract the token from the recovery link
-    const recoveryLink = data.properties.action_link;
-    const url = new URL(recoveryLink);
-    const token = url.searchParams.get('token');
-    const type = url.searchParams.get('type');
+ if (!data?.properties?.action_link) {
+ console.error('[API] No action_link generated by Supabase');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
 
-    if (!token || type !== 'recovery') {
-      console.error('[API] Invalid recovery link format');
-      return res.status(200).json({ 
-        success: true,
-        message: 'If an account exists with this email, a password reset link has been sent.'
-      });
-    }
+ // Extract the token from the recovery link
+ const recoveryLink = data.properties.action_link;
+ const url = new URL(recoveryLink);
+ const token = url.searchParams.get('token');
+ const type = url.searchParams.get('type');
 
-    // Create web URL that will verify and redirect to app
-    // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
-    const baseUrl = 'https://bookshelfscan.app';
-    const webResetUrl = `${baseUrl}/api/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
-    const webFallbackUrl = webResetUrl; // Same URL for fallback
-    const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
+ if (!token || type !== 'recovery') {
+ console.error('[API] Invalid recovery link format');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
 
-    // Attempt to send custom email using Resend SDK
-    const emailApiKey = process.env.EMAIL_API_KEY?.trim();
-    // Default to Resend's test email if no sender is configured
-    // To use a custom domain, verify it in Resend first, then set EMAIL_FROM
-    const emailFrom = process.env.EMAIL_FROM?.trim() || 'onboarding@resend.dev';
+ // Create web URL that will verify and redirect to app
+ // Use custom domain (bookshelfscan.app) now that it's connected to Vercel
+ const baseUrl = 'https://bookshelfscan.app';
+ const webResetUrl = `${baseUrl}/api/password-reset?token=${encodeURIComponent(token)}&type=${type}`;
+ const webFallbackUrl = webResetUrl; // Same URL for fallback
+ const deepLink = `bookshelfscanner://reset-password?token=${encodeURIComponent(token)}&type=${type}`;
 
-    console.log('[API] Email configuration:', {
-      hasEmailApiKey: !!emailApiKey,
-      emailApiKeyLength: emailApiKey?.length || 0,
-      emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
-      emailFrom: emailFrom,
-      isDefaultEmail: !process.env.EMAIL_FROM?.trim()
-    });
+ // Attempt to send custom email using Resend SDK
+ const emailApiKey = process.env.EMAIL_API_KEY?.trim();
+ // Default to Resend's test email if no sender is configured
+ // To use a custom domain, verify it in Resend first, then set EMAIL_FROM
+ const emailFrom = process.env.EMAIL_FROM?.trim() || 'onboarding@resend.dev';
 
-    if (emailApiKey && emailApiKey.length > 0) {
-      try {
-        // Use Resend SDK for better reliability
-        const resend = new Resend(emailApiKey);
-        console.log('[API] Attempting to send password reset email via Resend...');
-        
-        const emailHtml = `
-          <!DOCTYPE html>
-          <html>
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Reset Your Password</title>
-            </head>
-            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-              <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
-                <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
-                <p style="color: #666; margin-bottom: 30px;">
-                  You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
-                </p>
-                <a href="${webResetUrl}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
-                  Reset Password
-                </a>
-                <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                  If the button doesn't work, copy and paste this link into your browser:
-                  <br>
-                  <a href="${webResetUrl}" style="color: #007AFF; text-decoration: underline;">${webResetUrl}</a>
-                </p>
-                <p style="color: #999; font-size: 12px; margin-top: 20px;">
-                  If you did not request a password reset, please ignore this email.
-                </p>
-              </div>
-            </body>
-          </html>
-        `;
-        
-        console.log('[API] Calling Resend API with:', {
-          from: emailFrom,
-          to: email,
-          subject: 'Reset Your Bookshelf Scanner Password'
-        });
-        
-        const result = await resend.emails.send({
-          from: emailFrom,
-          to: email,
-          subject: 'Reset Your Bookshelf Scanner Password',
-          html: emailHtml,
-        });
+ console.log('[API] Email configuration:', {
+ hasEmailApiKey: !!emailApiKey,
+ emailApiKeyLength: emailApiKey?.length || 0,
+ emailApiKeyPrefix: emailApiKey ? emailApiKey.substring(0, 10) + '...' : 'NOT SET',
+ emailFrom: emailFrom,
+ isDefaultEmail: !process.env.EMAIL_FROM?.trim()
+ });
 
-        console.log('[API] Resend API response:', {
-          hasError: !!result.error,
-          hasData: !!result.data,
-          errorType: result.error?.constructor?.name,
-          dataKeys: result.data ? Object.keys(result.data) : [],
-          fullResult: JSON.stringify(result, null, 2)
-        });
+ if (emailApiKey && emailApiKey.length > 0) {
+ try {
+ // Use Resend SDK for better reliability
+ const resend = new Resend(emailApiKey);
+ console.log('[API] Attempting to send password reset email via Resend...');
+ 
+ const emailHtml = `
+ <!DOCTYPE html>
+ <html>
+ <head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <title>Reset Your Password</title>
+ </head>
+ <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+ <div style="background-color: #f8f9fa; border-radius: 10px; padding: 30px; text-align: center;">
+ <h1 style="color: #2c3e50; margin-bottom: 20px;">Reset Your Password</h1>
+ <p style="color: #666; margin-bottom: 30px;">
+ You requested to reset your password for Bookshelf Scanner. Click the button below to reset your password.
+ </p>
+ <a href="${webResetUrl}" style="display: inline-block; background-color: #007AFF; color: #ffffff; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: 600; margin-bottom: 20px;">
+ Reset Password
+ </a>
+ <p style="color: #999; font-size: 12px; margin-top: 30px;">
+ If the button doesn't work, copy and paste this link into your browser:
+ <br>
+ <a href="${webResetUrl}" style="color: #007AFF; text-decoration: underline;">${webResetUrl}</a>
+ </p>
+ <p style="color: #999; font-size: 12px; margin-top: 20px;">
+ If you did not request a password reset, please ignore this email.
+ </p>
+ </div>
+ </body>
+ </html>
+ `;
+ 
+ console.log('[API] Calling Resend API with:', {
+ from: emailFrom,
+ to: email,
+ subject: 'Reset Your Bookshelf Scanner Password'
+ });
+ 
+ const result = await resend.emails.send({
+ from: emailFrom,
+ to: email,
+ subject: 'Reset Your Bookshelf Scanner Password',
+ html: emailHtml,
+ });
 
-        if (result.error) {
-          console.error('[API] ❌ Resend API returned error:', result.error);
-          console.error('[API] Resend error details:', {
-            message: result.error.message,
-            name: result.error.name,
-            statusCode: result.error.statusCode,
-            fullError: JSON.stringify(result.error, null, 2)
-          });
-          throw new Error(`Resend failed: ${result.error.message || 'Unknown error'}`);
-        }
-        
-        if (!result.data || !result.data.id) {
-          console.error('[API] ❌ Resend returned no data or ID:', result);
-          throw new Error('Resend returned invalid response (no data.id)');
-        }
-        
-        console.log('[API] ✅ Password reset email sent successfully via Resend:', result.data.id);
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      } catch (customEmailError: any) {
-        console.error('[API] ❌ Error sending custom email via Resend:', customEmailError);
-        console.error('[API] Error details:', {
-          message: customEmailError?.message,
-          stack: customEmailError?.stack,
-          name: customEmailError?.name
-        });
-        console.error('[API] Falling back to Supabase default email...');
-        
-        // Fallback to Supabase's default email
-        try {
-          console.error('[API] Attempting Supabase fallback for email:', email);
-          const { error: fallbackError, data: fallbackData } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
-            redirectTo: webFallbackUrl, // Use web fallback URL for Supabase email
-          });
-          
-          if (fallbackError) {
-            console.error('[API] ❌ Supabase fallback email also failed:', fallbackError);
-            console.error('[API] Fallback error details:', {
-              message: fallbackError?.message,
-              status: fallbackError?.status
-            });
-            return res.status(200).json({ 
-              success: true,
-              message: 'If an account exists with this email, a password reset link has been sent.'
-            });
-          }
-          
-          console.error('[API] ✅ Password reset email sent via Supabase fallback');
-          return res.status(200).json({ 
-            success: true,
-            message: 'If an account exists with this email, a password reset link has been sent.'
-          });
-        } catch (fallbackError: any) {
-          console.error('[API] ❌ All email methods failed:', fallbackError);
-          console.error('[API] Final fallback error:', {
-            message: fallbackError?.message,
-            stack: fallbackError?.stack
-          });
-          return res.status(200).json({ 
-            success: true,
-            message: 'If an account exists with this email, a password reset link has been sent.'
-          });
-        }
-      }
-    } else {
-      // If custom email service not configured, use Supabase's default email
-      console.log('[API] ⚠️ EMAIL_API_KEY not configured, using Supabase default email');
-      console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
-      try {
-        const { error: supabaseEmailError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
-          redirectTo: webFallbackUrl,
-        });
-        
-        if (supabaseEmailError) {
-          console.error('[API] ❌ Supabase email error:', supabaseEmailError);
-          return res.status(200).json({ 
-            success: true,
-            message: 'If an account exists with this email, a password reset link has been sent.'
-          });
-        }
-        
-        console.log('[API] ✅ Password reset email sent via Supabase');
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      } catch (supabaseError: any) {
-        console.error('[API] ❌ Supabase email failed:', supabaseError);
-        return res.status(200).json({ 
-          success: true,
-          message: 'If an account exists with this email, a password reset link has been sent.'
-        });
-      }
-    }
-  } catch (error: any) {
-    console.error('[API] Error in send-password-reset:', error);
-    return res.status(500).json({
-      error: error?.message || 'Internal server error',
-    });
-  }
+ console.log('[API] Resend API response:', {
+ hasError: !!result.error,
+ hasData: !!result.data,
+ errorType: result.error?.constructor?.name,
+ dataKeys: result.data ? Object.keys(result.data) : [],
+ fullResult: JSON.stringify(result, null, 2)
+ });
+
+ if (result.error) {
+ console.error('[API] Resend API returned error:', result.error);
+ console.error('[API] Resend error details:', {
+ message: result.error.message,
+ name: result.error.name,
+ statusCode: result.error.statusCode,
+ fullError: JSON.stringify(result.error, null, 2)
+ });
+ throw new Error(`Resend failed: ${result.error.message || 'Unknown error'}`);
+ }
+ 
+ if (!result.data || !result.data.id) {
+ console.error('[API] Resend returned no data or ID:', result);
+ throw new Error('Resend returned invalid response (no data.id)');
+ }
+ 
+ console.log('[API] Password reset email sent successfully via Resend:', result.data.id);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ } catch (customEmailError: any) {
+ console.error('[API] Error sending custom email via Resend:', customEmailError);
+ console.error('[API] Error details:', {
+ message: customEmailError?.message,
+ stack: customEmailError?.stack,
+ name: customEmailError?.name
+ });
+ console.error('[API] Falling back to Supabase default email...');
+ 
+ // Fallback to Supabase's default email
+ try {
+ console.error('[API] Attempting Supabase fallback for email:', email);
+ const { error: fallbackError, data: fallbackData } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+ redirectTo: webFallbackUrl, // Use web fallback URL for Supabase email
+ });
+ 
+ if (fallbackError) {
+ console.error('[API] Supabase fallback email also failed:', fallbackError);
+ console.error('[API] Fallback error details:', {
+ message: fallbackError?.message,
+ status: fallbackError?.status
+ });
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ 
+ console.error('[API] Password reset email sent via Supabase fallback');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ } catch (fallbackError: any) {
+ console.error('[API] All email methods failed:', fallbackError);
+ console.error('[API] Final fallback error:', {
+ message: fallbackError?.message,
+ stack: fallbackError?.stack
+ });
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ }
+ } else {
+ // If custom email service not configured, use Supabase's default email
+ console.log('[API] EMAIL_API_KEY not configured, using Supabase default email');
+ console.log('[API] To use Resend, set EMAIL_API_KEY environment variable in Vercel');
+ try {
+ const { error: supabaseEmailError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+ redirectTo: webFallbackUrl,
+ });
+ 
+ if (supabaseEmailError) {
+ console.error('[API] Supabase email error:', supabaseEmailError);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ 
+ console.log('[API] Password reset email sent via Supabase');
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ } catch (supabaseError: any) {
+ console.error('[API] Supabase email failed:', supabaseError);
+ return res.status(200).json({ 
+ success: true,
+ message: 'If an account exists with this email, a password reset link has been sent.'
+ });
+ }
+ }
+ } catch (error: any) {
+ console.error('[API] Error in send-password-reset:', error);
+ return res.status(500).json({
+ error: error?.message || 'Internal server error',
+ });
+ }
 }
 

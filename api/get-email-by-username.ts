@@ -1,10 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { getCredentialedOrigin } from '../lib/corsCredentialed';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add CORS headers - handle both www and non-www
-  const origin = req.headers.origin || req.headers.referer || '*';
-  res.setHeader('Access-Control-Allow-Origin', origin === 'https://www.bookshelfscan.app' || origin === 'https://bookshelfscan.app' ? origin : '*');
+  res.setHeader('Access-Control-Allow-Origin', getCredentialedOrigin(req));
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -156,8 +155,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     console.log('[API] Successfully found email for username:', username);
 
+    // Return a masked email hint only — never expose the full email to unauthenticated callers.
+    // e.g. "john.doe@example.com" → "j***@example.com"
+    const fullEmail: string = authUser.user.email;
+    const atIdx = fullEmail.indexOf('@');
+    const maskedEmail = atIdx > 0
+      ? `${fullEmail[0]}***@${fullEmail.slice(atIdx + 1)}`
+      : '***';
+
     return res.status(200).json({
-      email: authUser.user.email,
+      email: maskedEmail,
     });
 
   } catch (error: any) {
@@ -169,9 +176,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       code: error?.code
     });
     
-    // Ensure CORS headers are set even on error
-    const origin = req.headers.origin || req.headers.referer || '*';
-    res.setHeader('Access-Control-Allow-Origin', origin === 'https://www.bookshelfscan.app' || origin === 'https://bookshelfscan.app' ? origin : '*');
+    // Ensure CORS headers are set even on error (exact origin when credentials: true)
+    res.setHeader('Access-Control-Allow-Origin', getCredentialedOrigin(req));
     
     return res.status(500).json({ 
       error: 'Internal server error',

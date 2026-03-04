@@ -1,0 +1,69 @@
+# CI: secret scanning (gitleaks), bundle scan after web build, .env guardrails
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # --- 1) Repo secret scan (gitleaks) ---
+  gitleaks:
+    name: Secret scan (repo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # --- 2) Bundle scan (build web, then grep artifacts for forbidden patterns) ---
+  bundle-scan:
+    name: Bundle scan (web build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx expo export --platform web
+        env:
+          # Use placeholder so build doesn't require real secrets
+          EXPO_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJleGFtcGxlIiwicm9sZSI6ImFub24ifQ.x
+          EXPO_PUBLIC_API_BASE_URL: https://www.bookshelfscan.app
+          # Do not emit sourcemaps; they can expose source and env context if deployed
+          GENERATE_SOURCEMAP: "false"
+      - name: Scan bundle for forbidden patterns
+        run: bash scripts/ci-bundle-scan.sh dist
+        # Fails if dist/_expo/static/js/web/*.js contains: SUPABASE_SERVICE_ROLE_KEY,
+        # EXPO_PUBLIC_SUPABASE_*, OPENAI_API_KEY, QSTASH_, GOOGLE_BOOKS_API_KEY,
+        # APPLE_SHARED_SECRET, UPSTASH_REDIS_*, sk- keys, postgres://
+
+  # --- 3) Verify .env* is gitignored and not committed ---
+  env-guardrails:
+    name: .env guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check .gitignore contains .env
+        run: |
+          if ! grep -qE '^\.env' .gitignore 2>/dev/null; then
+            echo "::error::.gitignore should include .env or .env* to avoid committing secrets."
+            exit 1
+          fi
+          echo ".gitignore contains .env rules"
+      - name: Ensure no .env files are tracked
+        run: |
+          TRACKED=$(git ls-files | grep -E '^\.env' || true)
+          if [[ -n "$TRACKED" ]]; then
+            echo "::error::These .env files are tracked (remove and add to .gitignore): $TRACKED"
+            exit 1
+          fi
+          echo "No .env files are tracked"

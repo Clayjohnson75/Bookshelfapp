@@ -1,12 +1,17 @@
 {
-  "compilerOptions": {
-    "skipLibCheck": true
-  },
   "extends": "expo/tsconfig.base",
-  "exclude": [
-    "api/**/*",
-    "node_modules"
-  ]
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "jsx": "react-native",
+    "lib": ["DOM", "ESNext"],
+    "target": "ESNext",
+    "downlevelIteration": true,
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "api"]
 }
-
-// Note: API routes use tsconfig.api.json to avoid Expo JSX compilation issues

@@ -1,0 +1,14 @@
+# Enrich description when dbId is null (local-only books)
+
+## Problem
+
+Client opens BookDetailModal with **dbId: null** (local-only / not yet synced). If the client calls enrich with only `{ book_key, title, author }` and the server does **not** upsert a stub row when no book exists, the server returns "not found" forever for those rows.
+
+## Rule
+
+- **Client:** May call enrich when dbId is null, sending `book_key` (and optionally title, author, isbn). Do not require dbId to be present to trigger enrich.
+- **Server (api/books/enrich-description.ts):** Must lookup by `(user_id, book_key)`. If no row exists, **upsert a stub row** on `(user_id, book_key)` (unique constraint), then enrich and return the row id. Never return 404 when the client sent a valid `book_key` and the upsert succeeded.
+
+## Summary
+
+Either: (1) client does not call enrich when dbId is null, or (2) server upserts by book_key when no row exists. This repo uses (2) so that "tap book → get description" works before sync gives a dbId.

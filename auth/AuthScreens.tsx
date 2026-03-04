@@ -10,19 +10,21 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Image,
   Switch,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from './SimpleAuthContext';
+import { useTheme } from '../theme/ThemeProvider';
 import * as BiometricAuth from '../services/biometricAuth';
+import type { ThemeTokens } from '../theme/tokens';
 
 interface AuthScreenProps {
   onAuthSuccess: () => void;
 }
 
 export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
+  const { t } = useTheme();
+  const { styles, placeholderColor } = React.useMemo(() => getStyles(t), [t]);
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true); // Show by default
@@ -161,7 +163,6 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.scrollContainer}>
           <View style={styles.header}>
-            <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
             <Text style={styles.title}>Reset Password</Text>
             <Text style={styles.subtitle}>Enter your email to receive a reset link</Text>
           </View>
@@ -170,6 +171,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             <TextInput
               style={styles.input}
               placeholder="Email"
+              placeholderTextColor={placeholderColor}
               value={resetEmail}
               onChangeText={setResetEmail}
               autoCapitalize="none"
@@ -181,12 +183,12 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             />
 
             <TouchableOpacity
-              style={[styles.button, styles.primaryButton]}
+              style={[styles.button, styles.primaryButton, { backgroundColor: t.colors.primary }]}
               onPress={handleForgotPassword}
               disabled={resetLoading}
             >
               {resetLoading ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color={t.colors.primaryText} />
               ) : (
                 <Text style={styles.buttonText}>Send Reset Link</Text>
               )}
@@ -199,7 +201,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
                 setResetEmail('');
               }}
             >
-              <Text style={styles.linkText}>Back to Sign In</Text>
+              <Text style={[styles.linkText, { color: t.colors.primary }]}>Back to Sign In</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -211,7 +213,6 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Bookshelf Scanner</Text>
           <Text style={styles.subtitle}>Sign in to access your library</Text>
         </View>
@@ -220,6 +221,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           <TextInput
             style={styles.input}
             placeholder="Email or Username"
+            placeholderTextColor={placeholderColor}
             value={identifier}
             onChangeText={setIdentifier}
             autoCapitalize="none"
@@ -233,6 +235,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Password"
+              placeholderTextColor={placeholderColor}
               value={password}
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
@@ -245,7 +248,7 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               onPress={() => setShowPassword(!showPassword)}
               activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Show' : 'Hide'}</Text>
+              <Text style={[styles.eyeButtonPlain, { color: t.colors.primary }]}>{showPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -255,8 +258,8 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               <Switch
                 value={rememberMe}
                 onValueChange={setRememberMe}
-                trackColor={{ false: '#767577', true: '#0056CC' }}
-                thumbColor={rememberMe ? '#fff' : '#f4f3f4'}
+                trackColor={{ false: t.colors.border, true: t.colors.primary }}
+                thumbColor={rememberMe ? t.colors.primaryText : t.colors.surface2}
               />
               <Text style={styles.rememberMeText}>
                 Remember me & enable {BiometricAuth.getBiometricTypeName(biometricCapabilities)}
@@ -265,12 +268,12 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           )}
 
           <TouchableOpacity
-            style={[styles.button, styles.primaryButton]}
+            style={[styles.button, styles.primaryButton, { backgroundColor: t.colors.primary }]}
             onPress={handleLogin}
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={t.colors.primaryText} />
             ) : (
               <Text style={styles.buttonText}>Sign In</Text>
             )}
@@ -280,14 +283,14 @@ export const LoginScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
             style={styles.linkButton}
             onPress={() => setShowForgotPassword(true)}
           >
-            <Text style={styles.linkText}>Forgot Password?</Text>
+            <Text style={[styles.linkText, { color: t.colors.primary }]}>Forgot Password?</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.linkButton}
             onPress={() => setShowSignUp(true)}
           >
-            <Text style={styles.linkText}>Don't have an account? Sign up</Text>
+            <Text style={[styles.linkText, { color: t.colors.primary }]}>Don't have an account? Sign up</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -300,6 +303,8 @@ interface SignUpScreenProps extends AuthScreenProps {
 }
 
 export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBackToLogin }) => {
+  const { t } = useTheme();
+  const { styles, placeholderColor } = React.useMemo(() => getStyles(t), [t]);
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -340,7 +345,6 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Bookshelf Scanner</Text>
           <Text style={styles.subtitle}>Create your account</Text>
         </View>
@@ -349,6 +353,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
           <TextInput
             style={styles.input}
             placeholder="Full Name"
+            placeholderTextColor={placeholderColor}
             value={displayName}
             onChangeText={setDisplayName}
             autoCapitalize="words"
@@ -359,6 +364,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
           <TextInput
             style={styles.input}
             placeholder="Username (required, 3-20 chars)"
+            placeholderTextColor={placeholderColor}
             value={username}
             onChangeText={(text) => setUsername(text.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
             autoCapitalize="none"
@@ -369,6 +375,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
           <TextInput
             style={styles.input}
             placeholder="Email"
+            placeholderTextColor={placeholderColor}
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
@@ -382,6 +389,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Password (min 6 characters)"
+              placeholderTextColor={placeholderColor}
               value={password}
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
@@ -395,7 +403,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
               onPress={() => setShowPassword(!showPassword)}
               activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Show' : 'Hide'}</Text>
+              <Text style={[styles.eyeButtonPlain, { color: t.colors.primary }]}>{showPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -403,6 +411,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Confirm Password"
+              placeholderTextColor={placeholderColor}
               textContentType="none"
               autoComplete="off"
               value={confirmPassword}
@@ -415,17 +424,17 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
               onPress={() => setShowConfirmPassword(!showConfirmPassword)}
               activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonPlain}>{showConfirmPassword ? 'Show' : 'Hide'}</Text>
+              <Text style={[styles.eyeButtonPlain, { color: t.colors.primary }]}>{showConfirmPassword ? 'Show' : 'Hide'}</Text>
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity
-            style={[styles.button, styles.primaryButton]}
+            style={[styles.button, styles.primaryButton, { backgroundColor: t.colors.primary }]}
             onPress={handleSignUp}
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={t.colors.primaryText} />
             ) : (
               <Text style={styles.buttonText}>Sign Up</Text>
             )}
@@ -435,7 +444,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
             style={styles.linkButton}
             onPress={onBackToLogin}
           >
-            <Text style={styles.linkText}>Already have an account? Sign in</Text>
+            <Text style={[styles.linkText, { color: t.colors.primary }]}>Already have an account? Sign in</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -443,16 +452,20 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onAuthSuccess, onBac
   );
 };
 
-const styles = StyleSheet.create({
+function getStyles(t: ThemeTokens) {
+  const c = t.colors;
+  const placeholderColor = c.textTertiary ?? c.textMuted ?? c.muted ?? 'rgba(255,255,255,0.45)';
+  const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.bg,
   },
   scrollContainer: {
     flexGrow: 1,
-    justifyContent: 'flex-start',
-    padding: 20,
-    paddingTop: 40,
+    justifyContent: 'center',
+    padding: 24,
+    paddingTop: 80,
+    paddingBottom: 40,
   },
   header: {
     alignItems: 'center',
@@ -462,47 +475,43 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     borderRadius: 0,
   },
-  logo: {
-    width: 240,
-    height: 240,
-    marginBottom: 12,
-    backgroundColor: 'transparent',
-  },
   title: {
     fontSize: 32,
     fontWeight: '800',
-    color: '#1a1a2e',
+    color: c.textPrimary ?? c.text,
     marginBottom: 8,
     letterSpacing: 0.5,
   },
   subtitle: {
     fontSize: 16,
-    color: '#1a1a2e',
+    color: c.textSecondary ?? c.textMuted,
     fontWeight: '500',
   },
   form: {
     width: '100%',
   },
   input: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 20,
     paddingVertical: 15,
     borderRadius: 12,
     marginBottom: 15,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
+    color: c.textPrimary ?? c.text,
   },
   // Input field used inside passwordContainer, matches .input dimensions
   inputField: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 20,
     paddingVertical: 15,
     borderRadius: 12,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
+    color: c.textPrimary ?? c.text,
   },
   passwordContainer: {
     flexDirection: 'row',
@@ -522,7 +531,7 @@ const styles = StyleSheet.create({
   },
   eyeButtonPlain: {
     fontSize: 13,
-    color: '#007AFF',
+    color: c.primary,
     fontWeight: '600',
   },
   button: {
@@ -532,10 +541,10 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   primaryButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: c.primary,
   },
   buttonText: {
-    color: '#fff',
+    color: c.primaryText,
     fontSize: 18,
     fontWeight: '600',
   },
@@ -544,7 +553,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   linkText: {
-    color: '#007AFF',
+    color: c.primary,
     fontSize: 16,
   },
   rememberMeContainer: {
@@ -556,15 +565,19 @@ const styles = StyleSheet.create({
   rememberMeText: {
     marginLeft: 10,
     fontSize: 14,
-    color: '#333',
+    color: c.textSecondary ?? c.textMuted,
   },
   biometricButton: {
-    backgroundColor: '#4A90E2',
+    backgroundColor: c.primary,
     marginTop: 12,
   },
-});
+  });
+  return { styles, placeholderColor };
+}
 
 export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: string }> = ({ onAuthSuccess, accessToken }) => {
+  const { t } = useTheme();
+  const { styles, placeholderColor } = React.useMemo(() => getStyles(t), [t]);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -603,7 +616,6 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Image source={require('../assets/logo/logo.png')} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Set New Password</Text>
           <Text style={styles.subtitle}>Enter your new password below</Text>
         </View>
@@ -613,6 +625,7 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="New Password (min 6 characters)"
+              placeholderTextColor={placeholderColor}
               value={newPassword}
               onChangeText={setNewPassword}
               secureTextEntry={!showPassword}
@@ -626,7 +639,7 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
               onPress={() => setShowPassword(!showPassword)}
               activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonPlain}>{showPassword ? 'Hide' : 'Show'}</Text>
+              <Text style={[styles.eyeButtonPlain, { color: t.colors.primary }]}>{showPassword ? 'Hide' : 'Show'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -634,6 +647,7 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
             <TextInput
               style={[styles.inputField, styles.passwordInput]}
               placeholder="Confirm New Password"
+              placeholderTextColor={placeholderColor}
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               secureTextEntry={!showConfirmPassword}
@@ -646,17 +660,17 @@ export const PasswordResetScreen: React.FC<AuthScreenProps & { accessToken: stri
               onPress={() => setShowConfirmPassword(!showConfirmPassword)}
               activeOpacity={0.7}
             >
-              <Text style={styles.eyeButtonPlain}>{showConfirmPassword ? 'Hide' : 'Show'}</Text>
+              <Text style={[styles.eyeButtonPlain, { color: t.colors.primary }]}>{showConfirmPassword ? 'Hide' : 'Show'}</Text>
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity
-            style={[styles.button, styles.primaryButton]}
+            style={[styles.button, styles.primaryButton, { backgroundColor: t.colors.primary }]}
             onPress={handleResetPassword}
             disabled={loading || !newPassword.trim() || !confirmPassword.trim()}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={t.colors.primaryText} />
             ) : (
               <Text style={styles.buttonText}>Reset Password</Text>
             )}

@@ -1,0 +1,47 @@
+# Themed design system — no hardcoded colors
+
+We use a **fully themed design system** that MUST support **light + dark mode everywhere**: Scans, Camera, Explore, Library, Scan Bar, Filters, Buttons, Nav.
+
+## Do NOT hardcode colors
+
+- No inline hex (e.g. `#007AFF`, `#2d3748`, `#F6F3EE`) in UI components.
+- No raw RGB/rgba for brand/surface/text — use theme tokens only.
+- All colors live in `theme/tokens.ts`; components use `useTheme()` → `t.colors.*`.
+
+## Required semantic tokens (use these everywhere)
+
+Get theme via `const { t } = useTheme()`. Prefer **semantic** names; legacy names still work.
+
+| Token | Use for | Light | Dark |
+|-------|--------|--------|------|
+| **backgroundPrimary** | Screen/scroll bg | Warm off-white, parchment | Deep warm gray (NOT blue-gray) |
+| **backgroundSecondary** | Secondary bg areas | Warm light | Warm dark |
+| **surfacePrimary** | Cards, modals | Slightly lighter | Slightly lighter warm gray |
+| **surfaceSecondary** | Chips, inactive pills, inputs, scan bar container | Light beige | Warm gray |
+| **accentPrimary** | Primary actions, active tab, progress fill | Beige / book tone | Muted warm tan |
+| **textPrimary** | Primary text | Charcoal | Soft off-white |
+| **textSecondary** | Secondary text, placeholders, inactive icons | Muted brown-gray | Muted off-white |
+| **borderSubtle** | Borders, dividers | Warm border | Subtle light border |
+| **navBackground** | Bottom tab bar | Warm paper | Warm dark |
+
+Legacy aliases (same values): `bg`, `surface`, `surface2`, `primary`/`accent`, `text`, `textMuted`, `border`, `tabBarBg`.
+
+## Where to use which token
+
+- **Explore:** Filter pills active → `accentPrimary`; inactive → `surfaceSecondary`. Search bar background → `surfaceSecondary`. Header → `surfaceSecondary` (light) / `surfacePrimary` (dark).
+- **Bottom nav:** Background → `navBackground`. Active tab icon → `accentPrimary`. Inactive icons → `textSecondary`.
+- **Camera:** Zoom/flash controls → themed surfaces (e.g. dark translucent + `borderSubtle`). Hint pill → `surfaceSecondary` + `textPrimary`.
+- **Scan notification bar:** Container → `surfaceSecondary` or `accentSurface`. Progress fill → `accentPrimary`. Buttons → `accentPrimary` + `accentTextOn`/`primaryText`.
+- **Buttons (everywhere):** Primary → `accentPrimary` bg, `accentTextOn` or `textPrimary` for text. Secondary/inactive → `surfaceSecondary`, `textSecondary`.
+
+## Replace ALL hardcoded blues
+
+Any remaining `#007AFF`, `#0056CC`, or similar → use `accentPrimary` (or `primary`). No blue in the app UI.
+
+## Why this matters
+
+- Prevents blue randomly reappearing and camera/Explore/nav looking mismatched.
+- Gives consistent brand, instant dark mode, easier tweaks, and professional polish.
+- Single source of truth: change `theme/tokens.ts` and the whole app follows.
+
+**Rule:** No inline hex in UI components. Use `t.colors.<token>` only.

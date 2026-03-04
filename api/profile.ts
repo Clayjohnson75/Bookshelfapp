@@ -12,6 +12,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <link rel="icon" href="/logo.png" type="image/png">
+      <link rel="apple-touch-icon" href="/logo.png">
       <title>Profile - Bookshelf Scanner</title>
       <style>
         * {
@@ -270,6 +272,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (session) {
             try {
               const sessionData = JSON.parse(session);
+              if (sessionData?.access_token && sessionData?.refresh_token) {
+                await fetch('/api/web-sync-session', {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ access_token: sessionData.access_token, refresh_token: sessionData.refresh_token }),
+                });
+              }
               // Get username from API
               const response = await fetch('/api/get-username', {
                 method: 'POST',
@@ -303,9 +313,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           errorDiv.classList.remove('show');
 
           try {
-            // Call our sign-in API endpoint
+            // credentials: 'include' required so browser stores Set-Cookie: sb-* from response
             const response = await fetch('/api/web-signin', {
               method: 'POST',
+              credentials: 'include',
               headers: {
                 'Content-Type': 'application/json',
               },

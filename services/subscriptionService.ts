@@ -7,7 +7,7 @@
 import { supabase } from '../lib/supabase';
 
 /**
- * 🎛️ FEATURE FLAG: Enable Pro Features for Everyone
+ * FEATURE FLAG: Enable Pro Features for Everyone
  * 
  * Set to `true` to give all users unlimited scans and pro features.
  * Set to `false` to use normal subscription checks.
@@ -20,108 +20,108 @@ import { supabase } from '../lib/supabase';
  * 
  * To toggle: Change this single value and rebuild the app.
  */
-const ENABLE_PRO_FOR_EVERYONE = true; // ⚠️ No Pro features - all users get unlimited scans when signed in
+const ENABLE_PRO_FOR_EVERYONE = true; // No Pro features - all users get unlimited scans when signed in
 
 /**
  * Check if subscription UI should be hidden (when pro is enabled for everyone)
  */
 export function isSubscriptionUIHidden(): boolean {
-  return ENABLE_PRO_FOR_EVERYONE;
+ return ENABLE_PRO_FOR_EVERYONE;
 }
 
 export interface ScanUsage {
-  subscriptionTier: 'free' | 'pro' | 'owner';
-  monthlyScans: number;
-  monthlyLimit: number | null; // null for pro/owner (unlimited)
-  scansRemaining: number | null; // null for pro/owner (unlimited)
-  resetAt: Date;
+ subscriptionTier: 'free' | 'pro' | 'owner';
+ monthlyScans: number;
+ monthlyLimit: number | null; // null for pro/owner (unlimited)
+ scansRemaining: number | null; // null for pro/owner (unlimited)
+ resetAt: Date;
 }
 
 /**
  * Check if user can perform a scan
  */
 export async function canUserScan(userId: string): Promise<boolean> {
-  // 🎛️ FEATURE FLAG: If pro enabled for everyone, always allow scans
-  if (ENABLE_PRO_FOR_EVERYONE) {
-    return true;
-  }
+ // FEATURE FLAG: If pro enabled for everyone, always allow scans
+ if (ENABLE_PRO_FOR_EVERYONE) {
+ return true;
+ }
 
-  if (!supabase) {
-    console.warn('Supabase not available, allowing scan');
-    return true;
-  }
+ if (!supabase) {
+ console.warn('Supabase not available, allowing scan');
+ return true;
+ }
 
-  try {
-    const { data, error } = await supabase.rpc('can_user_scan', {
-      user_uuid: userId,
-    });
+ try {
+ const { data, error } = await supabase.rpc('can_user_scan', {
+ user_uuid: userId,
+ });
 
-    if (error) {
-      console.error('Error checking scan permission:', error);
-      // Allow scan on error to avoid blocking users
-      return true;
-    }
+ if (error) {
+ console.error('Error checking scan permission:', error);
+ // Allow scan on error to avoid blocking users
+ return true;
+ }
 
-    return data === true;
-  } catch (error) {
-    console.error('Error checking scan permission:', error);
-    return true; // Allow scan on error
-  }
+ return data === true;
+ } catch (error) {
+ console.error('Error checking scan permission:', error);
+ return true; // Allow scan on error
+ }
 }
 
 /**
  * Get user's scan usage information
  */
 export async function getUserScanUsage(userId: string): Promise<ScanUsage | null> {
-  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return unlimited usage
-  if (ENABLE_PRO_FOR_EVERYONE) {
-    return {
-      subscriptionTier: 'pro',
-      monthlyScans: 0,
-      monthlyLimit: null, // null = unlimited
-      scansRemaining: null, // null = unlimited
-      resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
-    };
-  }
+ // FEATURE FLAG: If pro enabled for everyone, return unlimited usage
+ if (ENABLE_PRO_FOR_EVERYONE) {
+ return {
+ subscriptionTier: 'pro',
+ monthlyScans: 0,
+ monthlyLimit: null, // null = unlimited
+ scansRemaining: null, // null = unlimited
+ resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
+ };
+ }
 
-  if (!supabase) {
-    return null;
-  }
+ if (!supabase) {
+ return null;
+ }
 
-  try {
-    const { data, error } = await supabase.rpc('get_user_scan_usage', {
-      user_uuid: userId,
-    });
+ try {
+ const { data, error } = await supabase.rpc('get_user_scan_usage', {
+ user_uuid: userId,
+ });
 
-    if (error) {
-      const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
-      console.error('Error getting scan usage:', errorMessage);
-      return null;
-    }
+ if (error) {
+ const errorMessage = error?.message || error?.code || JSON.stringify(error) || String(error);
+ console.error('Error getting scan usage:', errorMessage);
+ return null;
+ }
 
-    if (!data || data.length === 0) {
-      // Return default for new signed-in users: unlimited scans
-      return {
-        subscriptionTier: 'free',
-        monthlyScans: 0,
-        monthlyLimit: null, // null = unlimited for signed-in users
-        scansRemaining: null, // null = unlimited
-        resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
-      };
-    }
+ if (!data || data.length === 0) {
+ // Return default for new signed-in users: unlimited scans
+ return {
+ subscriptionTier: 'free',
+ monthlyScans: 0,
+ monthlyLimit: null, // null = unlimited for signed-in users
+ scansRemaining: null, // null = unlimited
+ resetAt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
+ };
+ }
 
-    const usage = data[0];
-    return {
-      subscriptionTier: usage.subscription_tier || 'free',
-      monthlyScans: usage.monthly_scans || 0,
-      monthlyLimit: usage.monthly_limit,
-      scansRemaining: usage.scans_remaining,
-      resetAt: new Date(usage.reset_at),
-    };
-  } catch (error: any) {
-    console.error('Error getting scan usage:', error?.message || error);
-    return null;
-  }
+ const usage = data[0];
+ return {
+ subscriptionTier: usage.subscription_tier || 'free',
+ monthlyScans: usage.monthly_scans || 0,
+ monthlyLimit: usage.monthly_limit,
+ scansRemaining: usage.scans_remaining,
+ resetAt: new Date(usage.reset_at),
+ };
+ } catch (error: any) {
+ console.error('Error getting scan usage:', error?.message || error);
+ return null;
+ }
 }
 
 /**
@@ -129,56 +129,56 @@ export async function getUserScanUsage(userId: string): Promise<ScanUsage | null
  * This ensures the count updates even if the API uses a different database
  */
 export async function incrementScanCount(userId: string): Promise<boolean> {
-  if (!supabase) {
-    return false;
-  }
+ if (!supabase) {
+ return false;
+ }
 
-  try {
-    const { error } = await supabase.rpc('increment_user_scan_count', {
-      user_uuid: userId,
-    });
+ try {
+ const { error } = await supabase.rpc('increment_user_scan_count', {
+ user_uuid: userId,
+ });
 
-    if (error) {
-      console.error('Error incrementing scan count:', error);
-      return false;
-    }
+ if (error) {
+ console.error('Error incrementing scan count:', error);
+ return false;
+ }
 
-    return true;
-  } catch (error: any) {
-    console.error('Error incrementing scan count:', error?.message || error);
-    return false;
-  }
+ return true;
+ } catch (error: any) {
+ console.error('Error incrementing scan count:', error?.message || error);
+ return false;
+ }
 }
 
 /**
  * Get user's subscription tier
  */
 export async function getUserSubscriptionTier(userId: string): Promise<'free' | 'pro' | 'owner'> {
-  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return 'pro'
-  if (ENABLE_PRO_FOR_EVERYONE) {
-    return 'pro';
-  }
+ // FEATURE FLAG: If pro enabled for everyone, return 'pro'
+ if (ENABLE_PRO_FOR_EVERYONE) {
+ return 'pro';
+ }
 
-  if (!supabase) {
-    return 'free';
-  }
+ if (!supabase) {
+ return 'free';
+ }
 
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('subscription_tier')
-      .eq('id', userId)
-      .single();
+ try {
+ const { data, error } = await supabase
+ .from('profiles')
+ .select('subscription_tier')
+ .eq('id', userId)
+ .single();
 
-    if (error || !data) {
-      return 'free';
-    }
+ if (error || !data) {
+ return 'free';
+ }
 
-    return (data.subscription_tier as 'free' | 'pro' | 'owner') || 'free';
-  } catch (error) {
-    console.error('Error getting subscription tier:', error);
-    return 'free';
-  }
+ return (data.subscription_tier as 'free' | 'pro' | 'owner') || 'free';
+ } catch (error) {
+ console.error('Error getting subscription tier:', error);
+ return 'free';
+ }
 }
 
 /**
@@ -186,48 +186,48 @@ export async function getUserSubscriptionTier(userId: string): Promise<'free' | 
  * Gets the authenticated user and returns their subscription tier
  */
 export async function checkSubscriptionStatus(): Promise<'free' | 'pro'> {
-  // 🎛️ FEATURE FLAG: If pro enabled for everyone, return 'pro'
-  if (ENABLE_PRO_FOR_EVERYONE) {
-    return 'pro';
-  }
+ // FEATURE FLAG: If pro enabled for everyone, return 'pro'
+ if (ENABLE_PRO_FOR_EVERYONE) {
+ return 'pro';
+ }
 
-  if (!supabase) {
-    return 'free';
-  }
+ if (!supabase) {
+ return 'free';
+ }
 
-  try {
-    // Get current authenticated user
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    
-    if (userError || !user) {
-      console.warn('No authenticated user found for subscription check');
-      return 'free';
-    }
+ try {
+ // Get current authenticated user
+ const { data: { user }, error: userError } = await supabase.auth.getUser();
+ 
+ if (userError || !user) {
+ console.warn('No authenticated user found for subscription check');
+ return 'free';
+ }
 
-    // Get subscription tier
-    const tier = await getUserSubscriptionTier(user.id);
-    
-    // Map 'owner' to 'pro' for compatibility
-    return tier === 'owner' ? 'pro' : (tier === 'pro' ? 'pro' : 'free');
-  } catch (error) {
-    console.error('Error checking subscription status:', error);
-    return 'free';
-  }
+ // Get subscription tier
+ const tier = await getUserSubscriptionTier(user.id);
+ 
+ // Map 'owner' to 'pro' for compatibility
+ return tier === 'owner' ? 'pro' : (tier === 'pro' ? 'pro' : 'free');
+ } catch (error) {
+ console.error('Error checking subscription status:', error);
+ return 'free';
+ }
 }
 
 /**
  * Format reset date for display
  */
 export function formatResetDate(date: Date): string {
-  const now = new Date();
-  const daysUntilReset = Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  
-  if (daysUntilReset <= 0) {
-    return 'Resets today';
-  } else if (daysUntilReset === 1) {
-    return 'Resets tomorrow';
-  } else {
-    return `Resets in ${daysUntilReset} days`;
-  }
+ const now = new Date();
+ const daysUntilReset = Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+ 
+ if (daysUntilReset <= 0) {
+ return 'Resets today';
+ } else if (daysUntilReset === 1) {
+ return 'Resets tomorrow';
+ } else {
+ return `Resets in ${daysUntilReset} days`;
+ }
 }
 

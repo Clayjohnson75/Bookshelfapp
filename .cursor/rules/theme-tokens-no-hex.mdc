@@ -1,0 +1,56 @@
+# Theme tokens only — no hardcoded hex in components
+
+Use the shared theme layer for all UI colors. Do **not** drop raw hex colors into components.
+
+**See also:** semantic tokens below and `theme/tokens.ts` for the single source of truth.
+
+## Semantic text tokens (dark mode readable)
+
+Use these so every screen is readable in dark mode without squinting:
+
+- **textPrimary** — Titles, section headers (Description, Book Information), row values, nav/back. Near-white in dark (not pure white).
+- **textSecondary** — Body text, row labels (Publisher, ISBN), secondary copy. Clearly readable in dark (not washed out).
+- **textTertiary** — Rare; slightly de‑emphasized vs secondary (e.g. read date).
+- **textMuted** — **Only** for hints and placeholders (e.g. "No description available", input placeholder). **Not** for section labels like "Description" or "Book Information".
+- **divider** — Section dividers; subtle but visible in dark (~20–30% opacity). Use for `borderTopColor` / `borderBottomColor` on section boundaries.
+- **surface / surface2 / background** — Use semantic names; no gray hex.
+
+## Contrast rules in components
+
+1. **Section headers** (e.g. "Description", "Book Information", "From Scan") → **textPrimary** or strong secondary. Never muted.
+2. **Body text** → **textSecondary**.
+3. **Placeholder / empty state** (e.g. "No description available") → **textMuted**.
+4. **Row labels** (Publisher, ISBN, etc.) → **textSecondary**.
+5. **Row values** → **textPrimary**.
+6. **Dividers** → **divider** (or separator); avoid hairline-only if invisible in dark.
+
+## Token layer (use via `useTheme()` → `t.colors`)
+
+- **colors.bg** — screen / scroll background
+- **colors.surface** / **surface2** — headers, cards, modals, chips, inputs
+- **colors.textPrimary** — primary text (prefer over `text` for new code)
+- **colors.textSecondary** — secondary text, row labels
+- **colors.textMuted** — hints, placeholders only
+- **colors.divider** — section dividers (visible in dark)
+- **colors.border** — subtle outlines
+- **colors.primary** / **primaryText** — primary CTAs; **primaryText** = text on accent buttons only (not header bar text; use textPrimary for header/back)
+- **colors.accent** / **accent2** — progress, tab active
+- **colors.danger** — destructive actions
+
+## Rules
+
+1. **Borders / dividers** → `t.colors.divider` or `t.colors.border`
+2. **Surfaces** → `t.colors.surface` or `t.colors.surface2` or `t.colors.bg`
+3. **Text** → `t.colors.textPrimary` | `textSecondary` | `textMuted` (choose by hierarchy above)
+4. **No raw hex** in component JSX or style objects (except inside `theme/tokens.ts`).
+
+## Dark mode audit checklist (Cursor)
+
+When touching UI, search and fix:
+
+1. **Hardcoded grays** — `#999`, `#AAA`, `#718096`, `#a0aec0`, `#505050`, `rgba(0,0,0,0.4)` in components → replace with semantic tokens (`textPrimary`, `textSecondary`, `textMuted`, `divider`).
+2. **placeholderTextColor** — must use `t.colors.textMuted` (or theme equivalent); never a hex that’s too close to background in dark.
+3. **Text same color as surfaces** — ensure text uses textPrimary/textSecondary so it’s not invisible on surface/bg.
+4. **Section labels** — any "Description", "Book Information", row header using muted → change to textPrimary or textSecondary.
+
+Acceptance: In dark mode, every label and value on Book Details and Settings is readable without squinting; dividers are subtle but visible.

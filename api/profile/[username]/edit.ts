@@ -34,36 +34,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (!authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: 'Unauthorized', message: 'Missing or invalid token. Please sign in again.' });
     }
 
-    const jwt = authHeader.slice(7);
+    const token = authHeader.slice(7).trim();
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseAnonKey) {
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseUrl || !serviceKey) {
       return res.status(500).json({ error: 'Server configuration error' });
     }
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: `Bearer ${jwt}` } }
+    const supabase = createClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
     });
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data?.user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Invalid or expired token. Please sign in again.' });
+    }
+    const userId = data.user.id;
 
     try {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData?.user) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-
-      // Get profile to verify ownership
-      const { data: profile } = await supabase
+      // Get profile to verify ownership (user can only edit their own profile)
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('id, username')
-        .eq('username', username.toLowerCase())
-        .single();
+        .eq('username', lowerUsername)
+        .maybeSingle();
 
-      if (!profile || profile.id !== userData.user.id) {
-        return res.status(403).json({ error: 'Forbidden' });
+      if (profileError || !profile || profile.id !== userId) {
+        return res.status(403).json({ error: 'Forbidden', message: 'You can only edit your own profile.' });
       }
 
       // Get customization settings from request body
@@ -75,13 +74,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         showReadBooks,
         showUnreadBooks,
         showTopAuthors,
+        showFavorites,
+        showFolders,
         hideBio,
         hideAvatar
       } = req.body;
 
-      // Save to database (for now, we'll store as JSON in a custom column or update profiles table)
-      // Since we might not have profile_settings column yet, we'll create an API to handle this
-      // For now, store in a JSON column or create a separate table
       const profileSettings = {
         backgroundColor: backgroundColor || '#f8f6f0',
         buttonColor: buttonColor || '#007AFF',
@@ -89,34 +87,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         showTotalBooks: showTotalBooks !== false,
         showReadBooks: showReadBooks !== false,
         showUnreadBooks: showUnreadBooks !== false,
-        showTopAuthors: showTopAuthors !== false,
+        showTopAuthors: showTopAuthors === true,
+        showFavorites: showFavorites === true,
+        showFolders: showFolders === true,
         hideBio: hideBio || false,
         hideAvatar: hideAvatar || false
       };
 
-      // Update profile with settings (we'll need to add a profile_settings column or use a separate table)
-      // For now, let's try to update a JSON column or create a migration
-      // Since we can't create migrations here, we'll store it in profile_bio or a custom field
-      // Actually, let's check if we can add to an existing column or create a service role update
-      
-      const supabaseService = createClient(
-        supabaseUrl,
-        process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-        {
-          auth: { autoRefreshToken: false, persistSession: false }
-        }
-      );
-
-      // Try to update profile_settings column, if it doesn't exist, this will fail gracefully
-      const { error: updateError } = await supabaseService
+      // Update profile_settings column (requires migration add-profile-settings.sql)
+      const { error: updateError } = await supabase
         .from('profiles')
         .update({ profile_settings: profileSettings })
         .eq('id', profile.id);
 
       if (updateError) {
         console.error('[API] Error saving profile settings:', updateError);
-        // If column doesn't exist, we'll need to add it via migration
-        // For now, return success but log the error
+        return res.status(500).json({
+          error: 'Failed to save settings',
+          message: updateError.message || 'Database update failed. Ensure profile_settings column exists (run add-profile-settings.sql).'
+        });
       }
 
       return res.status(200).json({ success: true, settings: profileSettings });
@@ -164,10 +153,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).end(); // Silent 404
     }
 
-    // Get user profile by username
+    // Get user profile by username (include profile_settings for current values)
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_url, profile_bio')
+      .select('id, username, display_name, avatar_url, profile_bio, profile_settings')
       .eq('username', username.toLowerCase())
       .single();
 
@@ -183,22 +172,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).send('Profile not found');
     }
 
-    // Get current settings or defaults (profile_settings column doesn't exist yet, use defaults)
-    const settings = {
+    // Use saved profile_settings or defaults
+    const defaults = {
       backgroundColor: '#f8f6f0',
       buttonColor: '#007AFF',
       textColor: '#2c3e50',
       showTotalBooks: true,
       showReadBooks: true,
       showUnreadBooks: true,
-      showTopAuthors: true,
+      showTopAuthors: false,
+      showFavorites: false,
+      showFolders: false,
       hideBio: false,
       hideAvatar: false
     };
+    const saved = (profile as { profile_settings?: typeof defaults }).profile_settings;
+    const settings = saved && typeof saved === 'object'
+      ? { ...defaults, ...saved }
+      : defaults;
+
+    // Profile photo: read from profile_photos only (not profiles.avatar_url).
+    // Filter deleted_at IS NULL so "Clear Account Data" soft-deletes are respected.
+    const { data: profilePhoto } = await supabase
+      .from('profile_photos')
+      .select('uri')
+      .eq('user_id', profile.id)
+      .is('deleted_at', null)
+      .maybeSingle();
 
     const profileData = {
       username: profile.username,
       displayName: profile.display_name || profile.username,
+      avatarUrl: profilePhoto?.uri ?? null,
       settings
     };
 
@@ -209,6 +214,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="icon" href="/logo.png" type="image/png">
+        <link rel="apple-touch-icon" href="/logo.png">
         <title>Edit Profile - ${profileData.displayName}</title>
         <style>
           * {
@@ -455,6 +462,113 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             color: #721c24;
             border: 1px solid #f5c6cb;
           }
+          .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+          }
+          .modal-overlay.show {
+            display: flex;
+          }
+          .modal-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+          }
+          .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          .modal-title { font-size: 18px; font-weight: 700; color: #2c3e50; }
+          .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #666; line-height: 1; }
+          .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+          }
+          .favorites-search {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 16px;
+          }
+          .favorites-search:focus {
+            outline: none;
+            border-color: #007AFF;
+          }
+          .favorites-count {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 12px;
+          }
+          .favorites-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          }
+          .favorites-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+          }
+          .favorites-item:hover { border-color: #007AFF; }
+          .favorites-item.selected { border-color: #007AFF; background: #f0f8ff; }
+          .favorites-item input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+          }
+          .favorites-item-cover {
+            width: 40px;
+            height: 60px;
+            object-fit: cover;
+            border-radius: 4px;
+          }
+          .favorites-item-cover-placeholder {
+            width: 40px;
+            height: 60px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: #718096;
+            text-align: center;
+            padding: 4px;
+          }
+          .favorites-item-info { flex: 1; }
+          .favorites-item-title { font-weight: 600; color: #2c3e50; }
+          .favorites-item-author { font-size: 13px; color: #666; }
+          .modal-footer {
+            padding: 20px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+          }
           @media (max-width: 768px) {
             .container {
               padding: 20px 15px;
@@ -523,6 +637,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 <input type="text" id="textColorText" class="text-input" value="${settings.textColor}">
               </div>
             </div>
+
+            <button type="button" class="button button-secondary" style="margin-top: 10px;" onclick="resetColors()">Reset to Original</button>
           </div>
 
           <!-- Stats Visibility Section -->
@@ -561,6 +677,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 <span class="toggle-slider"></span>
               </label>
             </div>
+
+            <div class="toggle-group">
+              <label class="toggle-label">Show Favorites Bar</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="showFavorites" ${settings.showFavorites ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div style="margin-top: 12px; margin-left: 0;">
+              <button type="button" class="button button-secondary" onclick="openFavoritesModal()" style="font-size: 14px; padding: 10px 18px;">Add to Favorites</button>
+              <span class="form-description" style="margin-left: 10px; display: inline-block;">Search and select up to 10 books to show in your Favorites bar</span>
+            </div>
+
+            <div class="toggle-group">
+              <label class="toggle-label">Show Collections</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="showFolders" ${settings.showFolders ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
 
           <!-- Elements Visibility Section -->
@@ -592,6 +728,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           </div>
         </div>
 
+        <!-- Favorites Modal -->
+        <div id="favoritesModal" class="modal-overlay" onclick="if(event.target===this) closeFavoritesModal()">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2 class="modal-title">Add to Favorites</h2>
+              <button type="button" class="modal-close" onclick="closeFavoritesModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+              <input type="text" id="favoritesSearch" class="favorites-search" placeholder="Search your library..." oninput="filterFavoritesList()">
+              <div class="favorites-count" id="favoritesCount">Select up to 10 books</div>
+              <div class="favorites-list" id="favoritesList"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="button button-secondary" onclick="closeFavoritesModal()">Cancel</button>
+              <button type="button" class="button button-primary" id="saveFavoritesBtn" onclick="saveFavorites()">Save Favorites</button>
+            </div>
+          </div>
+        </div>
+
         <script>
           // Sync color pickers with text inputs
           function syncColorInputs() {
@@ -612,26 +767,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             });
           }
 
+          function getAccessToken() {
+            // Prefer session stored by web sign-in
+            const session = localStorage.getItem('supabase_session');
+            if (session) {
+              try {
+                const data = JSON.parse(session);
+                const token = data.access_token || data.session?.access_token;
+                if (token) return token;
+              } catch (e) {}
+            }
+            // Fallback: Supabase client stores under sb-<projectRef>-auth-token
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+                try {
+                  const data = JSON.parse(localStorage.getItem(key) || '{}');
+                  const token = data.access_token || data?.session?.access_token;
+                  if (token) return token;
+                } catch (e) {}
+              }
+            }
+            return null;
+          }
+
           async function saveSettings() {
             const messageDiv = document.getElementById('message');
             messageDiv.classList.remove('show', 'message-success', 'message-error');
 
-            // Get session token
-            const session = localStorage.getItem('supabase_session');
-            if (!session) {
-              showMessage('You must be signed in to save settings', 'error');
+            const accessToken = getAccessToken();
+            if (!accessToken) {
+              window.location.href = '/api/signin?returnUrl=' + encodeURIComponent(window.location.pathname);
               return;
             }
 
             try {
-              const sessionData = JSON.parse(session);
-              const accessToken = sessionData.access_token || sessionData.session?.access_token;
-
-              if (!accessToken) {
-                showMessage('Authentication failed. Please sign in again.', 'error');
-                return;
-              }
-
               // Get all settings
               const settings = {
                 backgroundColor: document.getElementById('backgroundColor').value,
@@ -641,6 +811,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 showReadBooks: document.getElementById('showReadBooks').checked,
                 showUnreadBooks: document.getElementById('showUnreadBooks').checked,
                 showTopAuthors: document.getElementById('showTopAuthors').checked,
+                showFavorites: document.getElementById('showFavorites').checked,
+                showFolders: document.getElementById('showFolders').checked,
                 hideBio: document.getElementById('hideBio').checked,
                 hideAvatar: document.getElementById('hideAvatar').checked
               };
@@ -658,11 +830,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const data = await response.json();
 
               if (!response.ok) {
-                throw new Error(data.error || 'Failed to save settings');
+                const msg = data.message || data.error || 'Failed to save settings';
+                if (response.status === 401) {
+                  localStorage.removeItem('supabase_session');
+                  const keysToRemove = [];
+                  for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) keysToRemove.push(key);
+                  }
+                  keysToRemove.forEach(k => localStorage.removeItem(k));
+                  window.location.href = '/api/signin?returnUrl=' + encodeURIComponent(window.location.pathname);
+                  return;
+                }
+                throw new Error(msg);
               }
 
               showMessage('Settings saved successfully!', 'success');
-              
+
               // Redirect to profile after a short delay
               setTimeout(() => {
                 window.location.href = '/${profileData.username}';
@@ -677,16 +861,157 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const messageDiv = document.getElementById('message');
             messageDiv.textContent = text;
             messageDiv.className = \`message message-\${type} show\`;
-            
-            // Auto-hide after 5 seconds
-            setTimeout(() => {
-              messageDiv.classList.remove('show');
-            }, 5000);
+            setTimeout(() => messageDiv.classList.remove('show'), 5000);
+          }
+          function showMessageWithLink(text, linkHref, linkText, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = '';
+            messageDiv.appendChild(document.createTextNode(text));
+            const a = document.createElement('a');
+            a.href = linkHref;
+            a.textContent = linkText;
+            a.style.marginLeft = '4px';
+            messageDiv.appendChild(document.createTextNode(' '));
+            messageDiv.appendChild(a);
+            messageDiv.className = \`message message-\${type} show\`;
+            setTimeout(() => messageDiv.classList.remove('show'), 8000);
+          }
+
+          function resetColors() {
+            const defaults = {
+              backgroundColor: '#f8f6f0',
+              buttonColor: '#007AFF',
+              textColor: '#2c3e50'
+            };
+            Object.entries(defaults).forEach(([key, value]) => {
+              const colorInput = document.getElementById(key);
+              const textInput = document.getElementById(key + 'Text');
+              if (colorInput && textInput) {
+                colorInput.value = value;
+                textInput.value = value;
+              }
+            });
+          }
+
+          let favoritesBooks = [];
+          let favoritesSelected = new Set();
+
+          async function openFavoritesModal() {
+            const token = getAccessToken();
+            if (!token) {
+              window.location.href = '/api/signin?returnUrl=' + encodeURIComponent(window.location.pathname);
+              return;
+            }
+            document.getElementById('favoritesModal').classList.add('show');
+            document.getElementById('favoritesSearch').value = '';
+            favoritesSelected.clear();
+            try {
+              const res = await fetch('/api/library-books', {
+                headers: { 'Authorization': 'Bearer ' + token }
+              });
+              if (!res.ok) {
+                if (res.status === 401) {
+                  window.location.href = '/api/signin?returnUrl=' + encodeURIComponent(window.location.pathname);
+                  return;
+                }
+                throw new Error('Failed to load books');
+              }
+              const data = await res.json();
+              favoritesBooks = data.books || [];
+              favoritesBooks.forEach(b => {
+                if (b.is_favorite) favoritesSelected.add(b.id);
+              });
+              renderFavoritesList();
+            } catch (e) {
+              alert('Failed to load your library. Please try again.');
+              closeFavoritesModal();
+            }
+          }
+
+          function closeFavoritesModal() {
+            document.getElementById('favoritesModal').classList.remove('show');
+          }
+
+          function filterFavoritesList() {
+            renderFavoritesList();
+          }
+
+          function toggleFavorite(bookId) {
+            if (favoritesSelected.has(bookId)) {
+              favoritesSelected.delete(bookId);
+            } else if (favoritesSelected.size < 10) {
+              favoritesSelected.add(bookId);
+            }
+            renderFavoritesList();
+          }
+
+          function renderFavoritesList() {
+            const q = (document.getElementById('favoritesSearch').value || '').trim().toLowerCase();
+            const filtered = q
+              ? favoritesBooks.filter(b =>
+                  (b.title || '').toLowerCase().includes(q) ||
+                  (b.author || '').toLowerCase().includes(q))
+              : favoritesBooks;
+            const list = document.getElementById('favoritesList');
+            const countEl = document.getElementById('favoritesCount');
+            countEl.textContent = favoritesSelected.size + ' / 10 selected';
+            list.innerHTML = filtered.length === 0
+              ? '<p style="color:#666;">No books found. ' + (q ? 'Try a different search.' : 'Add books in the app first.') + '</p>'
+              : filtered.map(b => {
+                  const sel = favoritesSelected.has(b.id);
+                  const cover = b.cover_url
+                    ? '<img src="' + b.cover_url.replace(/"/g, '&quot;') + '" alt="" class="favorites-item-cover">'
+                    : '<div class="favorites-item-cover-placeholder">' + (b.title || '').substring(0, 15) + '</div>';
+                  const title = (b.title || 'Untitled').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  const author = (b.author || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  return '<label class="favorites-item ' + (sel ? 'selected' : '') + '" onclick="event.preventDefault(); toggleFavorite(\'' + b.id.replace(/'/g, "\\'") + '\');">' +
+                    '<input type="checkbox" ' + (sel ? 'checked' : '') + '>' +
+                    cover +
+                    '<div class="favorites-item-info">' +
+                    '<div class="favorites-item-title">' + title + '</div>' +
+                    (author ? '<div class="favorites-item-author">' + author + '</div>' : '') +
+                    '</div></label>';
+                }).join('');
+          }
+
+          async function saveFavorites() {
+            const token = getAccessToken();
+            if (!token) {
+              window.location.href = '/api/signin?returnUrl=' + encodeURIComponent(window.location.pathname);
+              return;
+            }
+            const btn = document.getElementById('saveFavoritesBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            try {
+              const res = await fetch('/api/set-favorites', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + token
+                },
+                body: JSON.stringify({ bookIds: Array.from(favoritesSelected) })
+              });
+              const data = await res.json();
+              if (!res.ok) {
+                throw new Error(data.error || 'Failed to save favorites');
+              }
+              closeFavoritesModal();
+              showMessage('Favorites saved!', 'success');
+            } catch (e) {
+              alert(e.message || 'Failed to save favorites.');
+            } finally {
+              btn.disabled = false;
+              btn.textContent = 'Save Favorites';
+            }
           }
 
           // Initialize on load
           document.addEventListener('DOMContentLoaded', () => {
             syncColorInputs();
+            if (window.location.search.includes('favorites=1')) {
+              openFavoritesModal();
+            }
           });
         </script>
       </body>
