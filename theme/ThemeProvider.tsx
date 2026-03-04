@@ -61,12 +61,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     PlayfairDisplay_400Regular,
     ...Ionicons.font,
   });
-  const [showContent, setShowContent] = useState(false);
-  useEffect(() => {
-    if (fontsLoaded || fontError) setShowContent(true);
-    const t = setTimeout(() => setShowContent(true), 3000);
-    return () => clearTimeout(t);
-  }, [fontsLoaded, fontError]);
+  // Don't block rendering on font load — show the app immediately with the fallback
+  // font (Georgia on iOS), then swap in PlayfairDisplay once it's ready. Blocking
+  // caused a white screen between splash auto-hide and font load completion.
   const headingFont = fontsLoaded ? 'PlayfairDisplay_400Regular' : HEADING_FALLBACK;
 
   // Load persisted preference on mount.
@@ -103,7 +100,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={value}>
-      {showContent ? children : null}
+      {children}
     </ThemeContext.Provider>
   );
 }
