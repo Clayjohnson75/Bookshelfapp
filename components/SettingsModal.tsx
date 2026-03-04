@@ -30,6 +30,7 @@ import { logger } from '../utils/logger';
 import * as BiometricAuth from '../services/biometricAuth';
 import { UpgradeModal } from './UpgradeModal';
 import { useTheme, type ThemePreference } from '../theme/ThemeProvider';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import type { ThemeTokens } from '../theme/tokens';
 import { checkSubscriptionStatus as checkIAPSubscriptionStatus } from '../services/appleIAPService';
 import { checkSubscriptionStatus, isSubscriptionUIHidden } from '../services/subscriptionService';
@@ -513,32 +514,47 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
  <AppHeader title="Settings" onBack={onClose} />
 
  <ScrollView style={[styles.content, { backgroundColor: t.colors.bg }]}>
- {/* Theme setting: System / Light / Dark (Modern Scriptorium). Saves to AsyncStorage and updates immediately. */}
+ {/* Theme: Auto (time-based) / Light / Dark. Auto is the default — switches at 7am and 8pm. */}
  <View style={[styles.section, { backgroundColor: t.colors.surface }]}>
  <Text style={[styles.sectionTitle, { color: t.colors.textPrimary ?? t.colors.text, fontFamily: headingFont }]}>Theme</Text>
  <View style={styles.themeRow}>
- {(['system', 'light', 'dark'] as const).map((pref) => (
+ {(['system', 'light', 'dark'] as const).map((pref) => {
+   const isActive = preference === pref;
+   const label = pref === 'system' ? 'Auto' : pref === 'light' ? 'Light' : 'Dark';
+   const icon = pref === 'system' ? 'time-outline' : pref === 'light' ? 'sunny-outline' : 'moon-outline';
+   const subtitle = pref === 'system' ? '7am – 8pm' : pref === 'light' ? 'Always light' : 'Always dark';
+   return (
  <TouchableOpacity
- key={pref}
- style={[
- styles.themeOption,
- {
- backgroundColor: t.colors.surface,
- borderColor: t.colors.themeOptionBorder ?? t.colors.border,
- },
- preference === pref && { borderColor: t.colors.primary, borderWidth: 2 },
- ]}
- onPress={() => setPreference(pref)}
- activeOpacity={0.8}
+   key={pref}
+   style={[
+     styles.themeOption,
+     {
+       backgroundColor: t.colors.surface,
+       borderColor: t.colors.themeOptionBorder ?? t.colors.border,
+     },
+     isActive && { borderColor: t.colors.primary, borderWidth: 2, backgroundColor: (t.colors.primaryMuted ?? t.colors.accent + '18') },
+   ]}
+   onPress={() => setPreference(pref)}
+   activeOpacity={0.8}
  >
- <Text style={[
- styles.themeOptionText,
- { color: preference === pref ? (t.colors.textPrimary ?? t.colors.text) : (t.colors.textSecondary ?? t.colors.text) },
- ]}>
- {pref === 'system' ? 'Auto' : pref === 'light' ? 'Light' : 'Dark'}
- </Text>
+   <Ionicons
+     name={icon as any}
+     size={20}
+     color={isActive ? (t.colors.primary) : (t.colors.textSecondary ?? t.colors.text)}
+     style={{ marginBottom: 4 }}
+   />
+   <Text style={[
+     styles.themeOptionText,
+     { color: isActive ? (t.colors.textPrimary ?? t.colors.text) : (t.colors.textSecondary ?? t.colors.text) },
+   ]}>
+     {label}
+   </Text>
+   <Text style={[styles.themeOptionSubtitle, { color: t.colors.textSecondary ?? t.colors.textMuted ?? t.colors.text }]}>
+     {subtitle}
+   </Text>
  </TouchableOpacity>
- ))}
+   );
+ })}
  </View>
  </View>
 
@@ -901,8 +917,9 @@ function getStyles(t: ThemeTokens) {
  },
  sectionTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary ?? c.text, marginBottom: 20, letterSpacing: 0.3 },
  themeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 8 },
- themeOption: { paddingVertical: 12, paddingHorizontal: 16, borderRadius: 10, borderWidth: 1, minWidth: 120 },
+ themeOption: { paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, minWidth: 90, flex: 1, alignItems: 'center' },
  themeOptionText: { fontSize: 14, fontWeight: '600' },
+ themeOptionSubtitle: { fontSize: 11, fontWeight: '400', marginTop: 2, textAlign: 'center' },
  infoRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider ?? c.border },
  infoContent: { flexDirection: 'column' },
  infoLabel: { fontSize: 14, color: c.textSecondary ?? c.textMuted, fontWeight: '500', marginBottom: 4 },

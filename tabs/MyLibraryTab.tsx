@@ -54,6 +54,7 @@ import { BookCoverImage } from '../components/BookCoverImage';
 import { PhotoTile } from '../components/PhotoTile';
 import { EntityRowCard } from '../components/EntityRowCard';
 import { HeaderShelfCollage } from '../components/HeaderShelfCollage';
+import { AppHeader } from '../components/AppHeader';
 import { dedupeBooks } from '../lib/dedupeBooks';
 import { mergeBookFieldLevel } from '../lib/mergeBooks';
 import { dedupBy, photoStableKey, canonicalPhotoListKey } from '../lib/dedupBy';
@@ -87,7 +88,7 @@ const LOCKED_PROFILE_HEADER = {
  marginBottom: 4,
  collageBlur: 0.5,
  collageOpacity: 0.9,
- collageMaxCovers: 24,
+ collageMaxCovers: 50, // matches MAX_UNIQUE in HeaderShelfCollage; 2-row iPad needs ~40 slots
  coversDarkenOverlay: 'rgba(0,0,0,0.18)',
  gradientColors: ['rgba(0,0,0,0.34)', 'rgba(0,0,0,0.44)', 'rgba(0,0,0,0.56)'] as const,
 } as const;
@@ -106,13 +107,13 @@ export const MyLibraryTab: React.FC = () => {
  
  const screenWidth = dimensions.width || 375; // Fallback to default width
  const screenHeight = dimensions.height || 667; // Fallback to default height
- // Keep My Library books at 4-up on phones; 5-up only on very wide layouts.
- const gridColumns = screenWidth > 800 ? 5 : 4;
+ // iPad (≥900): 6 columns for compact covers; mid (>700): 5; phone: 4.
+ const gridColumns = screenWidth >= 900 ? 6 : screenWidth > 700 ? 5 : 4;
  const photoColumns = screenWidth > 900 ? 3 : 2;
  const typeScale = screenWidth > 1000 ? 1.14 : screenWidth > 800 ? 1.1 : screenWidth > 600 ? 1.05 : 1;
  const hasLoggedGridDebugRef = useRef(false);
  const photosNavLockRef = useRef(false);
- const libraryContainerWidth = Math.min(screenWidth, 900);
+ const libraryContainerWidth = screenWidth;
  const approxGridItemWidth = (libraryContainerWidth - 40) / gridColumns; // booksSection horizontal padding is 20 + 20
 
  useEffect(() => {
@@ -2348,64 +2349,48 @@ const failedOrProcessingPhotos = useMemo(() => {
  <View style={styles.statsHeader}>
  <Text style={styles.statsTitle}>Library Overview</Text>
  </View>
+ {/* iPad: all 4 stats in one row. Phone: 2 rows of 2. */}
+ {screenWidth >= 768 ? (
  <View style={styles.statsRow}>
- <Pressable
- style={({ pressed, hovered }) => [
- styles.statCard,
- styles.statCardInteractive,
- hovered && styles.statCardHover,
- pressed && styles.statCardPressed,
- ]}
- onPress={() => setShowLibraryView(true)}
- >
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowLibraryView(true)}>
  <Text style={styles.statLabel}>Books</Text>
  <Text style={styles.statNumber}>{displayBookCountText}</Text>
  </Pressable>
- <Pressable
- style={({ pressed, hovered }) => [
- styles.statCard,
- styles.statCardInteractive,
- hovered && styles.statCardHover,
- pressed && styles.statCardPressed,
- ]}
- onPress={() => {
- if (photosNavLockRef.current) return;
- photosNavLockRef.current = true;
- (navigation as any).navigate('Photos');
- setTimeout(() => { photosNavLockRef.current = false; }, 700);
- }}
- >
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => { if (photosNavLockRef.current) return; photosNavLockRef.current = true; (navigation as any).navigate('Photos'); setTimeout(() => { photosNavLockRef.current = false; }, 700); }}>
+ <Text style={styles.statLabel}>Photos</Text>
+ <Text style={styles.statNumber}>{displayPhotoCountText}</Text>
+ </Pressable>
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowAuthorsView(true)}>
+ <Text style={styles.statLabel}>Authors</Text>
+ <Text style={styles.statNumber}>{displayAuthorsCount}</Text>
+ </Pressable>
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowStatsView(true)}>
+ <Text style={styles.statLabel}>Stats</Text>
+ </Pressable>
+ </View>
+ ) : (
+ <>
+ <View style={styles.statsRow}>
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowLibraryView(true)}>
+ <Text style={styles.statLabel}>Books</Text>
+ <Text style={styles.statNumber}>{displayBookCountText}</Text>
+ </Pressable>
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => { if (photosNavLockRef.current) return; photosNavLockRef.current = true; (navigation as any).navigate('Photos'); setTimeout(() => { photosNavLockRef.current = false; }, 700); }}>
  <Text style={styles.statLabel}>Photos</Text>
  <Text style={styles.statNumber}>{displayPhotoCountText}</Text>
  </Pressable>
  </View>
  <View style={styles.statsRow}>
- <Pressable
- style={({ pressed, hovered }) => [
- styles.statCard,
- styles.statCardInteractive,
- hovered && styles.statCardHover,
- pressed && styles.statCardPressed,
- ]}
- onPress={() => setShowAuthorsView(true)}
- >
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowAuthorsView(true)}>
  <Text style={styles.statLabel}>Authors</Text>
- <Text style={styles.statNumber}>
- {displayAuthorsCount}
- </Text>
+ <Text style={styles.statNumber}>{displayAuthorsCount}</Text>
  </Pressable>
- <Pressable
- style={({ pressed, hovered }) => [
- styles.statCard,
- styles.statCardInteractive,
- hovered && styles.statCardHover,
- pressed && styles.statCardPressed,
- ]}
- onPress={() => setShowStatsView(true)}
- >
+ <Pressable style={({ pressed, hovered }) => [styles.statCard, styles.statCardInteractive, hovered && styles.statCardHover, pressed && styles.statCardPressed]} onPress={() => setShowStatsView(true)}>
  <Text style={styles.statLabel}>Stats</Text>
  </Pressable>
  </View>
+ </>
+ )}
  </View>
 
 
@@ -3556,21 +3541,9 @@ onPress={() => {
  presentationStyle="fullScreen"
  onRequestClose={() => setShowStatsView(false)}
  >
- <SafeAreaView style={styles.safeContainer} edges={['left','right']}>
- <View style={{ height: insets.top + 8, backgroundColor: t.colors.surface2 ?? t.colors.surface }} />
- <View style={styles.authorViewHeader}>
- <TouchableOpacity
- onPress={() => setShowStatsView(false)}
- style={{ padding: 12, marginLeft: 8 }}
- activeOpacity={0.8}
- hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
- >
- <ArrowBackIcon size={24} color={t.colors.textOnDark ?? t.colors.textPrimary} />
- </TouchableOpacity>
- <Text style={styles.authorViewHeaderTitle}>Stats</Text>
- <View style={{ width: 44 }} />
- </View>
- <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.statsScrollContent}>
+ <SafeAreaView style={styles.safeContainer} edges={['left', 'right', 'bottom']}>
+ <AppHeader title="Stats" onBack={() => setShowStatsView(false)} />
+ <ScrollView style={{ flex: 1, backgroundColor: t.colors.bg }} contentContainerStyle={styles.statsScrollContent}>
  <Text style={styles.statsComingSoon}>Coming soon</Text>
  </ScrollView>
  </SafeAreaView>
@@ -3842,8 +3815,6 @@ const getStyles = (
  paddingVertical: 14,
  paddingHorizontal: 20,
  width: '100%',
- maxWidth: 900,
- alignSelf: 'center',
  borderBottomWidth: 1,
  borderBottomColor: t.colors.separator ?? t.colors.border,
  },
@@ -4217,8 +4188,6 @@ const getStyles = (
  paddingTop: 12,
  paddingBottom: 24,
  width: '100%',
- maxWidth: 900,
- alignSelf: 'center',
  },
  sectionHeader: {
  flexDirection: 'row',

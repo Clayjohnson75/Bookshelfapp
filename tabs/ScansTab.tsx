@@ -8099,7 +8099,20 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
   // Step A — on image pick: create Photo in local state, persist to AsyncStorage, enqueue into durable upload queue.
   let usedDurableQueue = false;
   if (user?.uid) {
-    const newPhotos: Photo[] = records.map((r) => ({
+    // Guard: skip creating local_pending entries for URIs already tracked in state (any status).
+    // Prevents duplicate entries when a photo already in the library is rescanned.
+    const trackedUriSet = new Set(
+      photosRef.current.flatMap(p => [
+        (p as any).local_uri,
+        p.uri,
+      ].filter((u): u is string => Boolean(u?.trim())))
+    );
+    const newRecords = records.filter(r => !trackedUriSet.has(r.uri?.trim() ?? ''));
+    const skipped = records.length - newRecords.length;
+    if (skipped > 0) {
+      logger.info('[STEP_A]', 'skipped records already tracked (rescan guard)', { skipped });
+    }
+    const newPhotos: Photo[] = newRecords.map((r) => ({
       id: r.photoId!,
       user_id: user.uid,
       status: 'local_pending',
@@ -8109,29 +8122,38 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
       timestamp: r.createdAt,
       uri: r.uri,
     }));
-    const userPhotosKeyA = `photos_${user.uid}`;
-    try {
-      const existingRaw = await AsyncStorage.getItem(userPhotosKeyA);
-      const existing: Photo[] = existingRaw ? (JSON.parse(existingRaw) as Photo[]) : [];
-      const merged = Array.isArray(existing) ? [...existing, ...newPhotos] : newPhotos;
-      await AsyncStorage.setItem(userPhotosKeyA, JSON.stringify(merged));
-    } catch (_) {
-      await AsyncStorage.setItem(userPhotosKeyA, JSON.stringify(newPhotos));
+    if (newPhotos.length > 0) {
+      const userPhotosKeyA = `photos_${user.uid}`;
+      try {
+        const existingRaw = await AsyncStorage.getItem(userPhotosKeyA);
+        const existing: Photo[] = existingRaw ? (JSON.parse(existingRaw) as Photo[]) : [];
+        // Deduplicate by URI when merging to prevent AsyncStorage accumulating stale duplicates.
+        const existingUriSet = new Set(
+          (Array.isArray(existing) ? existing : []).flatMap(p => [
+            (p as any).local_uri, p.uri,
+          ].filter((u): u is string => Boolean(u?.trim())))
+        );
+        const nonDupNew = newPhotos.filter(p => !existingUriSet.has(((p as any).local_uri ?? p.uri)?.trim() ?? ''));
+        const merged = Array.isArray(existing) ? [...existing, ...nonDupNew] : nonDupNew;
+        await AsyncStorage.setItem(userPhotosKeyA, JSON.stringify(merged));
+      } catch (_) {
+        await AsyncStorage.setItem(userPhotosKeyA, JSON.stringify(newPhotos));
+      }
+      for (const r of newRecords) {
+        await import('../lib/photoUploadQueue').then(({ addToQueue }) =>
+          addToQueue({
+            photoId: r.photoId!,
+            userId: user.uid,
+            sourceUri: r.uri,
+            localUri: r.uri,
+            createdAt: r.createdAt,
+          })
+        );
+      }
+      setPhotos((prev) => [...prev, ...newPhotos]);
+      logger.info('[STEP_A]', 'photos created + persisted + enqueued', { count: newPhotos.length, photoIds: newPhotos.map(p => p.id?.slice(0, 8)) });
     }
-    for (const r of records) {
-      await import('../lib/photoUploadQueue').then(({ addToQueue }) =>
-        addToQueue({
-          photoId: r.photoId!,
-          userId: user.uid,
-          sourceUri: r.uri,
-          localUri: r.uri,
-          createdAt: r.createdAt,
-        })
-      );
-    }
-    setPhotos((prev) => [...prev, ...newPhotos]);
     usedDurableQueue = true;
-    logger.info('[STEP_A]', 'photos created + persisted + enqueued', { count: newPhotos.length, photoIds: newPhotos.map(p => p.id?.slice(0, 8)) });
   }
 
   const scanIds = records.map((r) => r.id);
@@ -8564,10 +8586,22 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
         const existingInState = prevPhotos.find(p => photoStableKey(p) === key);
         recordPhotoDedupe(!!reused);
         if (existingInState && existingInState.id !== canonicalPhotoId) logger.info('[PHOTO_DEDUPE]', 'mismatch', { imageHash: (imageHash ?? '').slice(0, 12), expectedId: existingInState.id, canonicalPhotoId });
+        // Clean up any dangling local_pending entries that share the same URI as the incoming result.
+        // These are orphans created by Step A when a photo already in the library is rescanned —
+        // once real scan results arrive we purge the stale placeholder so no duplicate appears in the UI.
+        const anchorPhoto = reused && existingInState ? existingInState : newPhoto;
+        const anchorUri = ((anchorPhoto as any).local_uri ?? anchorPhoto.uri)?.trim();
+        const anchorId = anchorPhoto.id;
+        const withoutStalePending = anchorUri
+          ? prevPhotos.filter(p =>
+              !(p.status === 'local_pending' &&
+                p.id !== anchorId &&
+                ((p as any).local_uri ?? p.uri)?.trim() === anchorUri))
+          : prevPhotos;
         // Option A: when reused (same hash), attach new scan/books to existing photo do not create new photo entry.
         const nextPhotos = reused && existingInState
-          ? prevPhotos.map(p => photoStableKey(p) === key ? { ...p, books: [...p.books, ...photoBooks] } : p)
-          : dedupBy([...prevPhotos, newPhoto], photoStableKey);
+          ? withoutStalePending.map(p => photoStableKey(p) === key ? { ...p, books: [...p.books, ...photoBooks] } : p)
+          : dedupBy([...withoutStalePending, newPhoto], photoStableKey);
         setPendingBooks(prevPending => {
           const existingKeys = new Set(prevPending.map(b => existingKey(b)));
           // Resolve source_photo_id through alias map immediately at import time.
@@ -13393,7 +13427,7 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  <Modal
  visible={showAllScansModal}
  animationType="slide"
- presentationStyle="pageSheet"
+ presentationStyle="fullScreen"
  onRequestClose={() => setShowAllScansModal(false)}
  >
  <SafeAreaView style={[styles.allScansModalContainer, { backgroundColor: t.colors.bg }]}>
@@ -14441,8 +14475,6 @@ const getStyles = (
  paddingHorizontal: 20,
  marginBottom: 12,
  width: '100%',
- maxWidth: 900,
- alignSelf: 'center',
  },
  headerContent: {
  paddingTop: 18,

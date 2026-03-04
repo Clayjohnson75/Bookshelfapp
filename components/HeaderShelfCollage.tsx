@@ -146,7 +146,20 @@ export const HeaderShelfCollage: React.FC<HeaderShelfCollageProps> = ({
  // Add one buffered slot to avoid right-edge clipping from subtle jitter/scale.
  const maxPerRow = Math.max(0, Math.min(MAX_COVERS_FILL, Math.ceil((headerWidth + coverW - START_X) / xStep) + 1));
  const totalSlots = twoRows ? maxPerRow * 2 : maxPerRow;
- const visibleCovers = uniqueCovers.slice(0, totalSlots);
+ // Cycle through unique covers to fill every slot — covers only repeat when the
+ // library is smaller than the number of canvas positions required.
+ // When there are enough unique covers, each appears at most once.
+ const visibleCovers = (() => {
+   if (uniqueCovers.length === 0) return [];
+   if (uniqueCovers.length < totalSlots) {
+     const out: string[] = [];
+     for (let i = 0; i < totalSlots; i++) {
+       out.push(uniqueCovers[i % uniqueCovers.length]);
+     }
+     return out;
+   }
+   return uniqueCovers.slice(0, totalSlots);
+ })();
  const topRowCovers = visibleCovers.slice(0, maxPerRow);
  const bottomRowCovers = twoRows ? visibleCovers.slice(maxPerRow, maxPerRow * 2) : [];
 
