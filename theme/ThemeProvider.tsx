@@ -14,9 +14,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFonts } from '@expo-google-fonts/playfair-display/useFonts';
-import { PlayfairDisplay_400Regular } from '@expo-google-fonts/playfair-display';
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { getTheme, type ThemeTokens } from './tokens';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
@@ -57,14 +54,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Time-based auto scheme; re-evaluated every minute so transitions are seamless.
   const [autoScheme, setAutoScheme] = useState<'light' | 'dark'>(() => timeBasedScheme());
 
-  const [fontsLoaded, fontError] = useFonts({
-    PlayfairDisplay_400Regular,
-    ...Ionicons.font,
-  });
-  // Don't block rendering on font load — show the app immediately with the fallback
-  // font (Georgia on iOS), then swap in PlayfairDisplay once it's ready. Blocking
-  // caused a white screen between splash auto-hide and font load completion.
-  const headingFont = fontsLoaded ? 'PlayfairDisplay_400Regular' : HEADING_FALLBACK;
+  // Use system serif (Georgia on iOS) for headings. Custom font loading removed
+  // as useFonts caused production crashes with the new architecture.
+  const headingFont = HEADING_FALLBACK;
 
   // Load persisted preference on mount.
   useEffect(() => {

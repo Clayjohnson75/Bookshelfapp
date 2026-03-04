@@ -1,6 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AppState, Platform, View, ActivityIndicator, StyleSheet, StatusBar } from 'react-native';
+import { AppState, Platform, View, ActivityIndicator, StyleSheet, StatusBar, Text, ScrollView } from 'react-native';
 import { enableScreens } from 'react-native-screens';
+
+// Always enable screens — required in production with new architecture.
+// In DEV it was previously disabled for Expo Go compat, but Expo Go now supports it.
+try { enableScreens(true); } catch (_) {}
+
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <ScrollView contentContainerStyle={{ flex: 1, padding: 24, paddingTop: 80, backgroundColor: '#fff' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#c00', marginBottom: 12 }}>
+            App crashed — please screenshot this and report it
+          </Text>
+          <Text style={{ fontSize: 13, color: '#333', fontFamily: 'monospace' }}>
+            {this.state.error?.message}{'\n\n'}{this.state.error?.stack}
+          </Text>
+        </ScrollView>
+      );
+    }
+    return this.props.children;
+  }
+}
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import { AuthProvider, useAuth } from './auth/SimpleAuthContext';
@@ -23,15 +55,6 @@ import { logger } from './utils/logger';
 import { startUploadQueueWorker, stopUploadQueueWorker } from './lib/photoUploadQueue';
 import { startApproveQueueWorker, stopApproveQueueWorker } from './lib/approveQueue';
 
-// Disable screens for Expo Go to avoid compatibility issues
-// This will fall back to JS-based navigation which works better in Expo Go
-if (__DEV__) {
- try {
- enableScreens(false);
- } catch (e) {
- // Ignore if enableScreens is not available
- }
-}
 
 // Single root gate: prevents INITIAL_SESSION bounce. Do not gate "if (!session) go login" in screens only here.
 function SplashLoading() {
@@ -251,11 +274,13 @@ function AppWithTheme() {
 
 export default function App() {
  return (
+ <RootErrorBoundary>
  <SafeAreaProvider>
  <ThemeProvider>
  <AppWithTheme />
  </ThemeProvider>
  </SafeAreaProvider>
+ </RootErrorBoundary>
  );
 }
 
