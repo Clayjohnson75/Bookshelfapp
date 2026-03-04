@@ -76,6 +76,9 @@ export function PhotoTile({
   );
   const [resolving, setResolving] = useState(false);
   const [degraded, setDegraded] = useState(false);
+  // When a local file:// URI fails (e.g. after reinstall or in Expo Go), skip all
+  // local URIs and fall back to fetching the signed URL from Supabase storage.
+  const [localFileFailed, setLocalFileFailed] = useState(false);
   const retryCountRef = useRef(0);
   const cancelledRef = useRef(false);
   // Use refs for dimensions so resolveSignedUrl doesn't recreate on every layout measurement,
@@ -187,17 +190,24 @@ export function PhotoTile({
   // next candidate. photo.uri and photo.thumbnail_uri are stored as "" (not null) for synthetic/pending
   // photos and for DB rows where uri is null. Using `??` would treat "" as a valid URI and prevent the
   // fetched signed URL from ever being shown.
-  const displayUri: string | null =
-    (localUri?.trim() || null) ??
-    (thumbnailUri?.trim() || null) ??
-    (localThumbUri?.trim() || null) ??
-    (thumb_uri?.trim() || null) ??
-    (uri?.trim() || null) ??
-    (fallbackUri?.trim() || null) ??
-    (signedOk ? signed_url : null) ??
-    (storage_url?.trim() || null) ??
-    signedCandidate ??
-    null;
+  const isLocalFileUri = (u: string | null | undefined) =>
+    !!u?.trim() && (u.startsWith('file://') || (u.startsWith('/') && !u.startsWith('//')));
+  const displayUri: string | null = localFileFailed
+    ? // Local file missing — skip all file:// URIs and go straight to remote
+      (signedOk ? signed_url : null) ??
+      (storage_url?.trim() || null) ??
+      signedCandidate ??
+      null
+    : (localUri?.trim() || null) ??
+      (thumbnailUri?.trim() || null) ??
+      (localThumbUri?.trim() || null) ??
+      (thumb_uri?.trim() || null) ??
+      (uri?.trim() || null) ??
+      (fallbackUri?.trim() || null) ??
+      (signedOk ? signed_url : null) ??
+      (storage_url?.trim() || null) ??
+      signedCandidate ??
+      null;
 
   const displayUriSource: 'local' | 'signed' | 'none' =
     !displayUri
@@ -212,12 +222,13 @@ export function PhotoTile({
         : 'signed';
 
   // When displayUri is null but storagePath exists: trigger fetch and show loading. Non-negotiable for grey-tile fix.
-  const needsSignedUrl = !!storagePath?.trim() && !displayUri;
+  // Also trigger when localFileFailed — the local file is gone, we need the remote URL.
+  const needsSignedUrl = !!storagePath?.trim() && (!displayUri || localFileFailed);
   useEffect(() => {
-    if (photoId && storagePath?.trim() && !displayUri) {
+    if (photoId && storagePath?.trim() && (!displayUri || localFileFailed)) {
       ensureSignedUrl(photoId, storagePath);
     }
-  }, [photoId, storagePath, displayUri, ensureSignedUrl]);
+  }, [photoId, storagePath, displayUri, localFileFailed, ensureSignedUrl]);
 
   // Fetch when complete + storagePath but no valid persisted signed_url yet (ensures persist path runs).
   useEffect(() => {
@@ -289,13 +300,19 @@ export function PhotoTile({
           style={StyleSheet.absoluteFill}
           cachePolicy="memory-disk"
           contentFit="cover"
-          onError={(e) =>
+          onError={(e) => {
             logger.warn('[PHOTO_THUMB_ERROR]', {
               photoId: (photoId ?? '').slice(0, 8),
               uri: safeUri?.slice(0, 120),
               err: (e as { nativeEvent?: unknown })?.nativeEvent,
-            })
-          }
+            });
+            // Local file missing (reinstall / Expo Go sandbox / container change).
+            // Fall back to fetching the signed URL from Supabase storage.
+            if (safeUri?.startsWith('file://') || (safeUri?.startsWith('/') && !safeUri?.startsWith('//'))) {
+              setLocalFileFailed(true);
+              if (photoId && storagePath) ensureSignedUrl(photoId, storagePath);
+            }
+          }}
           onLoad={() =>
             logger.info('[PHOTO_THUMB_LOADED]', {
               photoId: (photoId ?? '').slice(0, 8),
