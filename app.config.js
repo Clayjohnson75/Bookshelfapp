@@ -57,7 +57,7 @@ module.exports = {
  ios: {
  supportsTablet: true,
  bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-    buildNumber: "7",
+    buildNumber: "8",
  infoPlist: {
  ITSAppUsesNonExemptEncryption: false,
  NSCameraUsageDescription: "Bookshelf Scanner needs access to your camera to take photos of your bookshelf. When you take a photo, the app uses AI to automatically identify book titles and authors from the book spines visible in the image. For example, if you photograph a bookshelf containing 'The Great Gatsby' by F. Scott Fitzgerald, the app will detect and catalog this book automatically.",
@@ -66,7 +66,7 @@ module.exports = {
  },
  android: {
  package: "com.clayjohnson75.bookshelfscanner",
-      versionCode: 7,
+      versionCode: 8,
  adaptiveIcon: {
  foregroundImage: "./assets/adaptive-icon.png",
  backgroundColor: "#ffffff"
@@ -94,7 +94,7 @@ module.exports = {
  : (envVars.EXPO_PUBLIC_SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://cnlnrlzhhbrtehpkttqv.supabase.co');
  const supabaseAnonKey = isDev
  ? (devApiIsDeployed ? (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '') : (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV || ''))
- : (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '');
+ : (envVars.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNubG5ybHpoaGJydGVocGt0dHF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NTI1MjEsImV4cCI6MjA3NzQyODUyMX0.G-XYS-ASfPAhx83ZdbdL87lp8Zy3RWz4A8QXKSJ_wh0');
 
  console.log(' Supabase env:', isDev ? 'development' : 'production', ' ref', supabaseUrl ? supabaseUrl.replace(/^https?:\/\//, '').split('.')[0] : '(none)');
  console.log(' API base URL:', isDev ? 'development' : 'production', '', EXPO_PUBLIC_API_BASE_URL);

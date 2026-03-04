@@ -221,14 +221,14 @@ export function PhotoTile({
         ? 'local'
         : 'signed';
 
-  // When displayUri is null but storagePath exists: trigger fetch and show loading. Non-negotiable for grey-tile fix.
-  // Also trigger when localFileFailed — the local file is gone, we need the remote URL.
-  const needsSignedUrl = !!storagePath?.trim() && (!displayUri || localFileFailed);
+  // When displayUri is null but storagePath exists: trigger fetch and show loading.
+  // localFileFailed causes displayUri to be null (local URIs are excluded), so !displayUri already covers that case.
+  const needsSignedUrl = !!storagePath?.trim() && !displayUri;
   useEffect(() => {
-    if (photoId && storagePath?.trim() && (!displayUri || localFileFailed)) {
+    if (photoId && storagePath?.trim() && !displayUri) {
       ensureSignedUrl(photoId, storagePath);
     }
-  }, [photoId, storagePath, displayUri, localFileFailed, ensureSignedUrl]);
+  }, [photoId, storagePath, displayUri, ensureSignedUrl]);
 
   // Fetch when complete + storagePath but no valid persisted signed_url yet (ensures persist path runs).
   useEffect(() => {
