@@ -932,6 +932,11 @@ React.useEffect(() => {
          status: 'draft',
        };
        setPhotos((prev) => dedupBy([...prev, newPhoto], photoStableKey));
+       // Capture the actual new pending list inside the updater (prev is always current).
+       // Using booksSnapshotRef.current.pending would be stale when two scans complete
+       // in quick succession (useEffect hasn't fired yet), causing the second scan to
+       // overwrite AsyncStorage with only its own books and wipe the first scan on rehydrate.
+       let newPendingForSave: Book[] = [];
        setPendingBooks((prev) => {
          const approvedKeys = new Set(approvedBooksRef.current.map((b) => existingKey(b)));
          const existingKeys = new Set(prev.map((b) => existingKey(b)));
@@ -941,18 +946,14 @@ React.useEffect(() => {
            existingKeys.add(k);
            return true;
          });
-         return [...prev, ...deduped];
+         newPendingForSave = [...prev, ...deduped];
+         return newPendingForSave;
        });
        clearSelection();
        const snap = booksSnapshotRef.current;
        if (user && snap) {
-         const approvedSnap = snap.approved ?? [];
-         const newPending = [...(snap.pending ?? []), ...photoBooks.filter((b: Book) =>
-           !(snap.pending ?? []).some((p) => existingKey(p) === existingKey(b)) &&
-           !approvedSnap.some((p) => existingKey(p) === existingKey(b))
-         )];
          const newPhotos = [...(photosRef.current ?? []), newPhoto];
-         saveUserData(newPending, snap.approved ?? [], snap.rejected ?? [], newPhotos).catch(() => {});
+         saveUserData(newPendingForSave, snap.approved ?? [], snap.rejected ?? [], newPhotos).catch(() => {});
        }
      } catch (_) {}
      })();
