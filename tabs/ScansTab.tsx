@@ -7074,16 +7074,32 @@ refreshProfileStats();
           const refreshed = await loadBooksFromSupabase(user.uid, { milestone: 'approve_complete' });
           setApprovedBooks((prev) => {
             const byKey = new Map<string, Book>();
+            // Secondary index: title|author -> server stable-key, for local books lacking book_key.
+            const serverByTA = new Map<string, string>();
             (refreshed.approved || []).forEach((b) => {
               const k = getStableBookKey(b);
-              if (k) byKey.set(k, { ...b, book_key: b.book_key ?? k, status: 'approved' as const });
+              if (!k) return;
+              byKey.set(k, { ...b, book_key: b.book_key ?? k, status: 'approved' as const });
+              const ta = computeBookKey({ title: b.title, author: b.author });
+              if (ta && ta !== k && !ta.startsWith('empty:')) serverByTA.set(ta, k);
             });
             prev.forEach((b) => {
               const k = getStableBookKey(b);
               if (!k) return;
               const srv = byKey.get(k);
-              if (srv) byKey.set(k, mergeBookFieldLevel(srv, { ...b, book_key: b.book_key ?? k }, photoIdAliasRef.current));
-              else byKey.set(k, { ...b, book_key: b.book_key ?? k });
+              if (srv) {
+                byKey.set(k, mergeBookFieldLevel(srv, { ...b, book_key: b.book_key ?? k }, photoIdAliasRef.current));
+              } else {
+                // Check if local book (no book_key) matches a server book via title|author (ISBN vs title|author key mismatch).
+                const ta = computeBookKey({ title: b.title, author: b.author });
+                const serverKey = ta && !ta.startsWith('empty:') ? serverByTA.get(ta) : undefined;
+                if (serverKey) {
+                  const srvBook = byKey.get(serverKey)!;
+                  byKey.set(serverKey, mergeBookFieldLevel(srvBook, { ...b, book_key: srvBook.book_key ?? k }, photoIdAliasRef.current));
+                } else {
+                  byKey.set(k, { ...b, book_key: b.book_key ?? k });
+                }
+              }
             });
             const merged = [...byKey.values()];
             AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(ensureApprovedOnePerBookKey(merged))).catch(() => {});
@@ -7113,16 +7129,32 @@ refreshProfileStats();
     // Merge books: field-level so approved identity is never overwritten.
     setApprovedBooks(prev => {
       const byKey = new Map<string, Book>();
+      // Secondary index: title|author -> server stable-key, for local books lacking book_key.
+      const serverByTA = new Map<string, string>();
       (freshBooks.approved || []).forEach(b => {
         const k = getStableBookKey(b);
-        if (k) byKey.set(k, { ...b, book_key: b.book_key ?? k });
+        if (!k) return;
+        byKey.set(k, { ...b, book_key: b.book_key ?? k });
+        const ta = computeBookKey({ title: b.title, author: b.author });
+        if (ta && ta !== k && !ta.startsWith('empty:')) serverByTA.set(ta, k);
       });
       prev.forEach(b => {
         const k = getStableBookKey(b);
         if (!k) return;
         const srv = byKey.get(k);
-        if (srv) byKey.set(k, mergeBookFieldLevel(srv, { ...b, book_key: b.book_key ?? k }, photoIdAliasRef.current));
-        else byKey.set(k, { ...b, book_key: b.book_key ?? k }); // local-only, keep
+        if (srv) {
+          byKey.set(k, mergeBookFieldLevel(srv, { ...b, book_key: b.book_key ?? k }, photoIdAliasRef.current));
+        } else {
+          // Check if local book (no book_key) matches a server book via title|author (ISBN vs title|author key mismatch).
+          const ta = computeBookKey({ title: b.title, author: b.author });
+          const serverKey = ta && !ta.startsWith('empty:') ? serverByTA.get(ta) : undefined;
+          if (serverKey) {
+            const srvBook = byKey.get(serverKey)!;
+            byKey.set(serverKey, mergeBookFieldLevel(srvBook, { ...b, book_key: srvBook.book_key ?? k }, photoIdAliasRef.current));
+          } else {
+            byKey.set(k, { ...b, book_key: b.book_key ?? k }); // local-only, keep
+          }
+        }
       });
       const merged = [...byKey.values()];
       _approveLocalApprovedAfter = merged.length;
@@ -11281,10 +11313,12 @@ const closeScanModal = () => {
  }
  }
  
- // Filter out new books that already exist
+ // Filter out new books that already exist (also deduplicates within newBooks itself)
  const uniqueNewBooks = newBooks.filter(book => {
  const key = makeKey(book);
- return !existingMap.has(key);
+ if (existingMap.has(key)) return false;
+ existingMap.set(key, book); // prevent within-newBooks duplicates
+ return true;
  });
  
  return [...existingBooks, ...uniqueNewBooks];
