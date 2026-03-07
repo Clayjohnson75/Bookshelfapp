@@ -644,6 +644,10 @@ const abortInFlightRequests = React.useCallback(() => {
  // Processing states and refs used by resetUIProgress (must be defined before resetUIProgress)
  const [isProcessing, setIsProcessing] = useState(false);
  const [scanQueue, setScanQueue] = useState<ScanQueueItem[]>([]);
+const scanQueueRef = React.useRef<ScanQueueItem[]>(scanQueue);
+scanQueueRef.current = scanQueue;
+const activeScanJobIdsRef = React.useRef<string[]>(activeScanJobIds ?? []);
+activeScanJobIdsRef.current = activeScanJobIds ?? [];
  const [currentScan, setCurrentScan] = useState<{id: string, uri: string, progress: {current: number, total: number}} | null>(null);
  const [isScanning, setIsScanning] = useState(false);
  const [isUploading, setIsUploading] = useState(false);
@@ -851,24 +855,30 @@ React.useEffect(() => {
     if (!raw || raw.length < 8) return;
     const canonicalId = toScanJobId(raw);
     if (canonicalId.length < 40) return;
- const activeJobIdsBefore = Array.isArray(activeScanJobIds) ? [...activeScanJobIds] : [];
+ const activeJobIdsBefore = activeScanJobIdsRef.current.length;
  removeActiveScanJobId(canonicalId);
- const activeJobIdsAfter = activeJobIdsBefore.filter((id) => id !== canonicalId);
  logger.info('[SCAN_TERMINAL_REMOVE]', 'remove job from active list (durable store + in-memory)', {
  jobId: canonicalId.slice(0, 12),
  status,
- activeJobIdsBefore: activeJobIdsBefore.length,
- activeJobIdsAfter: activeJobIdsAfter.length,
+ activeJobIdsBefore,
  });
- // Mark matching scanQueue item terminal so jobsInProgress effect recalculates and bar hides (no stuck "Uploading…").
- setScanQueue((prev) =>
-   prev.map((item) => {
+ // Capture matching item synchronously from ref before setScanQueue to avoid React 18 batching race.
+ const capturedItem = status === 'completed'
+   ? (scanQueueRef.current.find((item) => {
+       const itemCanonical = canonicalJobId(item.jobId) ?? canonicalJobId(item.scanJobId) ?? item.jobId ?? item.scanJobId;
+       return itemCanonical === canonicalId;
+     }) ?? null)
+   : null;
+ // Mark matching scanQueue item terminal.
+ setScanQueue((prev) => {
+   const next = prev.map((item) => {
      const itemCanonical = canonicalJobId(item.jobId) ?? canonicalJobId(item.scanJobId) ?? item.jobId ?? item.scanJobId;
      if (itemCanonical !== canonicalId) return item;
      const terminalStatus = status === 'completed' ? 'completed' as const : status === 'failed' ? 'failed' as const : 'canceled' as const;
      return { ...item, status: terminalStatus };
-   })
- );
+   });
+   return next;
+ });
  setActiveBatch((prev) => {
  const matchingKey = prev?.jobIds?.find((id) => (canonicalJobId(id) ?? id) === canonicalId);
  if (!prev || !matchingKey) return prev;
@@ -889,13 +899,59 @@ React.useEffect(() => {
        const base = getApiBaseUrl();
        const res = await fetch(`${base}/api/scan/${encodeURIComponent(canonicalId)}`, { headers });
        if (!res.ok) return;
-       const data = (await res.json()) as { books?: Array<{ id?: string }> };
+       const data = (await res.json()) as { status?: string; books?: any[] };
        const ids = (data?.books ?? []).map((b) => b?.id).filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
        if (ids.length > 0) enqueueBookEnrichmentRef.current(ids);
+       if (data?.status !== 'completed' || !Array.isArray(data.books) || data.books.length === 0) return;
+       const item = capturedItem;
+       const photoId = item?.photoId ?? item?.id;
+       const uri = item?.uri ?? '';
+       if (!photoId) return;
+       const rawJobUuid = toRawScanJobUuid(canonicalId) ?? canonicalId.replace(/^job_/, '');
+       const photoBooks: Book[] = data.books
+         .filter((b: any) => b && (b.title || b.author))
+         .map((b: any) => ({
+           id: b.id,
+           title: b.title ?? '',
+           author: b.author ?? '',
+           status: 'pending' as const,
+           source_photo_id: photoId,
+           source_scan_job_id: rawJobUuid,
+           ...(b.book_key && { book_key: b.book_key }),
+           ...(b.description && { description: b.description }),
+           ...(b.coverUrl && { coverUrl: b.coverUrl }),
+         }));
+       if (photoBooks.length === 0) return;
+       const existingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+       const newPhoto: Photo = {
+         id: photoId,
+         uri,
+         books: photoBooks,
+         timestamp: Date.now(),
+         jobId: canonicalId,
+         status: 'draft',
+       };
+       setPhotos((prev) => dedupBy([...prev, newPhoto], photoStableKey));
+       setPendingBooks((prev) => {
+         const existingKeys = new Set(prev.map((b) => existingKey(b)));
+         const deduped = photoBooks.filter((b: Book) => {
+           if (existingKeys.has(existingKey(b))) return false;
+           existingKeys.add(existingKey(b));
+           return true;
+         });
+         return [...prev, ...deduped];
+       });
+       clearSelection();
+       const snap = booksSnapshotRef.current;
+       if (user && snap) {
+         const newPending = [...(snap.pending ?? []), ...photoBooks.filter((b: Book) => !(snap.pending ?? []).some((p) => existingKey(p) === existingKey(b)))];
+         const newPhotos = [...(photosRef.current ?? []), newPhoto];
+         saveUserData(newPending, snap.approved ?? [], snap.rejected ?? [], newPhotos).catch(() => {});
+       }
      } catch (_) {}
      })();
  }
- }, [persistBatch, removeActiveScanJobId, activeScanJobIds, setScanQueue]);
+ }, [persistBatch, removeActiveScanJobId, setScanQueue, user]);
  React.useEffect(() => {
  if (!setOnJobTerminalStatus) return;
  setOnJobTerminalStatus(() => handleJobTerminalStatus);
@@ -8570,13 +8626,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
  logger.debug('[PHOTO_CREATE]', { traceId: itemTraceId, photoId: canonicalPhotoId, jobId, photoHash: imageHash ? imageHash.slice(0, 16) + '' : null, bytes: newPhotoBytes ?? null });
  logger.debug('[PHOTO_ATTACH_BOOKS]', { traceId: itemTraceId, photoId: canonicalPhotoId, jobId, booksCount: photoBooks.length });
  const photoImportKey = jobId + ':' + (newPhoto.storage_path ?? newPhoto.id ?? String(index));
-    const importedKeys = user ? await getImportedPhotoKeys(user.uid) : new Set<string>();
     // Generation check after async key lookup — cancel may have fired while we awaited.
     if (!genOk()) return { scanId, status: result.status, books: result.books, ignored: true };
-    if (user && importedKeys.has(photoImportKey)) {
-      if (__DEV__) logger.debug(`[BATCH] Skip photo import (already imported): ${photoImportKey}`);
-      return { scanId, status: result.status, books: result.books };
-    }
+    // Do NOT skip when importedKeys has this key — same as processImage: in production it caused pending books to never appear. Always apply; dedupe prevents duplicate books.
     try {
       if (!batchResultsMapRef.current.has(batchId)) batchResultsMapRef.current.set(batchId, []);
       batchResultsMapRef.current.get(batchId)!.push({ index, uniqueNewPending, newPhoto });
@@ -8903,14 +8955,7 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
       };
 
       const photoImportKey = (jobId ?? queueItemId) + ':' + newPhoto.id;
-      const importedKeys = user ? await getImportedPhotoKeys(user.uid) : new Set<string>();
-      if (user && importedKeys.has(photoImportKey)) {
-        // Already imported (previous attempt partially succeeded) — just mark completed.
-        setScanQueue(prev => prev.map(i =>
-          i.id === queueItemId ? { ...i, status: 'completed' as const, errorMessage: undefined, serverBooks: undefined } : i
-        ));
-        return;
-      }
+      // Do NOT skip when key already imported — same as processImage/batch: always apply so pending books appear in production. Dedupe prevents duplicate books.
 
       setPhotos(prevPhotos => {
         const key = photoStableKey(newPhoto);
@@ -10180,13 +10225,7 @@ logger.error(` [BATCH ${batchId}] [${index}/${total}] Error polling job ${jobId}
  logger.debug('[PHOTO_ATTACH_BOOKS]', { traceId, photoId: canonicalPhotoId, jobId: scanResult.jobId ?? null, booksCount: photoBooks.length });
  const jobIdForImport = scanResult.jobId ?? newPhoto.jobId;
  const photoImportKey = jobIdForImport ? jobIdForImport + ':' + (newPhoto.storage_path ?? newPhoto.id ?? '0') : null;
- if (jobIdForImport && user) {
- const importedKeys = await getImportedPhotoKeys(user.uid);
- if (photoImportKey && importedKeys.has(photoImportKey)) {
- if (__DEV__ && LOG_TRACE) logger.debug('[SCAN] skip photo import (already imported)');
- return;
- }
- }
+ // Do NOT skip applying results when importedKeys has this key — in production that caused pending books to never appear (race with sync or double callback). Always apply; dedupe below prevents duplicate books.
 
  // Compute updated photos list eagerly (outside state callbacks) so we can await the
  // photo DB write before any book writes reference it via source_photo_id FK.
@@ -10302,7 +10341,15 @@ logger.error(` [BATCH ${batchId}] [${index}/${total}] Error polling job ${jobId}
 
  // Ensure no book appears pre-selected after new results arrive
  clearSelection();
- 
+
+ // Auto-open the scan results modal so the user sees the detected books (fix: results not popping up in App Store).
+ const photoToShow = updatedPhotosEager.find(p => photoStableKey(p) === photoKey);
+ if (photoToShow && newPendingWithProvenance.length > 0) {
+   requestAnimationFrame(() => {
+     setTimeout(() => openScanModal(photoToShow), 150);
+   });
+ }
+
  // Covers are resolved in worker; client shows book.coverUrl or placeholder
  
  // Add books to selected folder if one was chosen

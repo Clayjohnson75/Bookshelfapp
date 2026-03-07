@@ -42,7 +42,7 @@ module.exports = {
  expo: {
  name: "Bookshelf Scanner",
  slug: "bookshelf-scanner",
- version: "1.1.0",
+ version: "1.1.1",
  orientation: "portrait",
  icon: "./assets/icon.png",
  userInterfaceStyle: "light",
@@ -57,7 +57,7 @@ module.exports = {
  ios: {
  supportsTablet: true,
  bundleIdentifier: "com.clayjohnson75.bookshelf-scanner",
-    buildNumber: "8",
+    buildNumber: "1",
  infoPlist: {
  ITSAppUsesNonExemptEncryption: false,
  NSCameraUsageDescription: "Bookshelf Scanner needs access to your camera to take photos of your bookshelf. When you take a photo, the app uses AI to automatically identify book titles and authors from the book spines visible in the image. For example, if you photograph a bookshelf containing 'The Great Gatsby' by F. Scott Fitzgerald, the app will detect and catalog this book automatically.",
@@ -66,7 +66,7 @@ module.exports = {
  },
  android: {
  package: "com.clayjohnson75.bookshelfscanner",
-      versionCode: 8,
+      versionCode: 1,
  adaptiveIcon: {
  foregroundImage: "./assets/adaptive-icon.png",
  backgroundColor: "#ffffff"

@@ -250,37 +250,49 @@ async function upsertBooksAndEnrichMetadata(
  if (firstRow) {
  console.log(`[SCAN_PROCESSOR] books_join_keys`, { jobId, scanId, rowCount: dbRows.length, source_photo_id: firstRow.source_photo_id ?? null, user_id: firstRow.user_id ?? null, status: firstRow.status, has_source_photo_id: !!firstRow.source_photo_id });
  }
- const { data: upserted, error: upsertErr } = await supabase
- .from('books')
- .upsert(dbRows, { onConflict: 'user_id,book_key' })
- .select('id, book_key');
- if (upsertErr) {
- const errCode = (upsertErr as any).code ?? null;
- const errDetails = (upsertErr as any).details ?? null;
- const errHint = (upsertErr as any).hint ?? null;
- const likelyRls = errCode === '42501' || /policy|RLS|permission|denied/i.test(upsertErr.message ?? '');
- console.error(`[SCAN_PROCESSOR] books_insert_error`, {
-   jobId,
-   scanId,
-   userId,
-   rowCount: dbRows.length,
-   code: errCode,
-   message: upsertErr.message,
-   details: errDetails,
-   hint: errHint,
-   likelyRlsOrPermission: likelyRls,
- });
- console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Books upsert for metadata enrichment failed:`, upsertErr.message, errCode, errDetails);
- return;
- }
- const insertedCount = upserted?.length ?? dbRows.length;
- const bookIdsInserted = (upserted ?? []).map((r: any) => r.id).filter(Boolean);
- // Server-side invariant: books.source_photo_id must equal the scan job's photo_id for books we just wrote.
- if (bookIdsInserted.length > 0) {
+// Insert row-by-row so we never depend on ON CONFLICT. Per-row errors are logged and skipped — the whole batch never fails.
+// insertedIds = rows we actually inserted (this photo). resolvedUpserted = all ids for keyToId/enrichment (includes existing rows on 23505).
+const resolvedUpserted: { id: string; book_key: string }[] = [];
+const insertedIds: string[] = [];
+for (let i = 0; i < dbRows.length; i++) {
+  const row = dbRows[i];
+  try {
+    const { data: one, error: oneErr } = await supabase
+      .from('books')
+      .insert(row)
+      .select('id, book_key')
+      .single();
+    if (!oneErr && one?.id) {
+      resolvedUpserted.push({ id: one.id, book_key: (one as any).book_key ?? row.book_key ?? '' });
+      insertedIds.push(one.id);
+      continue;
+    }
+    if (oneErr && (oneErr as any).code === '23505') {
+      let q = supabase.from('books').select('id, book_key').eq('user_id', userId).eq('title', row.title);
+      if (row.author != null && row.author !== '') {
+        q = q.eq('author', row.author);
+      } else {
+        q = q.or('author.is.null,author.eq.');
+      }
+      const { data: existing } = await q.limit(1).maybeSingle();
+      if (existing?.id) {
+        resolvedUpserted.push({ id: existing.id, book_key: (existing as any).book_key ?? row.book_key ?? '' });
+      }
+      continue;
+    }
+    console.warn(`[SCAN_PROCESSOR] books_insert_row_skip`, { jobId, scanId, index: i, code: (oneErr as any)?.code, message: (oneErr as any)?.message });
+  } catch (err: any) {
+    console.warn(`[SCAN_PROCESSOR] books_insert_row_error`, { jobId, scanId, index: i, message: err?.message ?? String(err) });
+  }
+}
+ const insertedCount = resolvedUpserted.length;
+ const bookIdsInserted = insertedIds;
+ // Server-side invariant: only for rows we actually inserted; reused rows (23505) have a different source_photo_id by design.
+ if (insertedIds.length > 0) {
    const { data: verifyRows } = await supabase
      .from('books')
      .select('id, source_photo_id')
-     .in('id', bookIdsInserted);
+     .in('id', insertedIds);
    const mismatched = (verifyRows ?? []).filter((r: any) => r.source_photo_id !== photoId);
    if (mismatched.length > 0) {
      console.error(`[SCAN_PROCESSOR] books_source_photo_id_invariant`, { jobId, scanId, photoId, expected: photoId, mismatchedCount: mismatched.length, sample: mismatched.slice(0, 5).map((r: any) => ({ id: r.id, source_photo_id: r.source_photo_id })) });
@@ -304,7 +316,7 @@ async function upsertBooksAndEnrichMetadata(
    console.warn(`[SCAN_PROCESSOR] books undelete follow-up (non-fatal):`, undeleteErr.message);
  }
  const keyToId = new Map<string, string>();
- for (const r of upserted ?? []) {
+ for (const r of resolvedUpserted ?? []) {
  if (r.id && r.book_key) keyToId.set(r.book_key, r.id);
  }
 
