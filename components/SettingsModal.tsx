@@ -487,7 +487,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       await AsyncStorage.setItem(`library_cleared_at_${user.uid}`, String(Date.now()));
       await resetSafetyBaselines(user.uid);
 
-      await refreshProfileStats();
+      await refreshProfileStats([]);
       const stateCommittedAt = Date.now();
       perfLog('clear_library', 'state_committed', { stateCommittedAt, booksUpdated, photosUpdated });
       if (onDataCleared) onDataCleared();

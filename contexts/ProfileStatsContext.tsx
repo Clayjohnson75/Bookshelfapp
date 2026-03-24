@@ -75,10 +75,8 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  setCanonicalBookCount(null);
  setPhotoCount(null);
  setLibraryHydrated(false);
- if (!mergeInProgressRef.current) {
  setLastStableBookCount(null);
  setLastStablePhotoCount(null);
- }
  return;
  }
  setStatsRefreshing(true);
@@ -93,32 +91,36 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  const list = raw ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
  arr = Array.isArray(list) ? list : [];
  }
- // Profile count = unique book_key among approved (canonical). Avoids duplicate book_keys inflating the number.
  const activeArr = arr.filter((b: { status?: string; deleted_at?: string | null }) => {
  if (b?.status !== 'approved') return false;
  if (b?.deleted_at != null) return false;
  return true;
  });
  const profileBookCount = getApprovedUniqueCount(activeArr);
- // Freeze: during rehydrate do not update canonical (only completeRehydrate does one swap).
- if (!mergeInProgressRef.current) {
+
+ // When called with direct data (e.g. after clear or approve), always update immediately
+ // regardless of merge state. This prevents stale counts from persisting after clear.
+ const forceUpdate = !!directApprovedBooks;
+ if (forceUpdate || !mergeInProgressRef.current) {
  setCanonicalBookCount(profileBookCount);
  setLastStableBookCount(profileBookCount);
  }
 
- // Photo count = distinct source_photo_id among approved books only (never server "all books" or raw photos list).
  const countsByPhotoId = new Map<string, number>();
  activeArr.forEach((b: { source_photo_id?: string | null; sourcePhotoId?: string | null; photoId?: string | null }) => {
  const key = getBookSourcePhotoId(b);
  if (key) countsByPhotoId.set(key, (countsByPhotoId.get(key) ?? 0) + 1);
  });
+ if (forceUpdate || !mergeInProgressRef.current) {
  setPhotoCount(countsByPhotoId.size);
  setLastStablePhotoCount(countsByPhotoId.size);
+ } else {
+ setPhotoCount(countsByPhotoId.size);
+ setLastStablePhotoCount(countsByPhotoId.size);
+ }
  } catch {
  if (!mergeInProgressRef.current) {
  setCanonicalBookCount(null);
- // Keep lastStableBookCount so UI doesn't flash to "--" on refresh error; next successful refresh will update.
- // setLastStableBookCount(null);
  }
  setPhotoCount(null);
  } finally {
