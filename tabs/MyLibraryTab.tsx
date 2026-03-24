@@ -693,6 +693,7 @@ setFolders([]);
  setBooks([]);
  setPhotos([]);
  setFolders([]);
+ setUserProfile(prev => prev ? { ...prev, totalBooks: 0, totalPhotos: 0 } : null);
  refreshProfileStats();
  setIsLoadingData(false);
  }
@@ -2582,9 +2583,11 @@ const failedOrProcessingPhotos = useMemo(() => {
           setFolders([]);
           setUserProfile(prev => prev ? { ...prev, totalBooks: 0, totalPhotos: 0 } : null);
           refreshProfileStats();
-          setTimeout(() => {
-            loadUserData();
-          }, 500);
+          // Do NOT call loadUserData() here — the useFocusEffect will fire
+          // when the settings modal closes and the tab regains focus. The
+          // recentlyCleared guard (library_cleared_at) ensures it returns
+          // empty. Calling it here with a delay caused a race where stale
+          // server data repopulated the cleared profile.
         }}
       />
 
