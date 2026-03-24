@@ -257,13 +257,15 @@ export function PhotoTile({
   const isUploadFailed = status === 'failed_upload';
   const isScanFailed = status === 'scan_failed';
   const isFailed = isUploadFailed || isScanFailed;
+  // Show spinner only when truly uploading. If storagePath exists, upload is done.
   const isUploading =
     !isFailed &&
+    !storagePath &&
     (status === 'local_pending' ||
       status === 'uploading' ||
       status === 'draft' ||
       status === 'stalled' ||
-      (status == null && isLocalUri && !storagePath));
+      (status == null && isLocalUri));
   logger.cat('[PHOTO_TILE_URI]', '', {
     photoId: (photoId ?? '').slice(0, 8),
     status,
@@ -341,11 +343,10 @@ export function PhotoTile({
           <Text style={_styles.tapToRetryText}>Tap to retry</Text>
         </Pressable>
       )}
-      {/* Uploading overlay: centered spinner + label over the photo tile */}
+      {/* Uploading: just a centered spinner, no text */}
       {isUploading && (
         <View style={_styles.uploadingOverlay} pointerEvents="none">
           <ActivityIndicator size="small" color="#fff" />
-          <Text style={_styles.uploadingLabel}>Uploading</Text>
         </View>
       )}
       {/* Upload/scan failed: keep tile visible, show "Upload failed — Retry" (or scan_failed message) */}
@@ -382,15 +383,8 @@ const _styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(0,0,0,0.35)',
     borderRadius: 12,
-  },
-  uploadingLabel: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 0.3,
   },
   loadingThumbBadge: {
     position: 'absolute',
