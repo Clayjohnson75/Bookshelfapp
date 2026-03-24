@@ -77,6 +77,8 @@ export const ScanningNotification: React.FC<ScanningNotificationProps> = ({ onCa
  const lastStageLoggedRef = useRef<string | null>(null);
  /** Last [SCAN_TICK] key: log only when tracked or candidates change. */
  const lastTickLogKeyRef = useRef<string>('');
+ /** Keep bar visible at 100% briefly after all jobs complete before hiding. */
+ const completionHoldUntilRef = useRef<number>(0);
   /** Poll count for SCAN_STATUS_FETCH: log only every N polls or on error. */
   const pollCountRef = useRef(0);
   /** Where the UI last got progress (proves wiring: poll vs realtime). */
@@ -780,8 +782,24 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
  const batchId = (effectiveProgress as any)?.batchId ?? null; // Metadata only, never a condition for showing.
  const showReason = (effectiveProgress as any)?.showReason ?? 'unknown';
  // Show bar when any in-flight queue item exists (jobsInProgress > 0). Candidates may be empty briefly (e.g. camera before jobId returns).
- const shouldShow = inFlightCount > 0;
+ // Keep bar visible at 100% for 1.5s after completion so user sees it finish.
+ const now = Date.now();
+ if (inFlightCount > 0 && completionHoldUntilRef.current === 0) {
+   // Jobs still running — no hold needed yet
+ } else if (inFlightCount === 0 && completionHoldUntilRef.current === 0 && doneCountDisplay > 0) {
+   // Just finished — start the hold
+   completionHoldUntilRef.current = now + 1500;
+ } else if (inFlightCount > 0 && completionHoldUntilRef.current > 0) {
+   // New batch started — reset hold
+   completionHoldUntilRef.current = 0;
+ }
+ const inCompletionHold = completionHoldUntilRef.current > 0 && now < completionHoldUntilRef.current;
+ if (inCompletionHold && completionHoldUntilRef.current <= now) {
+   completionHoldUntilRef.current = 0; // expired
+ }
+ const shouldShow = inFlightCount > 0 || inCompletionHold;
  if (!shouldShow) {
+   completionHoldUntilRef.current = 0;
  if (lastBarVariantRef.current !== 'hidden') {
  sendTelemetry('SCAN_BAR_VARIANT', { variant: 'hidden', reason: 'no_work' });
  lastBarVariantRef.current = 'hidden';
@@ -850,7 +868,10 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
    logger.trace('[SCAN_BAR_INPUTS]', 'inputs changed', { activeJobId: barInputs.activeJobId, p_progressByJob: barInputs.p_progressByJob, p_serverProgress: barInputs.p_serverProgress, doneCount: barInputs.doneCount, total: barInputs.total, source: serverHasSentProgress ? 'server' : 'ramp' });
  }
  // Bar must use the same 0–100 value we log. When total===0 (e.g. activeScanJobIds only, no batch), use raw server progress; else batch-weighted.
- const overall = total > 0 ? (doneCountForPercent + Math.min(1, Math.max(0, rawProgress / 100))) / total : rawProgress / 100;
+ // When all jobs are done (doneCount === total && total > 0), force 100% so the bar
+ // visually completes instead of jumping from ~43% to hidden.
+ const allJobsDone = total > 0 && doneCountForPercent >= total;
+ const overall = allJobsDone ? 1 : (total > 0 ? (doneCountForPercent + Math.min(1, Math.max(0, rawProgress / 100))) / total : rawProgress / 100);
  const normalizedProgress = total > 0 ? overall * 100 : rawProgress;
  const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
  const clampedProgress = clamp(Number(normalizedProgress ?? 0), 0, 100);
