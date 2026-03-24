@@ -180,7 +180,15 @@ function ScansStackScreen() {
  }}
  >
  <ScansStack.Screen name="ScansHome" component={ScansTab} />
-    <ScansStack.Screen name="AddCaption" component={AddCaptionScreen} />
+    <ScansStack.Screen
+      name="AddCaption"
+      component={AddCaptionScreen}
+      options={{
+        headerShown: false,
+        gestureEnabled: true,
+        animationTypeForReplace: 'push',
+      }}
+    />
     <ScansStack.Screen
       name="SelectCollection"
       component={SelectCollectionScreen}

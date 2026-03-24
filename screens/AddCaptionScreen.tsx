@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
  View,
  Text,
@@ -8,6 +8,7 @@ import {
  TextInput,
  ScrollView,
  Keyboard,
+ InteractionManager,
 } from 'react-native';
 import { useRoute, useNavigation, StackActions } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -100,7 +101,7 @@ export function AddCaptionScreen() {
 
  const headerHeight = insets.top + 48;
  const { screenWidth } = useResponsive();
- const styles = getStyles(t, screenWidth);
+ const styles = useMemo(() => getStyles(t, screenWidth), [t, screenWidth]);
 
  return (
  <SafeAreaView style={[styles.container, { backgroundColor: t.colors.bg }]} edges={['left', 'right']}>
@@ -159,6 +160,7 @@ export function AddCaptionScreen() {
  source={{ uri: currentImage.uri }}
  style={styles.photo}
  resizeMode="cover"
+ fadeDuration={0}
  />
 
  {/* Swipe hint */}

@@ -12595,11 +12595,15 @@ logger.info('[PENDING_DELETE_RESULT]', {
  onAddToFolder,
  });
 
+ // Use requestAnimationFrame to let the current frame finish before navigating,
+ // preventing frame drops during the transition animation.
+ requestAnimationFrame(() => {
  (navigation as { navigate: (name: string, params: object) => void }).navigate('AddCaption', {
  pendingImages: images,
  initialIndex,
  initialCaption,
  callbackId,
+ });
  });
  }, [pendingImages, user, pendingBooks, approvedBooks, rejectedBooks, navigation, startUploadAfterCaption]);
 
