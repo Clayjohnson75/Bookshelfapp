@@ -26,6 +26,7 @@ import { perfLog } from '../lib/perfLogger';
 import { resetSafetyBaselines } from '../lib/dataSafetyMark';
 import { clearDeletedPendingStableKeys } from '../services/supabaseSync';
 import { purgeLocalData } from '../lib/cacheEviction';
+import { PENDING_APPROVE_ACTION_KEY } from '../lib/cacheKeys';
 import { logger } from '../utils/logger';
 import * as BiometricAuth from '../services/biometricAuth';
 import { UpgradeModal } from './UpgradeModal';
@@ -473,14 +474,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
         errors: purgeResult.errors.length ? purgeResult.errors : undefined,
       });
 
-      // Clear all local storage
+      // Clear all local storage (including photo aliases so stale IDs don't persist)
       await AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify([]));
       await AsyncStorage.setItem(`photos_${user.uid}`, JSON.stringify([]));
       await AsyncStorage.removeItem(`folders_${user.uid}`);
       await AsyncStorage.removeItem(`pending_books_${user.uid}`);
       await AsyncStorage.removeItem(`rejected_books_${user.uid}`);
       await AsyncStorage.removeItem(`books_${user.uid}`);
+      await AsyncStorage.removeItem(`photo_id_aliases_${user.uid}`);
       await clearDeletedPendingStableKeys(user.uid);
+      await AsyncStorage.removeItem(PENDING_APPROVE_ACTION_KEY);
       await AsyncStorage.setItem(`library_cleared_at_${user.uid}`, String(Date.now()));
       await resetSafetyBaselines(user.uid);
 

@@ -6,6 +6,7 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable, Image } from 'react-native';
 import { PersonOutlineIcon, ChevronForwardIcon } from '../components/Icons';
 import { useTheme } from '../theme/ThemeProvider';
+import { useResponsive } from '../lib/useResponsive';
 
 const COVER_SIZE = 40;
 const COVER_OVERLAP = -10;
@@ -26,6 +27,7 @@ export interface EntityRowCardProps {
 
 export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID }: EntityRowCardProps) {
   const { t } = useTheme();
+  const { typeScale } = useResponsive();
   const c = t.colors;
   const displayUris = (coverUris.filter((u): u is string => Boolean(u)) as string[]).slice(0, 3);
 
@@ -67,11 +69,11 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
         )}
       </View>
       <View style={styles.textBlock}>
-        <Text style={[styles.title, { color: c.textPrimary ?? c.text }]} numberOfLines={1}>
+        <Text style={[styles.title, { color: c.textPrimary ?? c.text, fontSize: Math.round(16 * typeScale) }]} numberOfLines={1}>
           {title}
         </Text>
         {subtext ? (
-          <Text style={[styles.subtext, { color: c.textSecondary ?? c.textMuted }]} numberOfLines={1}>
+          <Text style={[styles.subtext, { color: c.textSecondary ?? c.textMuted, fontSize: Math.round(13 * typeScale) }]} numberOfLines={1}>
             {subtext}
           </Text>
         ) : null}

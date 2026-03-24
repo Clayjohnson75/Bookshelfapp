@@ -27,7 +27,7 @@
         "simulator": false
       },
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
       },
       "env": {
         "EAS_ENV": "production"

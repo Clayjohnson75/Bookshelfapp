@@ -76,7 +76,9 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
 }) => {
  const { user } = useAuth();
  const { t } = useTheme();
- const styles = React.useMemo(() => getStyles(t), [t]);
+ const { width: windowWidth } = useWindowDimensions();
+ const screenWidth = windowWidth || 375;
+ const styles = React.useMemo(() => getStyles(t, screenWidth), [t, screenWidth]);
  const { setCoverUpdateActive } = useCoverUpdate();
  const [description, setDescription] = useState<string | null>(null);
  const [loadingDescription, setLoadingDescription] = useState(false);
@@ -86,7 +88,6 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
  const [showCoverOptions, setShowCoverOptions] = useState(false);
  const [showReplaceCoverModal, setShowReplaceCoverModal] = useState(false);
  const [showScanPhoto, setShowScanPhoto] = useState(false);
- const { width: windowWidth } = useWindowDimensions();
  const [coverSearchResults, setCoverSearchResults] = useState<Array<{googleBooksId: string, coverUrl?: string}>>([]);
  const [isLoadingCovers, setIsLoadingCovers] = useState(false);
  const [updatingCover, setUpdatingCover] = useState(false);
@@ -1528,8 +1529,9 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
  );
 };
 
-function getStyles(t: ThemeTokens) {
+function getStyles(t: ThemeTokens, screenWidth: number) {
  const c = t.colors;
+ const scale = screenWidth / 375; // 1.0 on iPhone SE, ~1.05 on iPhone 15, ~1.15 on Pro Max
  return StyleSheet.create({
  safeContainer: { flex: 1, backgroundColor: c.bg },
  container: { flex: 1, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
@@ -1633,7 +1635,7 @@ function getStyles(t: ThemeTokens) {
  skeletonHeaderSub: { height: 16, marginBottom: 8 },
  retryButton: { marginTop: 12, paddingVertical: 10, paddingHorizontal: 16, alignSelf: 'flex-start', backgroundColor: c.surface2, borderRadius: 8 },
  retryButtonText: { fontSize: 14, color: c.textSecondary ?? c.textMuted, fontWeight: '600' },
- scanPhoto: { width: '100%', height: 180, borderRadius: 12, marginBottom: 10, backgroundColor: c.surface2 },
+ scanPhoto: { width: '100%', height: Math.round(Math.min(240, 180 * scale)), borderRadius: 12, marginBottom: 10, backgroundColor: c.surface2 },
  scanDate: { fontSize: 14, color: c.textSecondary ?? c.textMuted, fontWeight: '500' },
  scanCollapsedHint: { fontSize: 13, color: c.textMuted, fontWeight: '500' },
  removeTextButton: {
@@ -1713,7 +1715,7 @@ function getStyles(t: ThemeTokens) {
  shadowRadius: 8,
  elevation: 3,
  },
- currentBookCover: { width: 80, height: 120, borderRadius: 8, marginRight: 16, backgroundColor: c.surface2 },
+ currentBookCover: { width: Math.round(80 * Math.min(scale, 1.3)), height: Math.round(120 * Math.min(scale, 1.3)), borderRadius: 8, marginRight: 16, backgroundColor: c.surface2 },
  currentBookInfo: { flex: 1, justifyContent: 'center' },
  currentBookTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary ?? c.text, marginBottom: 6 },
  currentBookAuthor: { fontSize: 14, color: c.textSecondary ?? c.text, fontStyle: 'italic' },

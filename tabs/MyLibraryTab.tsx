@@ -7,7 +7,6 @@ import {
  TouchableOpacity, 
  Pressable,
  Image,
- Dimensions,
  FlatList,
  Modal,
  TextInput,
@@ -46,6 +45,7 @@ import { AuthGateModal } from '../components/AuthGateModal';
 import { LoginScreen } from '../auth/AuthScreens';
 import { LibraryView } from '../screens/LibraryView';
 import { loadBooksFromSupabase, loadFoldersFromSupabase, saveFoldersToSupabase, deleteLibraryPhotoAndBooks, getDeletedBookIds, addDeletedBookIdsTombstone, fetchAllApprovedBooks, fetchAllPhotos } from '../services/supabaseSync';
+import { useResponsive } from '../lib/useResponsive';
 import { getBookSourcePhotoId } from '../lib/bookKey';
 import { createDeleteIntent, assertDeleteAllowed, logDeleteAudit, getLastDestructiveAction } from '../lib/deleteGuard';
 import { loadHighWaterMark, saveHighWaterMark, checkForSuspiciousDrop } from '../lib/dataSafetyMark';
@@ -96,21 +96,7 @@ const LOCKED_PROFILE_HEADER = {
 export const MyLibraryTab: React.FC = () => {
  const insets = useSafeAreaInsets();
  const { t } = useTheme();
- const [dimensions, setDimensions] = useState(Dimensions.get('window'));
- 
- useEffect(() => {
- const subscription = Dimensions.addEventListener('change', ({ window }) => {
- setDimensions(window);
- });
- return () => subscription?.remove();
- }, []);
- 
- const screenWidth = dimensions.width || 375; // Fallback to default width
- const screenHeight = dimensions.height || 667; // Fallback to default height
- // iPad (≥900): 6 columns for compact covers; mid (>700): 5; phone: 4.
- const gridColumns = screenWidth >= 900 ? 6 : screenWidth > 700 ? 5 : 4;
- const photoColumns = screenWidth > 900 ? 3 : 2;
- const typeScale = screenWidth > 1000 ? 1.14 : screenWidth > 800 ? 1.1 : screenWidth > 600 ? 1.05 : 1;
+ const { screenWidth, screenHeight, bookGridColumns: gridColumns, photoColumns, typeScale } = useResponsive();
  const hasLoggedGridDebugRef = useRef(false);
  const photosNavLockRef = useRef(false);
  const libraryContainerWidth = screenWidth;
@@ -688,9 +674,13 @@ setFolders([]);
 
  // If user just cleared library, do NOT repopulate from Supabase (avoids 250-book flash)
  const clearedAt = libraryClearedAt ? parseInt(libraryClearedAt, 10) : NaN;
- const recentlyCleared = localBooksFiltered.length === 0 && !isNaN(clearedAt) && (Date.now() - clearedAt < 120000);
+ const recentlyCleared = !isNaN(clearedAt) && (Date.now() - clearedAt < 120000);
+ // Only remove the key after the grace period has expired so subsequent loads within
+ // the window still see the guard. Prevents server books from flowing back in.
+ if (!isNaN(clearedAt) && Date.now() - clearedAt >= 120000) {
+   AsyncStorage.removeItem(libraryClearedAtKey).catch(() => {});
+ }
  if (recentlyCleared) {
- await AsyncStorage.removeItem(libraryClearedAtKey);
  mergedBooks = [];
  if (user) {
  try {
@@ -717,17 +707,16 @@ setFolders([]);
    mergedBooks = localBooksFiltered;
    if (__DEV__) logger.debug('[MYLIB_GRACE_WINDOW]', 'keeping local approved — server snapshot stale after approve', { localApproved: localBooksFiltered.length });
    // Skip the full server merge below; fall through to final setBooks with mergedBooks = local.
- } else if (!recentlyCleared && supabaseBooks && (supabaseBooks.approved?.length ?? 0) + (supabaseBooks.pending?.length ?? 0) > 0) {
+ } else if (!recentlyCleared && supabaseBooks && (supabaseBooks.approved?.length ?? 0) > 0) {
 
  if (DEBUG_VERBOSE) {
- const _supabaseTotal = (supabaseBooks?.approved?.length ?? 0) + (supabaseBooks?.pending?.length ?? 0);
- logger.debug(` Starting merge: ${localBooksFiltered.length} local books, ${_supabaseTotal} Supabase books (approved+pending)${recentlyCleared ? ' (recently cleared)' : ''}`);
+ const _supabaseTotal = supabaseBooks?.approved?.length ?? 0;
+ logger.debug(` Starting merge: ${localBooksFiltered.length} local books, ${_supabaseTotal} Supabase approved books${recentlyCleared ? ' (recently cleared)' : ''}`);
  }
  
- // Use ALL books (approved + pending) as source so photos with only pending books still show.
- // Previously we only merged approved; when server had 0 approved and 6 pending, mergedBooks stayed empty
- // and PHOTO_FILTER_STEPS dropped all photos (photosWithBooksAttached=0, droppedNoBooks=3).
- const allSupabaseBooks = [...(supabaseBooks.approved ?? []), ...(supabaseBooks.pending ?? [])];
+ // Library display must ONLY show approved books. Pending books belong in ScansTab for user approval.
+ // Previously this included pending, which caused unapproved books to appear in the library after scan.
+ const allSupabaseBooks = [...(supabaseBooks.approved ?? [])];
  const hasAnySupabaseBooks = allSupabaseBooks.length > 0;
 
  if (!recentlyCleared && supabaseBooks && hasAnySupabaseBooks) {

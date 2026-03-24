@@ -10,7 +10,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Dimensions,
   ActivityIndicator,
   InteractionManager,
   Alert,
@@ -33,6 +32,7 @@ import { AppHeader } from '../components/AppHeader';
 import { deleteLibraryPhotoAndBooks } from '../services/supabaseSync';
 import { createDeleteIntent, assertDeleteAllowed, logDeleteAudit } from '../lib/deleteGuard';
 import { useProfileStats } from '../contexts/ProfileStatsContext';
+import { useResponsive } from '../lib/useResponsive';
 
 type PhotoDetailParams = { photoId: string; photo?: Photo };
 
@@ -83,9 +83,7 @@ export function PhotoDetailScreen() {
   const photoId = params?.photoId;
   const initialPhoto = params?.photo ?? null;
 
-  const [dimensions, setDimensions] = useState(Dimensions.get('window'));
-  const screenWidth = dimensions.width || 375;
-  const screenHeight = dimensions.height || 667;
+  const { screenWidth, screenHeight } = useResponsive();
 
   const [photo, setPhoto] = useState<Photo | null>(initialPhoto);
   const [books, setBooks] = useState<Book[]>([]);
@@ -381,7 +379,7 @@ export function PhotoDetailScreen() {
 
 function getStyles(screenWidth: number, t: import('../theme/tokens').ThemeTokens) {
   const contentPadding = 16;
-  const NUM_COLS = 4;
+  const NUM_COLS = screenWidth >= 900 ? 6 : screenWidth > 700 ? 5 : 4;
   const gap = 8;
   const cardWidth = (screenWidth - contentPadding * 2 - gap * (NUM_COLS - 1)) / NUM_COLS;
   return StyleSheet.create({

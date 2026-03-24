@@ -38,8 +38,9 @@ interface ProfileStatsContextType {
  displayBookCount: number | null;
  /** Photos count to show (distinct source_photo_id among approved books only). null = "—". */
  displayPhotoCount: number | null;
- /** Re-read count from persisted merged approved list. Call after approving, syncing, or load merge. */
- refreshProfileStats: () => Promise<void>;
+ /** Re-read count from persisted merged approved list. Call after approving, syncing, or load merge.
+  * Pass approvedBooks directly to skip AsyncStorage read (instant update after approval). */
+ refreshProfileStats: (approvedBooks?: any[]) => Promise<void>;
  /** Call when rehydrate starts; sets libraryHydrated=false. */
  startRehydrate: () => void;
  /** Call when merge applied (books + photos fetch done, merge applied); sets libraryHydrated=true. */
@@ -69,7 +70,7 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  const mergeInProgressRef = useRef(false);
  mergeInProgressRef.current = mergeInProgress;
 
- const refreshProfileStats = useCallback(async () => {
+ const refreshProfileStats = useCallback(async (directApprovedBooks?: any[]) => {
  if (!user || user.uid === GUEST_USER_ID || (user as { isGuest?: boolean }).isGuest) {
  setCanonicalBookCount(null);
  setPhotoCount(null);
@@ -82,9 +83,16 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  }
  setStatsRefreshing(true);
  try {
+ // When called with directApprovedBooks, skip AsyncStorage read for instant stats update.
+ // This avoids the race where AsyncStorage hasn't been written yet after approval.
+ let arr: any[];
+ if (directApprovedBooks) {
+ arr = directApprovedBooks;
+ } else {
  const raw = await AsyncStorage.getItem(approvedKey(user.uid));
  const list = raw ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
- const arr = Array.isArray(list) ? list : [];
+ arr = Array.isArray(list) ? list : [];
+ }
  // Profile count = unique book_key among approved (canonical). Avoids duplicate book_keys inflating the number.
  const activeArr = arr.filter((b: { status?: string; deleted_at?: string | null }) => {
  if (b?.status !== 'approved') return false;

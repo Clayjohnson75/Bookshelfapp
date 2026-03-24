@@ -10,12 +10,12 @@ import {
  Keyboard,
  TouchableWithoutFeedback,
  Image,
- Dimensions,
  Alert,
  ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useResponsive } from '../lib/useResponsive';
 import { getEnvVar } from '../lib/getEnvVar';
 import { useAuth } from '../auth/SimpleAuthContext';
 import UserProfileModal from '../components/UserProfileModal';
@@ -51,17 +51,7 @@ type SearchResult = { type: 'user'; data: User } | { type: 'book'; data: BookRes
 export const ExploreTab: React.FC = () => {
  const insets = useSafeAreaInsets();
  const { searchUsers, user: currentUser } = useAuth();
- const [dimensions, setDimensions] = useState(Dimensions.get('window'));
- 
- useEffect(() => {
- const subscription = Dimensions.addEventListener('change', ({ window }) => {
- setDimensions(window);
- });
- return () => subscription?.remove();
- }, []);
- 
- const screenWidth = dimensions.width || 375; // Fallback to default width
- const screenHeight = dimensions.height || 667; // Fallback to default height
+ const { screenWidth } = useResponsive();
  
  const [searchQuery, setSearchQuery] = useState('');
  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -785,10 +775,10 @@ const getStyles = (screenWidth: number, t: { name?: string; colors: { primary: s
  marginBottom: 12,
  },
  bookGridCardWrapper: {
- width: (screenWidth - 70) / 3 - 12,
+ width: (screenWidth - 70) / (screenWidth >= 900 ? 5 : screenWidth > 700 ? 4 : 3) - 12,
  },
  bookGridCard: {
- width: (screenWidth - 70) / 3 - 12,
+ width: (screenWidth - 70) / (screenWidth >= 900 ? 5 : screenWidth > 700 ? 4 : 3) - 12,
  alignItems: 'center',
  marginBottom: 12,
  },

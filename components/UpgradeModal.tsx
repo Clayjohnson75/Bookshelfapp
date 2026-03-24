@@ -15,6 +15,7 @@ import { initializeIAP, purchaseProSubscription, restorePurchases, checkSubscrip
 import { checkSubscriptionStatus, isSubscriptionUIHidden } from '../services/subscriptionService';
 import { useAuth } from '../auth/SimpleAuthContext';
 import { useTheme } from '../theme/ThemeProvider';
+import { useResponsive } from '../lib/useResponsive';
 import { AppHeader } from './AppHeader';
 
 interface UpgradeModalProps {
@@ -30,6 +31,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 }) => {
  const { user } = useAuth();
  const { t } = useTheme();
+ const { isSmallPhone } = useResponsive();
  const [loading, setLoading] = useState(false);
  const [restoring, setRestoring] = useState(false);
  const [currentTier, setCurrentTier] = useState<'free' | 'pro'>('free');
@@ -294,7 +296,7 @@ const styles = StyleSheet.create({
  elevation: 3,
  },
  price: {
- fontSize: 48,
+ fontSize: 40,
  fontWeight: '700',
  color: '#2d3748',
  },
@@ -458,7 +460,7 @@ const styles = StyleSheet.create({
  letterSpacing: 2,
  },
  successTitle: {
- fontSize: 24,
+ fontSize: 22,
  fontWeight: '700',
  color: '#2d3748',
  textAlign: 'center',

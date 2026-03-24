@@ -28,6 +28,10 @@ export interface ScanBatch {
  resultsByJobId: Record<string, JobResult>;
  /** Job IDs that have been imported to library (e.g. after "Done"). */
  importedJobIds: string[];
+ /** Total expected number of jobs (set at batch creation from scanIds/records count).
+  *  Use instead of jobIds.length for progress total, since jobIds may not be fully
+  *  populated until all uploads complete and receive server job IDs. */
+ expectedJobCount?: number;
 }
 
 export function isTerminalJobStatus(s: JobStatus): boolean {
@@ -40,7 +44,7 @@ export function isTerminalBatchStatus(s: BatchStatus): boolean {
 
 /** Completed jobs count / total jobs (01). Use for single progress bar. */
 export function batchProgress(batch: ScanBatch): { completed: number; total: number; fraction: number } {
- const total = batch.jobIds.length;
+ const total = batch.expectedJobCount ?? batch.jobIds.length;
  if (total === 0) return { completed: 0, total: 0, fraction: 0 };
  const completed = batch.jobIds.filter(
  (jid) => isTerminalJobStatus(batch.resultsByJobId[jid]?.status ?? 'queued')
@@ -50,8 +54,11 @@ export function batchProgress(batch: ScanBatch): { completed: number; total: num
 
 /** Derive batch status from results: if any job still running processing; else terminal. */
 export function deriveBatchStatus(batch: ScanBatch): BatchStatus {
+ const expectedTotal = batch.expectedJobCount ?? batch.jobIds.length;
  const total = batch.jobIds.length;
  if (total === 0) return batch.status;
+ // Not all jobs have server IDs yet — batch is still processing
+ if (expectedTotal > total) return 'processing';
  let hasCanceled = false;
  let hasFailed = false;
  let allTerminal = true;

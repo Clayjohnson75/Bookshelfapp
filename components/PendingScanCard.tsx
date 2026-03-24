@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, Image, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, Image, StyleSheet, ScrollView, useWindowDimensions } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 
 interface PendingScanCardProps {
@@ -22,6 +22,8 @@ export const PendingScanCard: React.FC<PendingScanCardProps> = ({
   onReject,
 }) => {
   const { t } = useTheme();
+  const { width: sw } = useWindowDimensions();
+  const imageHeight = Math.round(Math.min(250, Math.max(160, (sw || 375) * 0.5)));
   const [selectedBooks, setSelectedBooks] = React.useState<Set<string>>(new Set());
   
   const toggleBook = (bookTitle: string) => {
@@ -40,7 +42,7 @@ export const PendingScanCard: React.FC<PendingScanCardProps> = ({
 
   return (
     <View style={styles.card}>
-      <Image source={{ uri: scan.uri }} style={styles.image} resizeMode="cover" />
+      <Image source={{ uri: scan.uri }} style={[styles.image, { height: imageHeight }]} resizeMode="cover" />
       <Text style={styles.count}>{scan.books.length} books found</Text>
       
       <ScrollView style={styles.booksList}>

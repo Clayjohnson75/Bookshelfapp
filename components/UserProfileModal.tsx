@@ -126,7 +126,9 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
  };
 
  const { width: screenWidth } = useWindowDimensions();
- const profileGridItemWidth = (screenWidth - 40 - 10 * 3) / 4; // content padding 20*2, gap 10*3
+ const sw = screenWidth || 375;
+ const profileGridCols = sw >= 900 ? 6 : sw > 700 ? 5 : 4;
+ const profileGridItemWidth = (Math.min(sw, 900) - 40 - 10 * (profileGridCols - 1)) / profileGridCols;
 
  const renderBook = ({ item }: { item: Book }) => (
  <View style={styles.bookCard}>
@@ -144,7 +146,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
  const renderBookGridItem = ({ item, index }: { item: Book; index: number }) => {
  const coverUri = getBookCoverUri(item);
  return (
- <View style={[styles.profileGridItem, { width: profileGridItemWidth }, index % 4 === 3 && styles.profileGridItemEnd]}>
+ <View style={[styles.profileGridItem, { width: profileGridItemWidth }, index % profileGridCols === (profileGridCols - 1) && styles.profileGridItemEnd]}>
  <View style={styles.profileGridCoverWrapper}>
  {coverUri ? (
  <Image source={{ uri: coverUri }} style={styles.profileGridCover} />
@@ -189,7 +191,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
  <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
  {/* Single profile card: avatar, name, stats (warm beige, same family as Pending Books) */}
  <View style={[styles.profileCard, { backgroundColor: t.colors.surface2 ?? t.colors.surface ?? '#F0ECE6' }]}>
- <View style={[styles.avatarContainer, { backgroundColor: t.colors.primary }]}>
+ <View style={[styles.avatarContainer, { backgroundColor: t.colors.primary, width: Math.round(80 * (sw >= 768 ? 1.15 : 1)), height: Math.round(80 * (sw >= 768 ? 1.15 : 1)), borderRadius: Math.round(40 * (sw >= 768 ? 1.15 : 1)) }]}>
  <Text style={styles.avatarText}>
  {user.displayName?.charAt(0).toUpperCase() || user.username.charAt(0).toUpperCase()}
  </Text>

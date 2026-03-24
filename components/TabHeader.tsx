@@ -6,6 +6,7 @@ import React from 'react';
 import { View, StyleSheet, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
+import { useResponsive } from '../lib/useResponsive';
 
 /** Exact content height below safe area Scans canonical (slightly larger: ~82). */
 export const HEADER_CONTENT_HEIGHT = 82;
@@ -18,6 +19,7 @@ export interface TabHeaderProps {
 export function TabHeader({ children, style }: TabHeaderProps) {
  const insets = useSafeAreaInsets();
  const { t } = useTheme();
+ const { isTablet } = useResponsive();
  const totalHeight = insets.top + HEADER_CONTENT_HEIGHT;
  const headerBg = t.colors.headerBg ?? t.colors.headerBackground;
 
@@ -28,6 +30,7 @@ export function TabHeader({ children, style }: TabHeaderProps) {
  {
  height: totalHeight,
  paddingTop: insets.top,
+ paddingHorizontal: isTablet ? 32 : 20,
  backgroundColor: headerBg,
  },
  style,

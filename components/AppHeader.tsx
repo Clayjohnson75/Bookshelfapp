@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronBackIcon } from './ChevronBackIcon';
 import { useTheme } from '../theme/ThemeProvider';
 import { HEADER_CONTENT_HEIGHT } from './TabHeader';
+import { useResponsive } from '../lib/useResponsive';
 
 type AppHeaderProps = {
   title: string;
@@ -15,6 +16,7 @@ type AppHeaderProps = {
 export function AppHeader({ title, onBack, rightSlot, style }: AppHeaderProps) {
   const insets = useSafeAreaInsets();
   const { t } = useTheme();
+  const { headerTitlePadding } = useResponsive();
   const bg = t.colors.headerBg ?? t.colors.headerBackground ?? t.colors.surface ?? t.colors.bg;
   const textColor = t.colors.headerText ?? t.colors.textPrimary ?? t.colors.text;
 
@@ -32,7 +34,7 @@ export function AppHeader({ title, onBack, rightSlot, style }: AppHeaderProps) {
       ]}
     >
       <View style={styles.inner}>
-        <View pointerEvents="none" style={styles.titleLayer}>
+        <View pointerEvents="none" style={[styles.titleLayer, { paddingHorizontal: headerTitlePadding }]}>
           <Text style={[styles.title, { color: textColor }]} numberOfLines={1}>
             {title}
           </Text>
@@ -73,8 +75,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    // Keep title clear of edge controls while remaining truly centered.
-    paddingHorizontal: 96,
+    // paddingHorizontal set dynamically via useResponsive().headerTitlePadding
   },
   side: {
     minWidth: 44,

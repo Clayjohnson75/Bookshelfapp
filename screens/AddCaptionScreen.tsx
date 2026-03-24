@@ -13,6 +13,7 @@ import { useRoute, useNavigation, StackActions } from '@react-navigation/native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronBackIcon, ArrowBackIcon, ArrowForwardIcon, FolderIcon } from '../components/Icons';
 import { useTheme } from '../theme/ThemeProvider';
+import { useResponsive } from '../lib/useResponsive';
 import { clearAddCaptionCallbacks, getAddCaptionCallbacks } from '../lib/addCaptionCallbacks';
 
 export type AddCaptionParams = {
@@ -98,7 +99,8 @@ export function AddCaptionScreen() {
  }
 
  const headerHeight = insets.top + 48;
- const styles = getStyles(t);
+ const { screenWidth } = useResponsive();
+ const styles = getStyles(t, screenWidth);
 
  return (
  <SafeAreaView style={[styles.container, { backgroundColor: t.colors.bg }]} edges={['left', 'right']}>
@@ -213,7 +215,7 @@ export function AddCaptionScreen() {
  );
 }
 
-function getStyles(t: import('../theme/tokens').ThemeTokens) {
+function getStyles(t: import('../theme/tokens').ThemeTokens, screenWidth: number) {
  return StyleSheet.create({
  flex1: {
  flex: 1,
@@ -260,7 +262,7 @@ function getStyles(t: import('../theme/tokens').ThemeTokens) {
  },
  photo: {
  width: '100%',
- height: 220,
+ height: Math.round(Math.min(280, Math.max(180, screenWidth * 0.56))),
  borderRadius: 18,
  backgroundColor: t.colors.surface2,
  },

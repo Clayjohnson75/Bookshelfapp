@@ -86,7 +86,8 @@ export default function PhotosScreen() {
  }, [user?.uid])
  );
 
- const photoColumns = (screenWidth || 375) > 900 ? 3 : 2;
+ const sw = screenWidth || 375;
+ const photoColumns = sw > 900 ? 3 : sw >= 600 ? 3 : 2;
  const gridPadding = 12;
  const gridGap = 8;
  const maxGridWidth = 900;
@@ -139,7 +140,10 @@ const displayedPhotos = useMemo(() => {
      const hasBooks = bookCount > 0;
      const showableStatus = photo.status === 'complete' || photo.status === 'draft' || photo.status === 'stalled';
      if (hasBooks) return true;
+     // Only show photos with no books if they have a confirmed storage_path (uploaded to server).
+     // This prevents orphaned local_pending/draft photos from cluttering the Photos tab.
      if (!showableStatus) return false;
+     if (!photo.storage_path) return false;
      return true;
    })
    .map((photo) => {

@@ -12,6 +12,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { AppState, type NativeEventSubscription } from 'react-native';
 import { getApiBaseUrl } from './getEnvVar';
 import { getScanAuthHeaders } from './authHeaders';
 import { toScanJobId } from './scanId';
@@ -21,6 +22,7 @@ import { supabase } from './supabase';
 const UPLOAD_QUEUE_PREFIX = 'upload_queue_';
 const WORKER_INTERVAL_MS = 2500;
 const MAX_CONCURRENT = 2;
+const MAX_RETRIES = 10;
 
 /** In-flight Step C (create scan job) per photoId. Second invocation for same photo awaits this and reuses jobId — prevents duplicate scan jobs. */
 const stepCInFlightByPhotoId = new Map<string, Promise<string>>();
@@ -209,6 +211,8 @@ function backoffMs(retries: number): number {
 
 let workerTimerId: ReturnType<typeof setInterval> | null = null;
 let getCurrentUserId: (() => string | null) | null = null;
+let appStateSubscription: NativeEventSubscription | null = null;
+let workerPausedByBackground = false;
 /** Called when a photo is uploaded to Storage and photos row is upserted; client can update local state. */
 let onPhotoUploaded: ((userId: string, photoId: string, storagePath: string) => void) | null = null;
 /** Called when scan job is complete and books are imported; client can set photo status 'complete'. */
@@ -700,9 +704,24 @@ async function workerTick(): Promise<void> {
 
   const list = await getQueue(userId);
   const now = Date.now();
+
+  // Mark items that exceeded MAX_RETRIES as permanently failed.
+  let mutated = false;
+  for (const item of list) {
+    if (item.state === 'failed' && item.retries >= MAX_RETRIES) {
+      item.state = 'failed';
+      item.errorMessage = `Permanently failed after ${MAX_RETRIES} retries`;
+      item.retryAfter = undefined;
+      mutated = true;
+      onPhotoUploadFailed?.(userId, item.photoId, item.errorMessage);
+      logger.warn('[UPLOAD_QUEUE]', 'max retries exceeded', { photoId: item.photoId.slice(0, 8), retries: item.retries });
+    }
+  }
+  if (mutated) await persistQueue(userId, list);
+
   const runnable = list.filter(
     (i) =>
-      (i.state === 'queued' || i.state === 'uploaded' || (i.state === 'failed' && (i.retryAfter ?? 0) <= now)) &&
+      (i.state === 'queued' || i.state === 'uploaded' || (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
       i.state !== 'canceled'
   );
   const toProcess = runnable.slice(0, MAX_CONCURRENT);
@@ -722,8 +741,28 @@ async function workerTick(): Promise<void> {
 export function startUploadQueueWorker(getUserId: () => string | null): void {
   if (workerTimerId != null) return;
   getCurrentUserId = getUserId;
+  workerPausedByBackground = false;
   workerTimerId = setInterval(workerTick, WORKER_INTERVAL_MS);
   workerTick();
+
+  // Pause worker when app goes to background to save battery / avoid iOS suspension issues.
+  if (!appStateSubscription) {
+    appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && workerPausedByBackground) {
+        workerPausedByBackground = false;
+        if (workerTimerId == null && getCurrentUserId) {
+          workerTimerId = setInterval(workerTick, WORKER_INTERVAL_MS);
+          workerTick();
+          logger.info('[UPLOAD_QUEUE]', 'worker resumed (foreground)');
+        }
+      } else if (nextState === 'background' && workerTimerId != null) {
+        clearInterval(workerTimerId);
+        workerTimerId = null;
+        workerPausedByBackground = true;
+        logger.info('[UPLOAD_QUEUE]', 'worker paused (background)');
+      }
+    });
+  }
   logger.info('[UPLOAD_QUEUE]', 'worker started');
 }
 
@@ -732,6 +771,11 @@ export function stopUploadQueueWorker(): void {
     clearInterval(workerTimerId);
     workerTimerId = null;
   }
+  if (appStateSubscription) {
+    appStateSubscription.remove();
+    appStateSubscription = null;
+  }
+  workerPausedByBackground = false;
   getCurrentUserId = null;
   logger.info('[UPLOAD_QUEUE]', 'worker stopped');
 }

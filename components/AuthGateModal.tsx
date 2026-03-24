@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
+import { useResponsive } from '../lib/useResponsive';
 
 interface AuthGateModalProps {
   visible: boolean;
@@ -16,6 +17,7 @@ export const AuthGateModal: React.FC<AuthGateModalProps> = ({
   onCreateAccount,
 }) => {
   const { t } = useTheme();
+  const { typeScale, isTablet } = useResponsive();
   return (
     <Modal visible={visible} transparent animationType="fade">
       <TouchableOpacity
@@ -23,9 +25,9 @@ export const AuthGateModal: React.FC<AuthGateModalProps> = ({
         activeOpacity={1}
         onPress={onClose}
       >
-        <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={[styles.card, { backgroundColor: t.colors.card }]}>
-          <Text style={[styles.title, { color: t.colors.text }]}>Create an account to save your library</Text>
-          <Text style={[styles.subtitle, { color: t.colors.textMuted }]}>
+        <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={[styles.card, { backgroundColor: t.colors.card, maxWidth: isTablet ? 400 : 340 }]}>
+          <Text style={[styles.title, { color: t.colors.text, fontSize: Math.round(18 * typeScale) }]}>Create an account to save your library</Text>
+          <Text style={[styles.subtitle, { color: t.colors.textMuted, fontSize: Math.round(14 * typeScale) }]}>
             Sign in or create an account to add books to your library and sync across devices.
           </Text>
           <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.colors.primary }]} onPress={onSignIn}>

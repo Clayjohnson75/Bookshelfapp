@@ -194,5 +194,24 @@ export function enforcePhotoStorageStatus(photo: Photo): Photo {
     return { ...photo, status: 'complete' };
   }
 
+  // C: demote stale in-flight states from AsyncStorage reload.
+  // On app restart, photos stuck in 'local_pending', 'uploading', or 'stalled'
+  // should be demoted to 'draft' so the upload queue worker can re-process them
+  // instead of the badge showing "Uploading…" forever.
+  if (
+    (photo.status === 'local_pending' || photo.status === 'uploading' || photo.status === 'stalled') &&
+    !hasStorage
+  ) {
+    return { ...photo, status: 'draft' };
+  }
+
+  // D: in-flight state but storage is confirmed — promote to complete
+  if (
+    (photo.status === 'local_pending' || photo.status === 'uploading' || photo.status === 'stalled') &&
+    hasStorage
+  ) {
+    return { ...photo, status: 'complete' };
+  }
+
   return photo;
 }

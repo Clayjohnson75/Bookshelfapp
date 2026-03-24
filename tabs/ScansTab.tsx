@@ -23,7 +23,6 @@ import {
  Keyboard,
  LayoutAnimation,
  GestureResponderEvent,
- useWindowDimensions,
  InteractionManager,
 } from 'react-native';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
@@ -55,6 +54,7 @@ import {
 } from '../components/Icons';
 import { useAuth, isGuestUser, GUEST_USER_ID } from '../auth/SimpleAuthContext';
 import { useProfileStats } from '../contexts/ProfileStatsContext';
+import { useResponsive } from '../lib/useResponsive';
 import { scanJobKey, lastBatchKey, PENDING_APPROVE_ACTION_KEY, PENDING_GUEST_KEY, activeBatchKey, scanBatchKey, importedPhotoKeysKey } from '../lib/cacheKeys';
 import { uuidv4 } from '../lib/scanId';
 import { dedupBy, photoStableKey, photoStableKeyMatchMethod, canonicalPhotoListKey, mergePhotosPreferRemote, mergePhotosPreferLocal, mergePreserveLocalUris, dedupePhotosByJobId } from '../lib/dedupBy';
@@ -438,16 +438,9 @@ export const ScansTab: React.FC = () => {
  const { signedUrlMap } = useSignedPhotoUrlMap();
  const photoSignedUrlPersistRef = usePhotoSignedUrlPersistRef();
  const { t } = useTheme();
- const { width: screenWidthRaw, height: screenHeightRaw } = useWindowDimensions();
-
- useEffect(() => {
- }, []);
-
- const screenWidth = screenWidthRaw || 375; // Fallback to default width
- const screenHeight = screenHeightRaw || 667; // Fallback to default height
+ const { screenWidth, pendingGridColumns, typeScale } = useResponsive();
  const PENDING_GRID_HORIZONTAL_PADDING = 20;
  const PENDING_GRID_GAP = 10;
- const pendingGridColumns = screenWidth >= 768 ? 6 : 4;
  const pendingGridContainerWidth = Math.min(screenWidth, 900);
  const pendingGridItemWidth = Math.max(
  1,
@@ -456,7 +449,6 @@ export const ScansTab: React.FC = () => {
  pendingGridColumns
  )
  );
- const typeScale = screenWidth > 1000 ? 1.14 : screenWidth > 800 ? 1.1 : screenWidth > 600 ? 1.05 : 1;
  
  const styles = useMemo(
  () => getStyles(screenWidth, t, pendingGridColumns, typeScale),
@@ -690,12 +682,15 @@ const processingUrisRef = useRef<Set<string>>(new Set());
 React.useEffect(() => {
   if (setOnCancelComplete) {
     const callback = () => {
-      logger.info('[CANCEL] ScansTab cleanup: aborting UI fetches + clearing batch (active jobs durable store cleared on explicit cancel only)');
+      logger.info('[CANCEL] ScansTab cleanup: aborting UI fetches + clearing batch + resetting pending/photos state');
       abortInFlightRequests();
       lastCanceledAtRef.current = Date.now();
       const batchId = activeBatchRef.current?.batchId;
       clearActiveBatch(batchId, 'cancel');
       if (user?.uid) clearActiveScanJobIdsStore(user.uid).catch(() => {});
+      // Clear in-memory pending books and photos so they don't persist after "Clear All Data".
+      setPendingBooks([]);
+      setPhotos([]);
       setScanQueue((prev) => {
         const isInFlight = (s: ScanQueueItem['status']) =>
           s === 'queued' || s === 'pending' || s === 'processing';
@@ -749,9 +744,14 @@ React.useEffect(() => {
  React.useEffect(() => {
    setOnPhotoUploaded((uid, photoId, storagePath) => {
      if (uid !== user?.uid) return;
+     // Resolve through alias map: upload queue uses Step A photoId, but React state
+     // may have canonicalized it to a different ID during scan import.
+     // Also match on localId: scan import may have changed p.id to canonical UUID
+     // but preserved the original as p.localId.
+     const resolvedId = photoIdAliasRef.current[photoId] ?? photoId;
      setPhotos((prev) => {
        const updated = prev.map((p) =>
-         p.id === photoId ? { ...p, status: 'complete' as const, storage_path: storagePath } : p
+         (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status: 'complete' as const, storage_path: storagePath } : p
        );
        const key = `photos_${user?.uid}`;
        if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
@@ -760,9 +760,10 @@ React.useEffect(() => {
    });
    setOnPhotoComplete((uid, photoId) => {
      if (uid !== user?.uid) return;
+     const resolvedId = photoIdAliasRef.current[photoId] ?? photoId;
      setPhotos((prev) => {
        const updated = prev.map((p) =>
-         p.id === photoId ? { ...p, status: 'complete' as const } : p
+         (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status: 'complete' as const } : p
        );
        const key = `photos_${user?.uid}`;
        if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
@@ -771,11 +772,12 @@ React.useEffect(() => {
    });
    setOnPhotoUploadFailed((uid, photoId, errorMessage, statusCode) => {
      if (uid !== user?.uid) return;
+     const resolvedId = photoIdAliasRef.current[photoId] ?? photoId;
      // 413 (or other STEP_C failure): set scan_failed so we stop auto-retry and show "Failed — tap to retry".
      const status: 'scan_failed' | 'failed_upload' = statusCode === 413 ? 'scan_failed' : 'failed_upload';
      setPhotos((prev) => {
        const updated = prev.map((p) =>
-         p.id === photoId ? { ...p, status, errorMessage: errorMessage ?? undefined } : p
+         (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status, errorMessage: errorMessage ?? undefined } : p
        ) as Photo[];
        const key = `photos_${user?.uid}`;
        if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
@@ -887,10 +889,15 @@ React.useEffect(() => {
  persistBatch(next);
  return next;
  });
- const scanGraceMs = 3000;
+ const scanGraceMs = 5000;
  scanTerminalGraceUntilRef.current = Date.now() + scanGraceMs;
  emitLibraryInvalidate({ reason: 'scan_terminal', jobId: canonicalId });
- triggerDataRefreshRef.current();
+ // For failed/canceled: no books to write, safe to refresh from server immediately.
+ // For completed: defer until after the IIFE writes books to AsyncStorage (see finally below),
+ // so loadUserData never reads a stale AsyncStorage that is missing the just-scanned books.
+ if (status !== 'completed') {
+   triggerDataRefreshRef.current();
+ }
  if (status === 'completed') {
    (async () => {
      try {
@@ -953,9 +960,16 @@ React.useEffect(() => {
        const snap = booksSnapshotRef.current;
        if (user && snap) {
          const newPhotos = [...(photosRef.current ?? []), newPhoto];
-         saveUserData(newPendingForSave, snap.approved ?? [], snap.rejected ?? [], newPhotos).catch(() => {});
+         // await so the finally block fires after books are committed to AsyncStorage.
+         await saveUserData(newPendingForSave, snap.approved ?? [], snap.rejected ?? [], newPhotos);
+         // Mark snapshot committed so focus-refresh debounce guard protects against stale reloads.
+         lastSnapshotCommittedAtRef.current = Date.now();
        }
-     } catch (_) {}
+     } catch (_) {
+     } finally {
+       // Books (if any) are now in AsyncStorage. loadUserData will read a fresh snapshot.
+       triggerDataRefreshRef.current();
+     }
      })();
  }
  }, [persistBatch, removeActiveScanJobId, setScanQueue, user]);
@@ -1899,7 +1913,7 @@ useEffect(() => {
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   const draftPhotos = photos.filter(
-    p => (p as any).status === 'draft' && p.id && UUID_RE.test(p.id ?? '')
+    p => ((p as any).status === 'draft' || (p as any).status === 'local_pending' || (p as any).status === 'uploading') && p.id && UUID_RE.test(p.id ?? '')
   );
   if (draftPhotos.length === 0) return;
 
@@ -1928,7 +1942,7 @@ useEffect(() => {
         draftRepairTimersRef.current.delete(photoId);
         setPhotos(prev => {
           const stillDraft = prev.find(
-            p => p.id === photoId && (p as any).status === 'draft' && !((p as any).storage_path as string | undefined)?.trim?.().length
+            p => p.id === photoId && ((p as any).status === 'draft' || (p as any).status === 'local_pending' || (p as any).status === 'uploading') && !((p as any).storage_path as string | undefined)?.trim?.().length
           );
           if (!stillDraft) return prev;
           logger.debug('[PHOTO_DRAFT_REPAIR]', 'watchdog expired — marking stalled and retrying', { photoId: photoId.slice(0, 8) });
@@ -2076,15 +2090,22 @@ const [hasOrphanedBooks, setHasOrphanedBooks] = useState(false);
 
  // Stage the image for the caption screen (same as library picker path).
  // enqueueBatch runs only after the user confirms/skips caption.
- pendingUploadBatchRef.current = [item];
- setPendingImages([item]);
- setCurrentImageIndex(0);
+ // IMPORTANT: Append to existing batch ref instead of overwriting, so Photo 1
+ // isn't lost if Photo 2 is taken while Photo 1's caption screen is still open.
+ const existing = pendingUploadBatchRef.current;
+ if (existing && existing.length > 0 && !existing.some(e => e.scanId === scanId)) {
+   pendingUploadBatchRef.current = [...existing, item];
+ } else {
+   pendingUploadBatchRef.current = [item];
+ }
+ setPendingImages(pendingUploadBatchRef.current);
+ setCurrentImageIndex(pendingUploadBatchRef.current.length - 1);
  setPendingImageUri(uri);
  setCaptionText('');
 
  if (__DEV__) logger.debug('[SCAN] camera caption gate scanId=' + scanId.slice(0, 8));
 
- openAddCaptionScreen([item]);
+ openAddCaptionScreen(pendingUploadBatchRef.current);
  };
 
  useEffect(() => {
@@ -3380,8 +3401,12 @@ supabasePhotos = null;
  return [...byKey.values()];
  };
 
+// Re-read pending from AsyncStorage: the Supabase fetch above can take 1-3s.
+// saveUserData may have written new scan books during that time; use the freshest value.
+const freshSavedPending = !isGuest ? await AsyncStorage.getItem(userPendingKey) : null;
+const pendingStorageStr = freshSavedPending ?? savedPending;
 // Canonicalize source_photo_id at the storage ingestion edge so merge never sees local aliases.
-const localPending: Book[] = resolveBookPhotoIdsCb(savedPending ? (() => { try { return JSON.parse(savedPending); } catch { return []; } })() : [], 'rehydrate');
+const localPending: Book[] = resolveBookPhotoIdsCb(pendingStorageStr ? (() => { try { return JSON.parse(pendingStorageStr); } catch { return []; } })() : [], 'rehydrate');
 // Exclude any book with deleted_at set so stale cache after "clear library" is never treated as active (matches fetchAll filter).
 const localApproved: Book[] = resolveBookPhotoIdsCb(
   savedApproved ? (() => {
@@ -5289,6 +5314,13 @@ logger.error('Error parsing rejected books:', e);
  }
 
  // ── Focus-refresh debounce ────────────────────────────────────────────────
+ // Skip if within scan-terminal grace window. handleJobTerminalStatus sets this
+ // when a job completes; saveUserData may still be writing to AsyncStorage.
+ // loadUserData would read stale data and overwrite the pending books just set.
+ if (scanTerminalGraceUntilRef.current > 0 && Date.now() < scanTerminalGraceUntilRef.current) {
+   logger.logThrottle('focus_skip_terminal_grace', 10_000, 'debug', '[FOCUS_REFRESH_SKIP]', '', { reason: 'scan_terminal_grace', graceRemaining: scanTerminalGraceUntilRef.current - Date.now() });
+   return;
+ }
  // Skip if: (a) a snapshot was committed within FOCUS_REFRESH_DEBOUNCE_MS — avoids
  // a redundant fetch when approve or boot just ran, OR (b) an active batch is in
  // progress — scanning/approving should not be interrupted by a parallel merge.
@@ -5499,7 +5531,8 @@ logger.error('Error parsing rejected books:', e);
  scanIds: [],
  status: 'processing',
  resultsByJobId,
- importedJobIds: []
+ importedJobIds: [],
+ expectedJobCount: jobIds.length,
  };
  logQueueDelta('import_complete', jobIds.length, 'import complete');
  const queueItems: ScanQueueItem[] = jobIds.map((jid) => {
@@ -6993,6 +7026,14 @@ if (!verifyOk) logger.warn('[APPROVE] verify failed', { reason: verifyReason });
 
 // Photos and approved already merged/persisted above; just update in-memory photos and stamp.
 setPhotos(photosWithAccepted);
+// Stamp the post-approve lock immediately so any concurrent loadUserData
+// (e.g. triggered by scan IIFE finally blocks) cannot overwrite canonical
+// photo/book IDs with local AsyncStorage IDs before APPROVE_FULL_REFRESH runs.
+// Without this, loadUserData reaches its lock check (line ~3704) before
+// APPROVE_FULL_REFRESH sets the lock (800ms later), overwrites canonical IDs
+// with local IDs, and APPROVE_FULL_REFRESH then merges 2 local + 2 canonical
+// = 4 phantom photos (and 6 duplicate books).
+postApproveLockUntilRef.current = Date.now() + POST_APPROVE_LOCK_MS;
 const _stateCommittedAt = Date.now();
 perfLog('approve', 'state_committed', { stateCommittedAt: _stateCommittedAt, booksApproved: mergedApproved.length });
 requestAnimationFrame(() => {
@@ -8260,6 +8301,7 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
     status: 'queued',
     resultsByJobId: {},
     importedJobIds: [],
+    expectedJobCount: records.length,
   };
 
   setScanQueue((prev) => [...prev, ...records]);
@@ -8274,6 +8316,19 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
   // When Step A added items to the durable queue, the worker will process; do not run the enqueueImage loop (avoid double upload/scan).
   if (usedDurableQueue) {
     logger.info('[STEP_A]', 'durable queue used — worker will process upload + scan');
+    // The durable queue worker handles concurrency internally — clear this batch from
+    // inFlightBatchIdsRef so the serial gate doesn't permanently block subsequent scans.
+    // Without this, photo 2 stays buffered in serialScanQueueRef forever because the
+    // poll loop (which normally calls inFlightBatchIdsRef.delete) never runs.
+    inFlightBatchIdsRef.current.delete(batchId);
+    // Drain any items that were buffered while we were setting up.
+    const serialItems = serialScanQueueRef.current.splice(0);
+    if (serialItems.length > 0) {
+      logger.info('[BATCH_SERIAL_DRAIN_DURABLE]', { bufferedItems: serialItems.length, prevBatchId: batchId });
+      enqueueBatch(serialItems).catch((err) => {
+        logger.error('[BATCH_SERIAL_DRAIN_DURABLE] failed to start next batch', err);
+      });
+    }
     return;
   }
 
@@ -8748,9 +8803,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
           const nextPending = [...prevPending, ...deduped];
           clearSelection();
           if (user && (deduped.length > 0 || nextPhotos.length > 0)) {
-            setTimeout(() => {
-              saveUserData(nextPending, approvedBooks, rejectedBooks, nextPhotos).catch(err => logger.error('Error saving batch user data:', err));
-            }, 0);
+            // Save to AsyncStorage immediately (not setTimeout) so triggerDataRefresh
+            // at line 8795 reads fresh data when it reloads from AsyncStorage.
+            saveUserData(nextPending, approvedBooks, rejectedBooks, nextPhotos).catch(err => logger.error('Error saving batch user data:', err));
           }
           return nextPending;
         });
@@ -8765,10 +8820,26 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
           if (__DEV__) logger.info('[BATCH] patchScanJobPhotoId failed (non-fatal):', err);
         }
       }
-      scanTerminalGraceUntilRef.current = Date.now() + 3000;
+      scanTerminalGraceUntilRef.current = Date.now() + 15000;
       emitLibraryInvalidate({ reason: 'scan_terminal', jobId: scanJobId ?? jobId, photoId: canonicalPhotoId });
       triggerDataRefreshRef.current();
       if (LOG_TRACE) logger.debug(`[BATCH] job ${index}/${total} completed, +${uniqueNewPending.length} pending`);
+
+      // Fetch covers for books that arrived without coverUrl (cover worker may still be running).
+      // Fire-and-forget so it doesn't block the batch pipeline; updates pendingBooks when ready.
+      const booksNeedingCovers = uniqueNewPending.filter((b: Book) => !b.coverUrl);
+      if (booksNeedingCovers.length > 0) {
+        loadCoversForBooks(booksNeedingCovers).then((coverMap) => {
+          if (coverMap.size === 0) return;
+          setPendingBooks(prev => prev.map(b => {
+            const key = (b as any).workKey ?? (b as any).work_key;
+            const url = key ? coverMap.get(key) : undefined;
+            if (url && !b.coverUrl) return { ...b, coverUrl: url };
+            return b;
+          }));
+          logger.info('[SCAN_COVERS_BACKFILL]', { jobId, resolved: coverMap.size, needed: booksNeedingCovers.length });
+        }).catch(() => {});
+      }
     } catch (importErr: any) {
       // Server job succeeded but local import threw. Mark as import_failed so user can retry
       // without re-scanning. Books from the server are preserved on the queue item.
@@ -8901,12 +8972,12 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
         prevBatchId: batchId,
         prevOutcome: outcome,
       });
-      // Small delay so React state from this batch's terminal processing flushes first.
-      setTimeout(() => {
-        enqueueBatch(serialItems).catch((err) => {
-          logger.error('[BATCH_SERIAL_DRAIN] failed to start next batch', err);
-        });
-      }, 300);
+      // Start the next batch immediately instead of with a 300ms delay.
+      // The delay was causing a window where activeBatch became null, making
+      // the previous batch's results flicker (disappear then reappear).
+      enqueueBatch(serialItems).catch((err) => {
+        logger.error('[BATCH_SERIAL_DRAIN] failed to start next batch', err);
+      });
     }
   }
   // ─────────────────────────────────────────────────────────────────────────────
@@ -10008,6 +10079,7 @@ logger.error(` [BATCH ${batchId}] [${index}/${total}] Error polling job ${jobId}
  status: 'processing',
  resultsByJobId: {},
  importedJobIds: [],
+ expectedJobCount: nextQueue.length,
  };
  setActiveBatch(newBatch);
  persistBatch(newBatch);
@@ -11209,25 +11281,63 @@ const closeScanModal = () => {
  setPendingBooks([]);
  clearSelection();
 
- // Also remove incomplete books from photos
- const updatedPhotos = photos.map(photo => ({
- ...photo,
- books: photo.books.filter(book => book.status !== 'incomplete')
- }));
- 
+ // Remove photos that only had pending/incomplete books (no approved books).
+ // Photos with approved books keep their approved books; others are fully removed.
+ const updatedPhotos = photos
+   .map(photo => {
+     const approvedOnly = photo.books.filter(book => book.status === 'approved');
+     if (approvedOnly.length > 0) return { ...photo, books: approvedOnly };
+     return null; // Photo has no approved books — remove entirely
+   })
+   .filter((p): p is Photo => p !== null);
+
+ // Remove cleared photos from the upload queue so badges don't persist.
+ const removedPhotoIds = photos
+   .filter(p => !updatedPhotos.some(u => u.id === p.id))
+   .map(p => p.id)
+   .filter((id): id is string => !!id);
+ if (user && removedPhotoIds.length > 0) {
+   import('../lib/photoUploadQueue').then(({ removeFromQueue }) => {
+     for (const id of removedPhotoIds) {
+       removeFromQueue(user.uid, id).catch(() => {});
+     }
+   });
+ }
+
  setPhotos(dedupBy(updatedPhotos, photoStableKey));
- 
+
  // Don't await - run in background
  saveUserData([], approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
  logger.error('Error saving user data:', error);
  });
- }, [approvedBooks, rejectedBooks, photos, clearSelection]);
+ }, [approvedBooks, rejectedBooks, photos, clearSelection, user]);
 
  const clearSelectedBooks = async () => {
+ const removedBooks = pendingBooks.filter(book => isBookSelected(pendingBookStableKey(book)));
  const remainingBooks = pendingBooks.filter(book => !isBookSelected(pendingBookStableKey(book)));
  setPendingBooks(remainingBooks);
  clearSelection();
- await saveUserData(remainingBooks, approvedBooks, rejectedBooks, photos);
+
+ // Remove photos whose pending books were ALL cleared and have no approved books.
+ const removedPhotoIds = new Set(removedBooks.map(b => b.source_photo_id).filter(Boolean));
+ const remainingPhotoIds = new Set(remainingBooks.map(b => b.source_photo_id).filter(Boolean));
+ const approvedPhotoIds = new Set(approvedBooks.map(b => b.source_photo_id).filter(Boolean));
+ const photosToRemove = [...removedPhotoIds].filter(id => !remainingPhotoIds.has(id) && !approvedPhotoIds.has(id));
+ const updatedPhotos = photosToRemove.length > 0
+   ? photos.filter(p => !photosToRemove.includes(p.id ?? ''))
+   : photos;
+
+ // Clean upload queue for removed photos.
+ if (user && photosToRemove.length > 0) {
+   import('../lib/photoUploadQueue').then(({ removeFromQueue }) => {
+     for (const id of photosToRemove) {
+       if (id) removeFromQueue(user.uid, id).catch(() => {});
+     }
+   });
+ }
+
+ setPhotos(dedupBy(updatedPhotos, photoStableKey));
+ await saveUserData(remainingBooks, approvedBooks, rejectedBooks, updatedPhotos);
  };
 
  // Helper to merge books from Supabase with existing state
@@ -11530,7 +11640,8 @@ const approveSelectedBooks = useCallback(async () => {
     );
 
     clearSelection();
-    refreshProfileStats();
+    // Pass approved books directly so counts update instantly (don't wait for AsyncStorage write).
+    refreshProfileStats(updatedApproved);
 
     Promise.all([
       AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedApproved)),
@@ -13302,10 +13413,11 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  data={pendingListRows}
  renderItem={renderPendingRow}
  keyExtractor={keyExtractorPendingRow}
- initialNumToRender={8}
- maxToRenderPerBatch={6}
- windowSize={6}
+ initialNumToRender={12}
+ maxToRenderPerBatch={10}
+ windowSize={7}
  removeClippedSubviews={true}
+ extraData={selectedBooks.size + excludedIds.size + (selectAllMode ? 1 : 0)}
  contentContainerStyle={[
  { backgroundColor: t.colors.screenBackground, paddingBottom: tabBarHeight + 24, flexGrow: 1 },
  pendingBooks.length > 0 && selectedCount > 0 && {

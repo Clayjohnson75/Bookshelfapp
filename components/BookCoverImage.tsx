@@ -66,10 +66,10 @@ const styles = StyleSheet.create({
  borderColor: '#d1d5db',
  },
  textCoverTitle: {
- fontSize: 11,
+ fontSize: 12,
  fontWeight: '700',
  color: '#374151',
  textAlign: 'center',
- lineHeight: 14,
+ lineHeight: 15,
  },
 });
