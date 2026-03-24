@@ -13194,9 +13194,23 @@ const keyExtractorPendingRow = useCallback((item: PendingListRow): string => {
 }, []);
 
 const recentScansFooter = useMemo(() => {
+  // Build a set of photo IDs that still have live books (pending or approved).
+  // This prevents stale photos from showing after their books were cleared.
+  const livePhotoIds = new Set<string>();
+  for (const b of pendingBooks) {
+    const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
+    if (pid) livePhotoIds.add(pid);
+  }
+  for (const b of approvedBooks) {
+    const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
+    if (pid) livePhotoIds.add(pid);
+  }
   const completePhotos = photos.filter((photo) => {
     if (photo.status === 'discarded' || (photo as any).deleted_at) return false;
-    return (typeof photo.approved_count === 'number' && photo.approved_count > 0) || (photo.books?.length ?? 0) > 0;
+    // Show photo if it has live books in pending or approved state, OR has approved_count from server.
+    const hasLiveBooks = photo.id ? livePhotoIds.has(photo.id) : false;
+    const hasApprovedCount = typeof photo.approved_count === 'number' && photo.approved_count > 0;
+    return hasLiveBooks || hasApprovedCount;
   });
   const recentCanonical = completePhotos.length === 0 ? [] : dedupBy(completePhotos, canonicalPhotoListKey);
   const recentListFull = recentCanonical.slice().reverse().map((p) => ({
@@ -13301,7 +13315,7 @@ const recentScansFooter = useMemo(() => {
       )}
     </View>
   );
-}, [photos, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
+}, [photos, pendingBooks, approvedBooks, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
 
  if (isCameraActive) {
  return (
