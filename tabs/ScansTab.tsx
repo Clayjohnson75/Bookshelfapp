@@ -8874,11 +8874,6 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
   // Wait for all polls to complete (each job already merged into state and triggered cover fetch when it completed)
   await Promise.all(pollPromises);
 
-  // Trigger data refresh ONCE after entire batch is complete (not per-job).
-  // This ensures all locally-imported pending books are stable before the server
-  // merge runs, preventing the "first scan disappears" race condition.
-  triggerDataRefreshRef.current();
-
   // Deregister from in-flight set — results from this batch are no longer expected.
   inFlightBatchIdsRef.current.delete(batchId);
   // If this batch was running alongside another that finished first and claimed activeBatch,
@@ -8989,6 +8984,14 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
     }
   }
   // ─────────────────────────────────────────────────────────────────────────────
+
+  // Trigger data refresh ONLY when no more batches are queued/in-flight.
+  // If a serial drain just started a new batch, defer the refresh until that
+  // batch completes — otherwise loadUserData's server merge overwrites the
+  // new batch's locally-imported pending books (the "scan 1 disappears" bug).
+  if (serialItems.length === 0 && inFlightBatchIdsRef.current.size === 0) {
+    triggerDataRefreshRef.current();
+  }
 
   // Batch is terminal; progress bar and queue are cleared by the activeBatch effect when status becomes terminal.
   } finally {
