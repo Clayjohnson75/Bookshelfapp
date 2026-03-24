@@ -341,11 +341,11 @@ export function PhotoTile({
           <Text style={_styles.tapToRetryText}>Tap to retry</Text>
         </Pressable>
       )}
-      {/* Placeholder with Uploading… when no local_uri, no signed_url, no storage_path — tile still exists */}
+      {/* Uploading overlay: centered spinner + label over the photo tile */}
       {isUploading && (
-        <View style={_styles.uploadingBadge} pointerEvents="none">
-          <ActivityIndicator size="small" color="rgba(255,255,255,0.9)" />
-          <Text style={_styles.uploadingText} numberOfLines={1}>Uploading…</Text>
+        <View style={_styles.uploadingOverlay} pointerEvents="none">
+          <ActivityIndicator size="small" color="#fff" />
+          <Text style={_styles.uploadingLabel}>Uploading</Text>
         </View>
       )}
       {/* Upload/scan failed: keep tile visible, show "Upload failed — Retry" (or scan_failed message) */}
@@ -378,24 +378,19 @@ const _styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  uploadingBadge: {
-    position: 'absolute',
-    bottom: 3,
-    left: 3,
-    right: 3,
-    flexDirection: 'row',
+  uploadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    borderRadius: 12,
   },
-  uploadingText: {
-    color: 'rgba(255,255,255,0.95)',
-    fontSize: 10,
-    flexShrink: 1,
+  uploadingLabel: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   loadingThumbBadge: {
     position: 'absolute',

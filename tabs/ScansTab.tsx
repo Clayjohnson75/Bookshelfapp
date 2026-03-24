@@ -11029,6 +11029,17 @@ const closeScanModal = () => {
  setRejectedBooks(updatedRejected);
  setPhotos(dedupBy(updatedPhotos, photoStableKey));
 
+ // Remove from upload queue so worker doesn't re-create the photo after deletion.
+ if (user) {
+   import('../lib/photoUploadQueue').then(({ removeFromQueue }) => {
+     removeFromQueue(user.uid, photoId).catch(() => {});
+     // Also remove by localId in case photo was canonicalized
+     if (photoToDelete.localId && photoToDelete.localId !== photoId) {
+       removeFromQueue(user.uid, photoToDelete.localId).catch(() => {});
+     }
+   });
+ }
+
  if (!isPendingScan) {
  logger.info('[DELETE_PHOTO_LOCAL_APPLY]', {
  photoId,
