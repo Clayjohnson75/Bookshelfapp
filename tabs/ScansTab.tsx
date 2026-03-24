@@ -1377,6 +1377,9 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
    () => books.filter((b) => ((b as any).status === 'pending' || (b as any).status === 'incomplete') && !(b as any).deleted_at),
    [books]
  );
+ // Ref for current pending books so loadUserData merge can access fresh value (not stale closure).
+ const pendingBooksRef = useRef(pendingBooks);
+ pendingBooksRef.current = pendingBooks;
  const rejectedBooks = React.useMemo(
    () => books.filter((b) => (b as any).status === 'rejected' && !(b as any).deleted_at),
    [books]
@@ -4114,7 +4117,16 @@ if (approvedNormalized.length === 0 && localApproved.length > 0 && !isRecentAuth
     serverRejectedCount: rejectedNormalized.length,
   });
   const localCanonical = ensureApprovedOnePerBookKey(localApproved);
-  setBooksFromBuckets(localCanonical, pendingNormalized, rejectedNormalized);
+  // Merge server pending with local-only pending (books from recent scans not yet synced).
+  // Without this, navigating away and back wipes locally-imported pending books.
+  const pendingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+  const serverPendingKeys = new Set(pendingNormalized.map(b => pendingKey(b)));
+  const currentPending = pendingBooksRef.current;
+  const localOnlyPending = currentPending.filter(b =>
+    (b.status === 'pending' || b.status === 'incomplete') && !serverPendingKeys.has(pendingKey(b))
+  );
+  const mergedPending = [...pendingNormalized, ...localOnlyPending];
+  setBooksFromBuckets(localCanonical, mergedPending, rejectedNormalized);
   await Promise.all([
     AsyncStorage.setItem(userPendingKey, JSON.stringify(pendingNormalized)),
     AsyncStorage.setItem(userApprovedKey, JSON.stringify(localCanonical)),
@@ -4140,11 +4152,19 @@ const applyRehydrateMerge = () => {
       approved: books.filter((b: Book) => (b as any).status === 'approved').length,
     });
   }
+  // Merge server pending with local-only pending (books from recent scans not yet synced).
+  const pKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+  const serverPKeys = new Set(pendingNormalized.map(b => pKey(b)));
+  const currentP = pendingBooksRef.current;
+  const localOnlyP = currentP.filter(b =>
+    (b.status === 'pending' || b.status === 'incomplete') && !serverPKeys.has(pKey(b))
+  );
+  const mergedP = [...pendingNormalized, ...localOnlyP];
   logLibraryStateWrite('loadUserData_applyRehydrateMerge', {
     approved: approvedNormalized.length,
-    pending: pendingNormalized.length,
+    pending: mergedP.length,
   });
-  setBooksFromBuckets(approvedNormalized, pendingNormalized, rejectedNormalized);
+  setBooksFromBuckets(approvedNormalized, mergedP, rejectedNormalized);
 };
 if (totalMerged > 50) {
   InteractionManager.runAfterInteractions(() => applyRehydrateMerge());
