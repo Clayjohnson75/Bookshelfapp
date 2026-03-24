@@ -8822,7 +8822,10 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
       }
       scanTerminalGraceUntilRef.current = Date.now() + 15000;
       emitLibraryInvalidate({ reason: 'scan_terminal', jobId: scanJobId ?? jobId, photoId: canonicalPhotoId });
-      triggerDataRefreshRef.current();
+      // DO NOT call triggerDataRefreshRef here — it fires loadUserData() which re-fetches
+      // from the server and can overwrite locally-imported pending books from a concurrent
+      // job that hasn't synced to the server yet. This was the root cause of "first scan
+      // disappears when second scan arrives." The refresh is called once after BATCH_COMPLETE.
       if (LOG_TRACE) logger.debug(`[BATCH] job ${index}/${total} completed, +${uniqueNewPending.length} pending`);
 
       // Fetch covers for books that arrived without coverUrl (cover worker may still be running).
@@ -8870,6 +8873,11 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
 
   // Wait for all polls to complete (each job already merged into state and triggered cover fetch when it completed)
   await Promise.all(pollPromises);
+
+  // Trigger data refresh ONCE after entire batch is complete (not per-job).
+  // This ensures all locally-imported pending books are stable before the server
+  // merge runs, preventing the "first scan disappears" race condition.
+  triggerDataRefreshRef.current();
 
   // Deregister from in-flight set — results from this batch are no longer expected.
   inFlightBatchIdsRef.current.delete(batchId);

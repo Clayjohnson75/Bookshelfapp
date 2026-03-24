@@ -6,31 +6,40 @@
   <link rel="icon" href="/logo.png" type="image/png">
   <link rel="apple-touch-icon" href="/logo.png">
   <title>Bookshelf Scanner - Organize Your Book Collection</title>
+  <meta name="description" content="Scan your bookshelf and automatically catalog your library. Organize your book collection with powerful scanning technology.">
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    :root {
+      --bg: #F6F3EE;
+      --bg-secondary: #F0ECE6;
+      --surface: #FAF8F5;
+      --accent: #C9A878;
+      --accent-hover: #B8956A;
+      --text: #1B1B1B;
+      --text-secondary: #6B6B6B;
+      --text-muted: #9A9A9A;
+      --border: #E6E1D8;
+      --header-bg: #ECE6DD;
+      --divider: #E6E1D8;
     }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: #f8f6f0;
+      background: var(--bg);
       min-height: 100vh;
-      color: #2c3e50;
+      color: var(--text);
     }
     .header {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 20px 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 0;
       position: sticky;
       top: 0;
       z-index: 100;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
     }
     .header-content {
-      max-width: 1200px;
+      max-width: 960px;
       margin: 0 auto;
-      padding: 0 20px;
+      padding: 0 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -39,222 +48,159 @@
       display: flex;
       align-items: center;
       text-decoration: none;
-      color: #2c3e50;
+      color: var(--text);
       font-weight: 700;
-      font-size: 18px;
-    }
-    .logo-link img {
-      width: 32px;
-      height: 32px;
-      margin-right: 10px;
-    }
-    .header-right {
-      display: flex;
-      gap: 15px;
-      align-items: center;
-    }
-    .nav-buttons {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 0;
-      position: sticky;
-      top: 72px;
-      z-index: 99;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
-    }
-    .nav-buttons-content {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 20px;
-      display: flex;
+      font-size: 17px;
       gap: 10px;
     }
-    .nav-button {
-      padding: 12px 24px;
-      background: transparent;
-      border: none;
-      color: #2c3e50;
+    .logo-link img { width: 28px; height: 28px; border-radius: 6px; }
+    .nav {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .nav a {
+      padding: 8px 16px;
+      text-decoration: none;
+      color: var(--text-secondary);
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 8px;
+      transition: all 0.15s;
+    }
+    .nav a:hover { background: var(--bg-secondary); color: var(--text); }
+    .nav a.active { color: var(--accent-hover); background: var(--bg-secondary); }
+    .get-app {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--text);
+      color: var(--surface);
+      padding: 8px 16px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+    .get-app:hover { opacity: 0.85; }
+
+    .hero {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 80px 24px;
+      display: flex;
+      align-items: center;
+      gap: 60px;
+    }
+    .hero-text { flex: 1; }
+    .hero-visual {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hero-visual img { width: 140px; height: 140px; border-radius: 28px; }
+    .hero h1 {
+      font-size: 40px;
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.5px;
+      margin-bottom: 16px;
+    }
+    .hero h1 span { color: var(--accent-hover); }
+    .hero p {
+      font-size: 18px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 32px;
+      max-width: 440px;
+    }
+    .hero-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--text);
+      color: #fff;
+      padding: 14px 28px;
+      border-radius: 12px;
+      text-decoration: none;
       font-size: 16px;
       font-weight: 600;
-      cursor: pointer;
-      border-bottom: 3px solid transparent;
-      transition: all 0.2s;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      transition: transform 0.15s, opacity 0.15s;
     }
-    .nav-button:hover {
-      color: #007AFF;
-      background: #f8f6f0;
-    }
-    .nav-button.active {
-      color: #007AFF;
-      border-bottom-color: #007AFF;
-    }
-    .nav-button.profile-button {
-      margin-left: auto;
-    }
-    .get-app-link {
-      color: #007AFF;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 14px;
-    }
-    .get-app-link:hover {
-      text-decoration: underline;
-    }
-    .container {
-      max-width: 600px;
-      width: 100%;
-      padding: 60px 40px;
-      text-align: center;
-    }
-    .logo {
-      width: 120px;
-      height: 120px;
-      margin: 0 auto 30px;
-      display: block;
-    }
-    h1 {
-      color: #2c3e50;
-      font-size: 36px;
-      margin-bottom: 15px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-    }
-    .subtitle {
-      color: #2c3e50;
-      font-size: 18px;
-      margin-bottom: 40px;
-      line-height: 1.6;
-      font-weight: 500;
-    }
-    .cta-button {
-      display: inline-block;
-      background: #34495e;
-      color: #ecf0f1;
-      padding: 16px 40px;
-      border-radius: 30px;
-      text-decoration: none;
-      font-size: 18px;
-      font-weight: 600;
-      margin-top: 20px;
-      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
-      box-shadow: 0 4px 15px rgba(52, 73, 94, 0.3);
-      border: 1px solid #2c3e50;
-      letter-spacing: 0.8px;
-    }
-    .cta-button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(52, 73, 94, 0.4);
-      background: #2c3e50;
-    }
-    .footer {
-      margin-top: 40px;
-      padding-top: 30px;
-      border-top: 1px solid #e0e0e0;
-      color: #2c3e50;
-      font-size: 14px;
-    }
-    .footer a {
-      color: #007AFF;
-      text-decoration: none;
-      margin: 0 10px;
-      font-weight: 500;
-    }
-    .footer a:hover {
-      text-decoration: underline;
-    }
-    @media (max-width: 600px) {
-      .container {
-        padding: 40px 20px;
-      }
-      h1 {
-        font-size: 28px;
-      }
-      .subtitle {
-        font-size: 16px;
-      }
-    }
-    .container {
-      max-width: 1200px;
+    .hero-cta:hover { transform: translateY(-1px); opacity: 0.9; }
+
+    .features {
+      max-width: 960px;
       margin: 0 auto;
-      padding: 60px 40px;
+      padding: 0 24px 80px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px 24px;
+    }
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--bg-secondary);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      margin-bottom: 16px;
+    }
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
       text-align: center;
     }
-    .logo {
-      width: 120px;
-      height: 120px;
-      margin: 0 auto 30px;
-      display: block;
-    }
-    h1 {
-      color: #2c3e50;
-      font-size: 36px;
-      margin-bottom: 15px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-    }
-    .subtitle {
-      color: #2c3e50;
-      font-size: 18px;
-      margin-bottom: 40px;
-      line-height: 1.6;
-      font-weight: 500;
-    }
-    .cta-button {
-      display: inline-block;
-      background: #34495e;
-      color: #ecf0f1;
-      padding: 16px 40px;
-      border-radius: 30px;
-      text-decoration: none;
-      font-size: 18px;
-      font-weight: 600;
-      margin-top: 20px;
-      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
-      box-shadow: 0 4px 15px rgba(52, 73, 94, 0.3);
-      border: 1px solid #2c3e50;
-      letter-spacing: 0.8px;
-    }
-    .cta-button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(52, 73, 94, 0.4);
-      background: #2c3e50;
-    }
-    .footer {
-      margin-top: 40px;
-      padding-top: 30px;
-      border-top: 1px solid #e0e0e0;
-      color: #2c3e50;
-      font-size: 14px;
+    .footer-content {
+      max-width: 960px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      flex-wrap: wrap;
     }
     .footer a {
-      color: #007AFF;
+      color: var(--text-secondary);
       text-decoration: none;
-      margin: 0 10px;
+      font-size: 13px;
       font-weight: 500;
+      transition: color 0.15s;
     }
-    .footer a:hover {
-      text-decoration: underline;
-    }
-    @media (max-width: 600px) {
-      .container {
-        padding: 40px 20px;
+    .footer a:hover { color: var(--accent-hover); }
+
+    @media (max-width: 768px) {
+      .hero {
+        flex-direction: column-reverse;
+        padding: 48px 24px;
+        gap: 32px;
+        text-align: center;
       }
-      h1 {
-        font-size: 28px;
-      }
-      .subtitle {
-        font-size: 16px;
-      }
-      .nav-buttons-content {
-        padding: 0 10px;
-        overflow-x: auto;
-      }
-      .nav-button {
-        padding: 10px 16px;
-        font-size: 14px;
-        white-space: nowrap;
-      }
+      .hero h1 { font-size: 30px; }
+      .hero p { margin-left: auto; margin-right: auto; font-size: 16px; }
+      .hero-visual img { width: 100px; height: 100px; }
+      .features { grid-template-columns: 1fr; }
+      .get-app { display: none; }
     }
   </style>
 </head>
@@ -265,49 +211,51 @@
         <img src="/logo.png" alt="Bookshelf Scanner">
         <span>Bookshelf Scanner</span>
       </a>
-      <div class="header-right">
-        <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="get-app-link" target="_blank">Get the App</a>
-      </div>
+      <nav class="nav">
+        <a href="/" class="active">Home</a>
+        <a href="/search">Search</a>
+        <a href="/profile">Profile</a>
+      </nav>
+      <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="get-app" target="_blank">Get the App</a>
     </div>
   </div>
 
-  <div class="nav-buttons">
-    <div class="nav-buttons-content">
-      <button class="nav-button active" onclick="window.location.href='/'">Home</button>
-      <button class="nav-button" onclick="window.location.href='/search'">Search</button>
-      <button class="nav-button profile-button" onclick="handleProfileClick()" id="profileButton">Profile</button>
+  <div class="hero">
+    <div class="hero-text">
+      <h1>Scan your bookshelf.<br><span>Catalog instantly.</span></h1>
+      <p>Point your camera at any bookshelf and let AI identify every title. Build your personal library in seconds, not hours.</p>
+      <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="hero-cta" target="_blank">Download on the App Store</a>
+    </div>
+    <div class="hero-visual">
+      <img src="/logo.png" alt="Bookshelf Scanner">
     </div>
   </div>
 
-  <div class="container">
-    <img src="/logo.png" alt="Bookshelf Scanner Logo" class="logo">
-    <h1>Bookshelf Scanner</h1>
-    <p class="subtitle">
-      Organize your book collection with powerful scanning technology. 
-      Scan your bookshelf and automatically catalog your library.
-    </p>
-    
-    <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="cta-button" target="_blank">
-      Download on the App Store
-    </a>
-    
-    <div class="footer">
+  <div class="features">
+    <div class="feature-card">
+      <div class="feature-icon">&#128247;</div>
+      <h3>Instant Scanning</h3>
+      <p>Snap a photo of your bookshelf and our AI identifies every title and author automatically.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#128218;</div>
+      <h3>Smart Library</h3>
+      <p>Organize books into collections, track what you've read, and discover your reading patterns.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#127760;</div>
+      <h3>Share Your Shelf</h3>
+      <p>Create a public profile to share your library with friends and the reading community.</p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="footer-content">
       <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Use</a>
       <a href="/support.html">Support</a>
       <a href="mailto:bookshelfscanapp@gmail.com">Contact</a>
     </div>
   </div>
-
-  <script>
-    function handleProfileClick() {
-      window.location.href = '/profile';
-    }
-
-    // Check if user is signed in on page load (button always says "Profile")
-    window.addEventListener('DOMContentLoaded', () => {
-      // Button always says "Profile" now
-    });
-  </script>
 </body>
 </html>
-

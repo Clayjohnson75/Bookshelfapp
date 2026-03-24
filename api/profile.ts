@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Add cache control headers
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -14,32 +13,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <link rel="icon" href="/logo.png" type="image/png">
       <link rel="apple-touch-icon" href="/logo.png">
-      <title>Profile - Bookshelf Scanner</title>
+      <title>Sign In - Bookshelf Scanner</title>
       <style>
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
+        :root {
+          --bg: #F6F3EE;
+          --bg-secondary: #F0ECE6;
+          --surface: #FAF8F5;
+          --accent: #C9A878;
+          --accent-hover: #B8956A;
+          --text: #1B1B1B;
+          --text-secondary: #6B6B6B;
+          --text-muted: #9A9A9A;
+          --border: #E6E1D8;
         }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-          background: #f8f6f0;
+          background: var(--bg);
           min-height: 100vh;
-          color: #2c3e50;
+          color: var(--text);
         }
         .header {
-          background: white;
-          border-bottom: 1px solid #e0e0e0;
-          padding: 20px 0;
+          background: var(--surface);
+          border-bottom: 1px solid var(--border);
+          padding: 16px 0;
           position: sticky;
           top: 0;
           z-index: 100;
-          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
         }
         .header-content {
-          max-width: 1200px;
+          max-width: 960px;
           margin: 0 auto;
-          padding: 0 20px;
+          padding: 0 24px;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -48,159 +53,154 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           display: flex;
           align-items: center;
           text-decoration: none;
-          color: #2c3e50;
+          color: var(--text);
           font-weight: 700;
-          font-size: 18px;
-        }
-        .logo-link img {
-          width: 32px;
-          height: 32px;
-          margin-right: 10px;
-        }
-        .nav-buttons {
-          background: white;
-          border-bottom: 1px solid #e0e0e0;
-          padding: 0;
-          position: sticky;
-          top: 72px;
-          z-index: 99;
-          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
-        }
-        .nav-buttons-content {
-          max-width: 1200px;
-          margin: 0 auto;
-          padding: 0 20px;
-          display: flex;
+          font-size: 17px;
           gap: 10px;
         }
-        .nav-button {
-          padding: 12px 24px;
-          background: transparent;
-          border: none;
-          color: #2c3e50;
-          font-size: 16px;
-          font-weight: 600;
-          cursor: pointer;
-          border-bottom: 3px solid transparent;
-          transition: all 0.2s;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-        }
-        .nav-button:hover {
-          color: #007AFF;
-          background: #f8f6f0;
-        }
-        .nav-button.active {
-          color: #007AFF;
-          border-bottom-color: #007AFF;
-        }
-        .container {
-          max-width: 1200px;
-          margin: 0 auto;
-          padding: 40px 20px;
-        }
-        .signin-card {
-          max-width: 450px;
-          margin: 0 auto;
-          background: white;
-          border-radius: 12px;
-          padding: 40px;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-          border: 2px solid #34495e;
-        }
-        .signin-title {
-          font-size: 28px;
-          font-weight: 800;
-          color: #2c3e50;
-          margin-bottom: 10px;
-          text-align: center;
-        }
-        .signin-subtitle {
-          font-size: 16px;
-          color: #666;
-          margin-bottom: 30px;
-          text-align: center;
-        }
-        .form-group {
-          margin-bottom: 20px;
-        }
-        .form-label {
-          display: block;
+        .logo-link img { width: 28px; height: 28px; border-radius: 6px; }
+        .nav { display: flex; gap: 4px; align-items: center; }
+        .nav a {
+          padding: 8px 16px;
+          text-decoration: none;
+          color: var(--text-secondary);
           font-size: 14px;
           font-weight: 600;
-          color: #2c3e50;
-          margin-bottom: 8px;
+          border-radius: 8px;
+          transition: all 0.15s;
+        }
+        .nav a:hover { background: var(--bg-secondary); color: var(--text); }
+        .nav a.active { color: var(--accent-hover); background: var(--bg-secondary); }
+        .get-app {
+          display: inline-flex;
+          background: var(--text);
+          color: var(--surface);
+          padding: 8px 16px;
+          border-radius: 8px;
+          text-decoration: none;
+          font-size: 13px;
+          font-weight: 600;
+          transition: opacity 0.15s;
+        }
+        .get-app:hover { opacity: 0.85; }
+
+        .container {
+          max-width: 420px;
+          margin: 0 auto;
+          padding: 64px 24px;
+        }
+        .signin-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          padding: 36px 32px;
+        }
+        .signin-title {
+          font-size: 24px;
+          font-weight: 800;
+          margin-bottom: 6px;
+        }
+        .signin-subtitle {
+          font-size: 14px;
+          color: var(--text-secondary);
+          margin-bottom: 28px;
+        }
+        .form-group { margin-bottom: 18px; }
+        .form-label {
+          display: block;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-secondary);
+          margin-bottom: 6px;
         }
         .form-input {
           width: 100%;
-          padding: 12px 16px;
-          font-size: 16px;
-          border: 2px solid #e0e0e0;
-          border-radius: 8px;
-          background: white;
-          color: #2c3e50;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-          transition: border-color 0.2s;
+          padding: 12px 14px;
+          font-size: 15px;
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          background: var(--bg);
+          color: var(--text);
+          font-family: inherit;
+          transition: border-color 0.15s;
         }
         .form-input:focus {
           outline: none;
-          border-color: #007AFF;
+          border-color: var(--accent);
         }
         .form-button {
           width: 100%;
-          padding: 14px;
-          font-size: 16px;
+          padding: 13px;
+          font-size: 15px;
           font-weight: 600;
-          background: #34495e;
-          color: white;
+          background: var(--text);
+          color: #fff;
           border: none;
-          border-radius: 8px;
+          border-radius: 10px;
           cursor: pointer;
-          transition: background 0.2s, transform 0.2s;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-          border: 2px solid #2c3e50;
+          font-family: inherit;
+          transition: opacity 0.15s;
+          margin-top: 4px;
         }
-        .form-button:hover {
-          background: #2c3e50;
-          transform: translateY(-1px);
-        }
+        .form-button:hover { opacity: 0.85; }
         .form-button:disabled {
-          background: #ccc;
+          opacity: 0.4;
           cursor: not-allowed;
-          transform: none;
         }
         .error-message {
-          background: #fee;
-          color: #c33;
-          padding: 12px;
+          background: #FEF2F2;
+          color: #B91C1C;
+          padding: 10px 14px;
           border-radius: 8px;
-          margin-bottom: 20px;
-          font-size: 14px;
+          margin-bottom: 16px;
+          font-size: 13px;
           display: none;
+          border: 1px solid #FECACA;
         }
-        .error-message.show {
-          display: block;
+        .error-message.show { display: block; }
+        .loading-state {
+          text-align: center;
+          padding: 24px;
+          color: var(--text-muted);
+          font-size: 14px;
         }
         .signup-link {
           text-align: center;
           margin-top: 20px;
-          font-size: 14px;
-          color: #666;
+          font-size: 13px;
+          color: var(--text-secondary);
         }
         .signup-link a {
-          color: #007AFF;
+          color: var(--accent-hover);
           text-decoration: none;
           font-weight: 600;
         }
-        .signup-link a:hover {
-          text-decoration: underline;
+        .signup-link a:hover { text-decoration: underline; }
+
+        .footer {
+          border-top: 1px solid var(--border);
+          padding: 32px 24px;
+          text-align: center;
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          right: 0;
         }
+        .footer a {
+          color: var(--text-secondary);
+          text-decoration: none;
+          font-size: 13px;
+          font-weight: 500;
+          margin: 0 12px;
+          transition: color 0.15s;
+        }
+        .footer a:hover { color: var(--accent-hover); }
+
         @media (max-width: 600px) {
-          .signin-card {
-            padding: 30px 20px;
-          }
-          .signin-title {
-            font-size: 24px;
-          }
+          .container { padding: 40px 16px; }
+          .signin-card { padding: 28px 20px; }
+          .get-app { display: none; }
+          .footer { position: static; margin-top: 40px; }
         }
       </style>
     </head>
@@ -211,22 +211,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             <img src="/logo.png" alt="Bookshelf Scanner">
             <span>Bookshelf Scanner</span>
           </a>
-        </div>
-      </div>
-
-      <div class="nav-buttons">
-        <div class="nav-buttons-content">
-          <button class="nav-button" onclick="window.location.href='/'">Home</button>
-          <button class="nav-button" onclick="window.location.href='/search'">Search</button>
-          <button class="nav-button active" onclick="window.location.href='/profile'">Profile</button>
+          <nav class="nav">
+            <a href="/">Home</a>
+            <a href="/search">Search</a>
+            <a href="/profile" class="active">Profile</a>
+          </nav>
+          <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" class="get-app" target="_blank">Get the App</a>
         </div>
       </div>
 
       <div class="container">
-        <div class="signin-card" id="signinCard">
-          <h1 class="signin-title">Sign In</h1>
-          <p class="signin-subtitle">Sign in to view and edit your profile</p>
-          
+        <div id="loadingState" class="loading-state">Checking session...</div>
+
+        <div class="signin-card" id="signinCard" style="display:none;">
+          <h1 class="signin-title">Sign in</h1>
+          <p class="signin-subtitle">Access your library and profile</p>
+
           <form id="signInForm" onsubmit="handleSignIn(event)">
             <div class="form-group">
               <label class="form-label" for="email">Email or Username</label>
@@ -235,12 +235,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 class="form-input"
                 id="email"
                 name="email"
-                placeholder="Enter your email or username"
+                placeholder="you@example.com"
                 required
                 autocomplete="username"
               />
             </div>
-            
+
             <div class="form-group">
               <label class="form-label" for="password">Password</label>
               <input
@@ -248,124 +248,116 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 class="form-input"
                 id="password"
                 name="password"
-                placeholder="Enter your password"
+                placeholder="Your password"
                 required
                 autocomplete="current-password"
               />
             </div>
-            
+
             <div class="error-message" id="errorMessage"></div>
-            
+
             <button type="submit" class="form-button" id="submitButton">Sign In</button>
           </form>
-          
+
           <div class="signup-link">
-            Don't have an account? <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" target="_blank">Download the app to sign up</a>
+            No account yet? <a href="https://apps.apple.com/us/app/bookshelfscan/id6754891159" target="_blank">Download the app to sign up</a>
           </div>
         </div>
       </div>
 
+      <div class="footer">
+        <a href="/privacy.html">Privacy</a>
+        <a href="/terms.html">Terms</a>
+        <a href="/support.html">Support</a>
+      </div>
+
       <script>
-        // Check if user is signed in on page load
+        // On load: check for existing session, redirect to profile if found
         window.addEventListener('DOMContentLoaded', async () => {
-          const session = localStorage.getItem('supabase_session');
+          var loadingEl = document.getElementById('loadingState');
+          var cardEl = document.getElementById('signinCard');
+
+          var session = localStorage.getItem('supabase_session');
           if (session) {
             try {
-              const sessionData = JSON.parse(session);
-              if (sessionData?.access_token && sessionData?.refresh_token) {
+              var sessionData = JSON.parse(session);
+              if (sessionData && sessionData.access_token && sessionData.refresh_token) {
+                // Sync session cookie
                 await fetch('/api/web-sync-session', {
                   method: 'POST',
                   credentials: 'include',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ access_token: sessionData.access_token, refresh_token: sessionData.refresh_token }),
+                }).catch(function() {});
+
+                // Get username and redirect
+                var response = await fetch('/api/get-username', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session: sessionData })
                 });
-              }
-              // Get username from API
-              const response = await fetch('/api/get-username', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session: sessionData })
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                if (data.username) {
-                  // Redirect to their profile page
-                  window.location.href = \`/\${data.username}?edit=true\`;
+
+                if (response.ok) {
+                  var data = await response.json();
+                  if (data.username) {
+                    window.location.replace('/' + data.username + '?edit=true');
+                    return;
+                  }
                 }
               }
-            } catch (error) {
-              console.error('Error checking session:', error);
-              // Stay on sign-in page if error
+            } catch (e) {
+              // Session invalid, clear it
+              localStorage.removeItem('supabase_session');
             }
           }
+
+          // No valid session — show sign-in form
+          loadingEl.style.display = 'none';
+          cardEl.style.display = 'block';
         });
 
         async function handleSignIn(event) {
           event.preventDefault();
-          const email = document.getElementById('email').value.trim();
-          const password = document.getElementById('password').value;
-          const submitButton = document.getElementById('submitButton');
-          const errorDiv = document.getElementById('errorMessage');
+          var email = document.getElementById('email').value.trim();
+          var password = document.getElementById('password').value;
+          var submitButton = document.getElementById('submitButton');
+          var errorDiv = document.getElementById('errorMessage');
 
           submitButton.disabled = true;
           submitButton.textContent = 'Signing in...';
           errorDiv.classList.remove('show');
 
           try {
-            // credentials: 'include' required so browser stores Set-Cookie: sb-* from response
-            const response = await fetch('/api/web-signin', {
+            var response = await fetch('/api/web-signin', {
               method: 'POST',
               credentials: 'include',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                emailOrUsername: email,
-                password: password,
-              }),
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ emailOrUsername: email, password: password }),
             });
 
-            const data = await response.json();
+            var data = await response.json();
+            if (!response.ok) throw new Error(data.message || data.error || 'Sign in failed');
 
-            if (!response.ok) {
-              throw new Error(data.message || data.error || 'Sign in failed');
-            }
+            if (!data.session) throw new Error('No session received');
 
-            // Success! Store session and redirect to profile
-            if (data.session) {
-              localStorage.setItem('supabase_session', JSON.stringify(data.session));
-              
-              // Get username to redirect to profile
-              const usernameResponse = await fetch('/api/get-username', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session: data.session })
-              });
-              
-              if (usernameResponse.ok) {
-                const usernameData = await usernameResponse.json();
-                if (usernameData.username) {
-                  // Redirect to profile with a small delay to ensure session is stored
-                  setTimeout(() => {
-                    window.location.href = \`/\${usernameData.username}?edit=true\`;
-                  }, 100);
-                } else {
-                  console.error('No username returned from get-username API');
-                  window.location.href = '/search';
-                }
-              } else {
-                const errorData = await usernameResponse.json().catch(() => ({}));
-                console.error('Error getting username:', errorData);
-                // If profile not found error, might be a new account - redirect to search
-                if (usernameResponse.status === 404) {
-                  alert('Your profile may not be set up yet. Redirecting to search...');
-                }
-                window.location.href = '/search';
+            localStorage.setItem('supabase_session', JSON.stringify(data.session));
+
+            // Get username to redirect
+            var usernameResponse = await fetch('/api/get-username', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session: data.session })
+            });
+
+            if (usernameResponse.ok) {
+              var usernameData = await usernameResponse.json();
+              if (usernameData.username) {
+                window.location.replace('/' + usernameData.username + '?edit=true');
+                return;
               }
-            } else {
-              throw new Error('No session received');
             }
+            // Fallback
+            window.location.replace('/search');
           } catch (error) {
             errorDiv.textContent = error.message || 'Sign in failed. Please try again.';
             errorDiv.classList.add('show');
@@ -380,4 +372,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   return res.status(200).send(html);
 }
-
