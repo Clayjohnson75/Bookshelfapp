@@ -2309,10 +2309,9 @@ const [editExpanded, setEditExpanded] = useState(false);
  // so the first group in the Map is the first scan, the last is the most recent.
  const groupedByScan = new Map<string, Book[]>();
  pendingBooks.forEach(book => {
- const isPending = book.status === 'pending' || book.status === 'incomplete';
- // status is the only gate — never filter on book.id or photo presence.
- // Fresh-scan books have id=undefined until the DB write returns; they must still group.
- if (!isPending) return;
+ // Only show books with status 'pending'. Incomplete books (no author, no title, low confidence)
+ // are filtered out so they don't clutter the pending list as noise.
+ if (book.status !== 'pending') return;
  const isGuest = (book as Book & { isGuest?: boolean }).isGuest === true;
  // Group key priority: source_scan_job_id → source_photo_id → book_key (last-resort).
  // source_scan_job_id and source_photo_id come from the book's own fields, not from
@@ -8726,6 +8725,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
     try {
       if (!batchResultsMapRef.current.has(batchId)) batchResultsMapRef.current.set(batchId, []);
       batchResultsMapRef.current.get(batchId)!.push({ index, uniqueNewPending, newPhoto });
+
+      // Animate the list layout change so new books appear smoothly instead of popping in.
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
       setPhotos(prevPhotos => {
         const key = photoStableKey(newPhoto);
