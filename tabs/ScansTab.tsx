@@ -8726,9 +8726,6 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
       if (!batchResultsMapRef.current.has(batchId)) batchResultsMapRef.current.set(batchId, []);
       batchResultsMapRef.current.get(batchId)!.push({ index, uniqueNewPending, newPhoto });
 
-      // Animate the list layout change so new books appear smoothly instead of popping in.
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-
       setPhotos(prevPhotos => {
         const key = photoStableKey(newPhoto);
         const existingInState = prevPhotos.find(p => photoStableKey(p) === key);
@@ -8805,9 +8802,12 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
           const nextPending = [...prevPending, ...deduped];
           clearSelection();
           if (user && (deduped.length > 0 || nextPhotos.length > 0)) {
-            // Save to AsyncStorage immediately (not setTimeout) so triggerDataRefresh
-            // at line 8795 reads fresh data when it reloads from AsyncStorage.
-            saveUserData(nextPending, approvedBooks, rejectedBooks, nextPhotos).catch(err => logger.error('Error saving batch user data:', err));
+            // Defer AsyncStorage write so JSON.stringify doesn't block the UI thread.
+            // Books are already in React state (nextPending) so the UI updates instantly;
+            // persistence can happen after interactions are processed.
+            InteractionManager.runAfterInteractions(() => {
+              saveUserData(nextPending, approvedBooks, rejectedBooks, nextPhotos).catch(err => logger.error('Error saving batch user data:', err));
+            });
           }
           return nextPending;
         });
