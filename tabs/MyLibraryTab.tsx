@@ -2181,7 +2181,10 @@ const failedOrProcessingPhotos = useMemo(() => {
  return;
  }
  const cached = sessionHeaderCollageCacheByUser.get(userKey);
- if (cached) {
+ // Only use cache if we have enough covers. If the cache was generated from a partial
+ // load (e.g. 3 books from AsyncStorage before full merge), regenerate with full data.
+ const booksWithCovers = activeBooksForHeader.filter(b => (b as any).coverUrl || (b as any).cover_url).length;
+ if (cached && cached.length >= Math.min(booksWithCovers, 10)) {
  setHeaderCollageCovers(cached);
  return;
  }

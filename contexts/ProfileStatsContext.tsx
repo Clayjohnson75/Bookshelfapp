@@ -108,6 +108,7 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
 
  // Resolve photo IDs through the alias map so local IDs and canonical server IDs
  // for the same photo aren't counted separately (was causing 6 instead of 4).
+ // Also build a reverse map so we can resolve canonical → canonical.
  let aliasMap: Record<string, string> = {};
  try {
    const aliasRaw = await AsyncStorage.getItem(`photo_id_aliases_${user.uid}`);
@@ -116,12 +117,26 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) aliasMap = parsed;
    }
  } catch {}
+ // Build canonical set: all values in the alias map are canonical IDs.
+ // Also map canonical → canonical so both directions resolve.
+ const canonicalMap: Record<string, string> = { ...aliasMap };
+ Object.values(aliasMap).forEach(canonical => { canonicalMap[canonical] = canonical; });
  const countsByPhotoId = new Map<string, number>();
- activeArr.forEach((b: { source_photo_id?: string | null; sourcePhotoId?: string | null; photoId?: string | null }) => {
+ // Track scan_job_id → photo_id mapping so books from the same scan job
+ // count as one photo even if their source_photo_id differs.
+ const jobToPhoto = new Map<string, string>();
+ activeArr.forEach((b: any) => {
  const rawKey = getBookSourcePhotoId(b);
- if (!rawKey) return;
- // Resolve through alias map: local_abc → server_xyz
- const key = (aliasMap[rawKey] ?? rawKey).trim().toLowerCase();
+ const jobId = b.source_scan_job_id;
+ if (!rawKey && !jobId) return;
+ // Resolve through alias map
+ let key = rawKey ? (canonicalMap[rawKey] ?? rawKey).trim().toLowerCase() : '';
+ // If we've seen this job before, use the same photo key for consistency
+ if (jobId && jobToPhoto.has(jobId)) {
+   key = jobToPhoto.get(jobId)!;
+ } else if (jobId && key) {
+   jobToPhoto.set(jobId, key);
+ }
  if (key) countsByPhotoId.set(key, (countsByPhotoId.get(key) ?? 0) + 1);
  });
  if (forceUpdate || !mergeInProgressRef.current) {
