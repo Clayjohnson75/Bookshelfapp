@@ -711,7 +711,8 @@ setFolders([]);
 
  // Approval grace window: don't overwrite optimistic approved with stale server data
  // when user just approved and navigated to Profile. Server may not have the new books yet.
- const APPROVE_GRACE_MS = 15_000;
+ // 2 minutes is enough for the server to sync even on slow connections.
+ const APPROVE_GRACE_MS = 120_000;
  const hasApprovalGraceWindow = lastApprovedAt > 0 && (Date.now() - lastApprovedAt < APPROVE_GRACE_MS);
  const serverApprovedCount = supabaseBooks?.approved?.length ?? 0;
  if (hasApprovalGraceWindow && localBooksFiltered.length > 0 && serverApprovedCount < localBooksFiltered.length) {
@@ -864,21 +865,26 @@ setFolders([]);
  mergedBooks = localBooksFiltered;
  }
  
- // CRITICAL: Log if we lost any books and identify which ones (compare to filtered local, not tombstoned)
+ // SAFETY NET: if merge would drop books that exist locally, keep all local books.
+ // This prevents the "20 books → 8 books" bug where the server hasn't synced yet.
  if (localBooksFiltered.length > 0 && mergedBooks.length < localBooksFiltered.length) {
  const lostCount = localBooksFiltered.length - mergedBooks.length;
- logger.error(` WARNING: Lost ${lostCount} books during merge! (${localBooksFiltered.length} ${mergedBooks.length})`);
- 
- const mergedBookKeys = new Set(
- mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
- );
- const lostBooks = localBooksFiltered.filter(b => {
- const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
- return !mergedBookKeys.has(key);
+ logger.warn('[MYLIB_MERGE_SAFETY]', `Merge would drop ${lostCount} books — keeping local`, {
+   localApproved: localBooksFiltered.length,
+   mergedCount: mergedBooks.length,
+   serverApproved: serverApprovedCount,
  });
- 
- if (lostBooks.length > 0) {
- logger.error(` Lost books:`, lostBooks.map(b => `"${b.title}" by ${b.author || 'Unknown'}`).join(', '));
+ // Re-add any local books missing from the merge result.
+ const mergedBookKeys = new Set(
+   mergedBooks.map(b => `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`)
+ );
+ const missingLocal = localBooksFiltered.filter(b => {
+   const key = `${b.title?.toLowerCase().trim()}|${b.author?.toLowerCase().trim() || ''}`;
+   return !mergedBookKeys.has(key);
+ });
+ if (missingLocal.length > 0) {
+   mergedBooks = [...mergedBooks, ...missingLocal];
+   logger.info('[MYLIB_MERGE_SAFETY]', `Restored ${missingLocal.length} local-only books`);
  }
  }
  
