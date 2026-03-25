@@ -575,19 +575,37 @@ export async function resolveOne(
  if (normalizedAuthor === normalizedAuthor.toUpperCase() && normalizedAuthor.length > 3) {
    normalizedAuthor = normalizedAuthor.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
  }
- // OpenLibrary search first (free, no rate limit issues)
+ // OpenLibrary search: try multiple query strategies for best hit rate.
+ // Strategy 1: simplified title + author
  const olSearch = await getOlSearchCandidates(simpleTitle, normalizedAuthor || undefined);
- if (olSearch.length === 0) rejectReasons.push('openlibrary_search none_found');
  candidates.push(...olSearch);
- // If simplified title differs, also try original (some titles need the exact match)
- if (simpleTitle !== searchTitle.trim() && olSearch.length === 0) {
-   const olOriginal = await getOlSearchCandidates(searchTitle, normalizedAuthor || undefined);
-   if (olOriginal.length > 0) candidates.push(...olOriginal);
+
+ // Strategy 2: title only (no author) — some books are indexed under different author names
+ if (olSearch.length === 0) {
+   const olTitleOnly = await getOlSearchCandidates(simpleTitle, undefined);
+   candidates.push(...olTitleOnly);
  }
+
+ // Strategy 3: original unsimplified title (some need exact match including subtitle)
+ if (candidates.length === 0 && simpleTitle !== searchTitle.trim()) {
+   const titleCaseOriginal = searchTitle.trim() === searchTitle.trim().toUpperCase() && searchTitle.trim().length > 3
+     ? searchTitle.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
+     : searchTitle.trim();
+   const olOriginal = await getOlSearchCandidates(titleCaseOriginal, normalizedAuthor || undefined);
+   candidates.push(...olOriginal);
+ }
+
+ if (candidates.length === 0) rejectReasons.push('openlibrary_search none_found');
+
  // Google Books as fallback (has API key quota limits)
  const google = await getGoogleCandidates(simpleTitle, normalizedAuthor || undefined);
- if (google.length === 0) rejectReasons.push('google_books none_found');
- candidates.push(...google);
+ if (google.length === 0 && candidates.length === 0) {
+   // Try Google with title only too
+   const googleTitleOnly = await getGoogleCandidates(simpleTitle, undefined);
+   candidates.push(...googleTitleOnly);
+ }
+ if (google.length > 0) candidates.push(...google);
+ if (candidates.length === 0) rejectReasons.push('google_books none_found');
  }
 
  for (const c of candidates) {
