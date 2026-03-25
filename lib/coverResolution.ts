@@ -37,7 +37,7 @@ export async function resizeCoverForStorage(buffer: Buffer): Promise<Buffer> {
 export { buildWorkKey, normalizeAuthor };
 
 const BUCKET = 'book-covers';
-export const MISS_RETRY_HOURS = 0.5; // 30 minutes — retry failed covers sooner
+export const MISS_RETRY_HOURS = 5 / 60; // 5 minutes — retry failed covers quickly
 export const PLACEHOLDER_URL = 'https://placehold.co/128x192/e5e7eb/9ca3af?text=No+cover';
 
 export interface BookMetadata {
@@ -254,8 +254,8 @@ async function getOlSearchCandidates(title: string, author?: string): Promise<Co
  const params = new URLSearchParams();
  params.set('title', (title || '').trim());
  if (author && author.trim().toLowerCase() !== 'unknown') params.set('author', (author || '').trim());
- params.set('limit', '1');
- params.set('fields', 'cover_i,key,subject');
+ params.set('limit', '3');
+ params.set('fields', 'cover_i,key,subject,edition_key');
  const apiUrl = `https://openlibrary.org/search.json?${params.toString()}`;
  try {
  const res = await fetch(apiUrl);
@@ -263,15 +263,30 @@ async function getOlSearchCandidates(title: string, author?: string): Promise<Co
  const data = await res.json();
  const docs = data?.docs;
  if (!Array.isArray(docs) || docs.length === 0) return [];
- const doc = docs[0];
- const coverId = doc?.cover_i;
- if (typeof coverId !== 'number' || coverId <= 0) return [];
- const subjects = Array.isArray(doc?.subject) ? doc.subject.slice(0, 10) : undefined;
- const metadata: BookMetadata = subjects?.length ? { categories: subjects } : undefined;
- return [
- { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`, metadata, openlibraryCoverId: String(coverId) },
- { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/id/${coverId}-M.jpg`, metadata, openlibraryCoverId: String(coverId) },
- ];
+ const candidates: CoverCandidate[] = [];
+ // Check up to 3 results for covers (first result may not have one)
+ for (const doc of docs.slice(0, 3)) {
+   const coverId = doc?.cover_i;
+   const subjects = Array.isArray(doc?.subject) ? doc.subject.slice(0, 10) : undefined;
+   const metadata: BookMetadata = subjects?.length ? { categories: subjects } : undefined;
+   if (typeof coverId === 'number' && coverId > 0) {
+     candidates.push(
+       { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`, metadata, openlibraryCoverId: String(coverId) },
+       { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/id/${coverId}-M.jpg`, metadata, openlibraryCoverId: String(coverId) },
+     );
+     break; // Found a cover, no need to check more results
+   }
+   // No cover_i — try the work's OLID as a cover source
+   const workKey = doc?.key; // e.g. "/works/OL12345W"
+   if (workKey && typeof workKey === 'string') {
+     const olid = workKey.replace('/works/', '');
+     candidates.push(
+       { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/olid/${olid}-L.jpg`, metadata },
+       { provider: 'openlibrary', url: `https://covers.openlibrary.org/b/olid/${olid}-M.jpg`, metadata },
+     );
+   }
+ }
+ return candidates;
  } catch {
  return [];
  }
