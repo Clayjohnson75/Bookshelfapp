@@ -68,42 +68,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  MAX_LIMIT
  );
 
- let query = supabase
- .schema('private')
- .from('user_activity_stats')
- .select('*')
- .order('total_completed_scans', { ascending: false })
- .limit(limit);
-
- if (q) {
- const safeQ = q.replace(/'/g, "''");
- query = query.or(`username.ilike.%${safeQ}%,display_name.ilike.%${safeQ}%,email.ilike.%${safeQ}%`);
- }
- if (active === '7') {
- query = query.gt('scans_last_7d', 0);
- } else if (active === '30') {
- query = query.gt('scans_last_30d', 0);
- }
-
+ // Query profiles + scan_jobs + books directly (private schema views
+ // aren't accessible via PostgREST API — only public/graphql_public schemas allowed).
  try {
- const { data: rows, error } = await query;
 
- if (!error && rows && rows.length > 0) {
-   console.log('[ADMIN_STATS] requester=' + requesterId + ' ok=true rows=' + rows.length);
-   return res.status(200).json({ data: rows });
- }
-
- // Fallback: if private view fails or returns empty, query profiles + scan_jobs directly.
- if (error) console.warn('[ADMIN_STATS] view query failed, using fallback:', error.message);
-
- const { data: profiles } = await supabase
+ let profilesQuery = supabase
    .from('profiles')
    .select('id, username, display_name')
    .is('deleted_at', null)
    .limit(limit);
+ if (q) {
+   profilesQuery = profilesQuery.or(`username.ilike.%${q}%,display_name.ilike.%${q}%`);
+ }
+ const { data: profiles, error: profilesError } = await profilesQuery;
 
  if (!profiles || profiles.length === 0) {
-   return res.status(200).json({ data: [], error: error?.message || 'No profiles found' });
+   return res.status(200).json({ data: [], error: profilesError?.message || 'No profiles found' });
  }
 
  // Get scan counts per user
