@@ -268,7 +268,7 @@ for (let i = 0; i < dbRows.length; i++) {
       continue;
     }
     if (oneErr && (oneErr as any).code === '23505') {
-      let q = supabase.from('books').select('id, book_key').eq('user_id', userId).eq('title', row.title);
+      let q = supabase.from('books').select('id, book_key, status, deleted_at').eq('user_id', userId).eq('title', row.title);
       if (row.author != null && row.author !== '') {
         q = q.eq('author', row.author);
       } else {
@@ -277,6 +277,16 @@ for (let i = 0; i < dbRows.length; i++) {
       const { data: existing } = await q.limit(1).maybeSingle();
       if (existing?.id) {
         resolvedUpserted.push({ id: existing.id, book_key: (existing as any).book_key ?? row.book_key ?? '' });
+        // CRITICAL: Reset status to 'pending' and update source fields so previously
+        // approved+deleted books don't auto-appear in the library after a re-scan.
+        // The user must explicitly approve from pending again.
+        await supabase.from('books').update({
+          status: 'pending',
+          deleted_at: null,
+          source_scan_job_id: rawJobId,
+          source_photo_id: photoId,
+          updated_at: nowIso,
+        }).eq('id', existing.id);
       }
       continue;
     }
