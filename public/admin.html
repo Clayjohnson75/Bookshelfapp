@@ -76,6 +76,8 @@
     th.sortable:hover { color: var(--accent); }
     td { font-size: 13px; }
     tr:hover { background: var(--bg); }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover { background: var(--bg-secondary); }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
     .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
     .badge-completed { background: #E8F0E4; color: var(--green); }
@@ -127,6 +129,23 @@
       <button class="tab active" data-tab="users">Users</button>
       <button class="tab" data-tab="analytics">Scan Analytics</button>
       <button class="tab" data-tab="errors">Errors</button>
+    </div>
+
+    <!-- USER DETAIL (overlay) -->
+    <div id="userDetail" style="display:none;">
+      <div style="margin-bottom:16px;">
+        <button class="btn" id="backToUsers" style="font-size:13px;">Back to Users</button>
+        <span id="userDetailName" style="margin-left:12px;font-weight:600;font-size:16px;"></span>
+      </div>
+      <div id="userDetailCards" class="cards" style="margin-bottom:20px;"></div>
+      <div class="section-title">Scan History</div>
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Time</th><th>Status</th><th class="num">Books</th><th class="num">Covers</th><th class="num">Cover %</th><th class="num">Duration</th><th>Stage</th>
+        </tr></thead><tbody id="userScansTbody"></tbody></table>
+      </div>
+      <div id="userScansBooks" style="margin-top:16px;"></div>
+      <div id="userDetailLoading" class="loading" style="display:none;">Loading...</div>
     </div>
 
     <!-- USERS TAB -->
@@ -190,6 +209,45 @@
     function fmtMs(ms) { if (ms == null) return '--'; if (ms < 1000) return ms + 'ms'; return (ms / 1000).toFixed(1) + 's'; }
     function getSession() { try { var r = localStorage.getItem('supabase_session'); if (!r) return null; var s = JSON.parse(r); return s && s.access_token ? s : null; } catch(e) { return null; } }
     function getApiBase() { return window.location.origin; }
+
+    // Try to refresh an expired token
+    function tryRefreshToken() {
+      var session = getSession();
+      if (!session || !session.refresh_token) return Promise.resolve(false);
+      return fetch(getApiBase() + '/api/session-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ refresh_token: session.refresh_token })
+      })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (d && d.session && d.session.access_token) {
+          localStorage.setItem('supabase_session', JSON.stringify(d.session));
+          return true;
+        }
+        return false;
+      })
+      .catch(function() { return false; });
+    }
+
+    // Fetch with auto-retry on 401 (refresh token then retry once)
+    function adminFetch(url, opts) {
+      var session = getSession();
+      if (!session) { showSignin(); return Promise.resolve(null); }
+      var headers = Object.assign({}, opts && opts.headers, { 'Authorization': 'Bearer ' + session.access_token });
+      return fetch(url, Object.assign({}, opts, { headers: headers }))
+        .then(function(r) {
+          if (r.status === 401) {
+            return tryRefreshToken().then(function(ok) {
+              if (!ok) { showSignin(); return null; }
+              var newSession = getSession();
+              return fetch(url, Object.assign({}, opts, { headers: Object.assign({}, opts && opts.headers, { 'Authorization': 'Bearer ' + newSession.access_token }) }));
+            });
+          }
+          return r;
+        });
+    }
 
     // --- Auth ---
     var signinScreen = document.getElementById('signinScreen');
@@ -258,19 +316,79 @@
       tbody.innerHTML = '';
       sorted.forEach(function(r) {
         var tr = document.createElement('tr');
+        tr.className = 'clickable';
         tr.innerHTML = '<td>' + esc(r.username || '--') + '</td><td>' + esc(r.display_name || '--') + '</td><td>' + esc(r.email || '--') + '</td>' +
           '<td class="num">' + (r.total_completed_scans ?? '--') + '</td><td class="num">' + (r.scans_last_7d ?? '--') + '</td><td class="num">' + (r.scans_last_30d ?? '--') + '</td>' +
           '<td class="num">' + (r.total_books ?? '--') + '</td><td class="num">' + (r.avg_books_per_completed_scan ?? '--') + '</td><td>' + timeAgo(r.last_scan_at) + '</td>';
+        if (r.user_id) {
+          tr.addEventListener('click', function() { showUserDetail(r.user_id, r.username || r.display_name || 'User'); });
+        }
         tbody.appendChild(tr);
       });
       document.getElementById('meta').textContent = 'Updated ' + new Date().toLocaleTimeString() + ' \u00b7 ' + sorted.length + ' users';
     }
 
+    // --- User Detail ---
+    var userDetailEl = document.getElementById('userDetail');
+    document.getElementById('backToUsers').addEventListener('click', function() {
+      userDetailEl.style.display = 'none';
+      document.getElementById('tab-users').style.display = 'block';
+    });
+
+    function showUserDetail(userId, name) {
+      document.getElementById('tab-users').style.display = 'none';
+      userDetailEl.style.display = 'block';
+      document.getElementById('userDetailName').textContent = name;
+      document.getElementById('userDetailLoading').style.display = 'block';
+      document.getElementById('userScansTbody').innerHTML = '';
+      document.getElementById('userDetailCards').innerHTML = '';
+      document.getElementById('userScansBooks').innerHTML = '';
+
+      adminFetch('/api/admin/user-scans?userId=' + encodeURIComponent(userId))
+        .then(function(r) { if (!r) return null; return r.json(); })
+        .then(function(d) {
+          if (!d) return;
+          document.getElementById('userDetailLoading').style.display = 'none';
+          // Cards
+          var coverPct = d.totalApprovedBooks > 0 ? Math.round((d.booksWithCovers / d.totalApprovedBooks) * 100) : 0;
+          document.getElementById('userDetailCards').innerHTML =
+            '<div class="card"><div class="card-label">Total Scans</div><div class="card-value">' + d.totalScans + '</div></div>' +
+            '<div class="card"><div class="card-label">Completed</div><div class="card-value green">' + d.completedScans + '</div></div>' +
+            '<div class="card"><div class="card-label">Failed</div><div class="card-value ' + (d.failedScans > 0 ? 'red' : '') + '">' + d.failedScans + '</div></div>' +
+            '<div class="card"><div class="card-label">Approved Books</div><div class="card-value">' + d.totalApprovedBooks + '</div></div>' +
+            '<div class="card"><div class="card-label">With Covers</div><div class="card-value">' + d.booksWithCovers + '</div></div>' +
+            '<div class="card"><div class="card-label">Cover Rate</div><div class="card-value green">' + coverPct + '%</div></div>';
+
+          // Scans table
+          var stb = document.getElementById('userScansTbody');
+          stb.innerHTML = '';
+          (d.scans || []).forEach(function(s) {
+            var cvr = s.booksFound > 0 ? Math.round((s.booksWithCovers / s.booksFound) * 100) : 0;
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td>' + new Date(s.createdAt).toLocaleString() + '</td><td>' + badge(s.status) + '</td>' +
+              '<td class="num">' + s.booksFound + '</td><td class="num">' + s.booksWithCovers + '</td><td class="num">' + cvr + '%</td>' +
+              '<td class="num">' + fmtMs(s.durationMs) + '</td><td>' + esc(s.stage || '--') + '</td>';
+            stb.appendChild(tr);
+          });
+
+          // Show books from the most recent completed scan
+          var lastCompleted = (d.scans || []).find(function(s) { return s.status === 'completed' && s.bookTitles && s.bookTitles.length > 0; });
+          if (lastCompleted) {
+            var booksHtml = '<div class="section-title">Books from Latest Scan (' + lastCompleted.bookTitles.length + ')</div><div class="table-wrap"><table><thead><tr><th>Title</th><th>Author</th><th>Cover</th></tr></thead><tbody>';
+            lastCompleted.bookTitles.forEach(function(b) {
+              booksHtml += '<tr><td>' + esc(b.title) + '</td><td>' + esc(b.author || '--') + '</td><td>' + (b.hasCover ? '<span class="badge badge-completed">Yes</span>' : '<span class="badge badge-failed">No</span>') + '</td></tr>';
+            });
+            booksHtml += '</tbody></table></div>';
+            document.getElementById('userScansBooks').innerHTML = booksHtml;
+          }
+        })
+        .catch(function(e) { document.getElementById('userDetailLoading').textContent = 'Error: ' + e.message; });
+    }
+
     function fetchUsers() {
-      var session = getSession(); if (!session) { showSignin(); return; }
       document.getElementById('usersLoading').style.display = 'block';
-      fetch('/api/admin/user-stats?limit=500', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
-        .then(function(r) { if (r.status === 401) { showSignin(); return null; } if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return null; } return r.json(); })
+      adminFetch('/api/admin/user-stats?limit=500')
+        .then(function(r) { if (!r) return null; if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return null; } return r.json(); })
         .then(function(d) { if (!d) return; allRows = d.data || []; renderUsers(allRows); })
         .catch(function(e) { document.getElementById('usersError').textContent = e.message; document.getElementById('usersError').style.display = 'block'; });
     }
@@ -285,11 +403,10 @@
     var analyticsLoaded = false;
 
     function loadAnalytics() {
-      var session = getSession(); if (!session) { showSignin(); return; }
       document.getElementById('analyticsLoading').style.display = 'block';
       document.getElementById('errorsLoading').style.display = 'block';
-      fetch('/api/admin/scan-analytics', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
-        .then(function(r) { if (r.status === 401) { showSignin(); return null; } if (!r.ok) throw new Error('Failed to load'); return r.json(); })
+      adminFetch('/api/admin/scan-analytics')
+        .then(function(r) { if (!r) return null; if (!r.ok) throw new Error('Failed to load'); return r.json(); })
         .then(function(d) { if (!d) return; analyticsLoaded = true; renderAnalytics(d); renderErrors(d.recentErrors || []); })
         .catch(function(e) { document.getElementById('analyticsError').textContent = e.message; document.getElementById('analyticsError').style.display = 'block'; })
         .finally(function() { document.getElementById('analyticsLoading').style.display = 'none'; document.getElementById('errorsLoading').style.display = 'none'; });
