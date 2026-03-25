@@ -744,7 +744,11 @@ const totalScansDisplay = effectiveProgress.totalScans ?? 0;
 const completedScansDisplay = effectiveProgress.completedScans ?? 0;
 const failedScansDisplay = effectiveProgress.failedScans ?? 0;
 const canceledScansDisplay = (effectiveProgress as any).canceledScans ?? 0;
-const doneCountDisplay = completedScansDisplay + failedScansDisplay + canceledScansDisplay;
+// Count completed jobs from progressByJobId — jobs at 100% are done.
+// The durable queue updates progressByJobId but NOT scanProgress.completedScans,
+// so we need this fallback to correctly track completion.
+const progressDoneCount = Object.values(progressByJobId).filter((p) => typeof p === 'number' && p >= 100).length;
+const doneCountDisplay = Math.max(completedScansDisplay + failedScansDisplay + canceledScansDisplay, progressDoneCount);
 // In-flight count: used to keep bar visible and to stabilize denominator (never show "1/0").
 const effectiveJobIds = ((effectiveProgress as any)?.jobIds ?? []).map(canonicalJobId).filter((id): id is string => id != null);
 const activeSet = new Set([...effectiveJobIds, ...(activeScanJobIds ?? []).map((id) => canonicalJobId(id) ?? id).filter(Boolean)]);
