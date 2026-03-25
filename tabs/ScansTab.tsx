@@ -8228,6 +8228,10 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
   const genOk = captureGen();
 
   const batchId = `batch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  // Register IMMEDIATELY before any awaits. This closes the timing window where
+  // inFlightBatchIdsRef is empty between the serial drain and batch registration.
+  inFlightBatchIdsRef.current.add(batchId);
+  batchDrainingRef.current = false; // Safe to clear now — inFlightBatchIds has the new batch.
   setTraceId(makeBatchTraceId());
   const total = items.length;
  logger.trace('[BATCH_ENQUEUE_START]', 'enqueue', { batchId, count: items.length });
@@ -8361,8 +8365,7 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
   // Always promote to activeBatch and persist immediately.
   setActiveBatch(initialBatch);
   await persistBatch(initialBatch);
-  // Register this batch as in-flight so its poll callbacks are allowed to import.
-  inFlightBatchIdsRef.current.add(batchId);
+  // Already registered at batch creation (before awaits) to close the timing window.
 
   // When Step A added items to the durable queue, the worker will process; do not run the enqueueImage loop (avoid double upload/scan).
   if (usedDurableQueue) {
@@ -9048,10 +9051,11 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
         prevBatchId: batchId,
         prevOutcome: outcome,
       });
+      // batchDrainingRef is cleared inside enqueueBatch once the new batch ID is
+      // registered in inFlightBatchIdsRef (before any awaits). No .finally() needed.
       enqueueBatch(serialItems).catch((err) => {
         logger.error('[BATCH_SERIAL_DRAIN] failed to start next batch', err);
-      }).finally(() => {
-        batchDrainingRef.current = false;
+        batchDrainingRef.current = false; // Only on error — normal path clears inside enqueueBatch.
       });
     }
   }
