@@ -13267,28 +13267,24 @@ const keyExtractorPendingRow = useCallback((item: PendingListRow): string => {
   return `b-${item.group.scanJobId || item.group.photoId}-${item.groupIndex}-${item.rowIndex}`;
 }, []);
 
-// Pre-compute livePhotoIds outside the heavy useMemo so it doesn't cause full footer re-renders.
-const livePhotoIds = useMemo(() => {
+// Photo IDs that have approved books in the library (not pending — only library books).
+const approvedPhotoIds = useMemo(() => {
   const set = new Set<string>();
-  for (const b of pendingBooks) {
-    const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
-    if (pid) set.add(pid);
-  }
   for (const b of approvedBooks) {
     const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
     if (pid) set.add(pid);
   }
   return set;
-}, [pendingBooks, approvedBooks]);
+}, [approvedBooks]);
 
 const recentScansFooter = useMemo(() => {
+  // Only show photos that have approved books in the library.
   const completePhotos = photos.filter((photo) => {
     if (photo.status === 'discarded' || (photo as any).deleted_at) return false;
-    const hasLiveBooks = photo.id ? livePhotoIds.has(photo.id) : false;
+    const hasApprovedBooks = photo.id ? approvedPhotoIds.has(photo.id) : false;
     const hasApprovedCount = typeof photo.approved_count === 'number' && photo.approved_count > 0;
     const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
-    const hasServerPhoto = !!photo.storage_path && (photo.books ?? []).length > 0;
-    return hasLiveBooks || hasApprovedCount || hasApprovedInSnapshot || hasServerPhoto;
+    return hasApprovedBooks || hasApprovedCount || hasApprovedInSnapshot;
   });
   const recentCanonical = completePhotos.length === 0 ? [] : dedupBy(completePhotos, canonicalPhotoListKey);
   const recentListFull = recentCanonical.slice().reverse().map((p) => ({
@@ -13296,7 +13292,7 @@ const recentScansFooter = useMemo(() => {
     thumbnailUri: p.thumbnail_uri ?? p.uri ?? null,
   }));
   const recentCount = recentListFull.length;
-  const PREVIEW_THUMBS = 8;
+  const PREVIEW_THUMBS = 3;
   const previewList = recentListFull.slice(0, PREVIEW_THUMBS);
   if (__DEV__ && recentCount > 0) {
     logger.every('recent_scans_strip', 2000, 'debug', '[RECENT_SCANS]', '', { recentScansLength: recentCount });
@@ -13393,7 +13389,7 @@ const recentScansFooter = useMemo(() => {
       )}
     </View>
   );
-}, [photos, livePhotoIds, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
+}, [photos, approvedPhotoIds, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
 
  if (isCameraActive) {
  return (
