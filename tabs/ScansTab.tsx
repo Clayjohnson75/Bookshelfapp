@@ -13741,8 +13741,8 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  presentationStyle="fullScreen"
  onRequestClose={() => setShowAllScansModal(false)}
  >
- <SafeAreaView style={[styles.allScansModalContainer, { backgroundColor: t.colors.bg }]} edges={['top', 'left', 'right']}>
- <View style={[styles.allScansModalHeader, { borderBottomColor: t.colors.separator }]}>
+ <View style={[styles.allScansModalContainer, { backgroundColor: t.colors.bg }]}>
+ <View style={[styles.allScansModalHeader, { borderBottomColor: t.colors.separator, paddingTop: insets.top + 12 }]}>
  <TouchableOpacity
  onPress={() => setShowAllScansModal(false)}
  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
@@ -13811,7 +13811,7 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  ));
  })()}
  </ScrollView>
- </SafeAreaView>
+ </View>
  </Modal>
 
  {/* Rejected Books section removed per request */}
