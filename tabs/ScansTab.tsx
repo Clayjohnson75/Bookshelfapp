@@ -8978,11 +8978,25 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
     }
 
   return { scanId, status: result.status, books: result.books };
+  }).catch((err) => {
+    // Catch individual poll failures so one failed job doesn't kill the entire batch.
+    logger.error('[JOB_POLL_FAILED]', { scanId, jobId, error: err?.message ?? 'unknown' });
+    return { scanId, status: 'failed' as const, books: [] as any[] };
   });
 });
 
-  // Wait for all polls to complete (each job already merged into state and triggered cover fetch when it completed)
-  await Promise.all(pollPromises);
+  // Wait for all polls to settle — use allSettled so one job's failure doesn't kill the whole batch.
+  // Each job already merged into state and triggered cover fetch when it completed.
+  const pollResults = await Promise.allSettled(pollPromises);
+  const failedPolls = pollResults.filter(r => r.status === 'rejected');
+  if (failedPolls.length > 0) {
+    logger.warn('[BATCH_POLL_FAILURES]', {
+      batchId: batchId.slice(-8),
+      total: pollResults.length,
+      failed: failedPolls.length,
+      reasons: failedPolls.map(r => (r as PromiseRejectedResult).reason?.message ?? 'unknown').slice(0, 3),
+    });
+  }
 
   // Deregister from in-flight set — results from this batch are no longer expected.
   inFlightBatchIdsRef.current.delete(batchId);
