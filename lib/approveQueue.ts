@@ -201,9 +201,29 @@ async function processOneJob(userId: string, job: ApproveQueueItem): Promise<voi
     const userPhotosKey = `photos_${userId}`;
 
     // Persist by book ID: do not collapse by book_key. Approve selected N books → N must stay in approved list.
+    // CRITICAL: MERGE with existing approved books — don't replace the entire list.
+    // The user may have previously approved books that aren't in this batch.
     const approvedToStore = result.approvedWithRealIds;
+    let mergedApproved = approvedToStore;
+    try {
+      const existingRaw = await AsyncStorage.getItem(userApprovedKey);
+      if (existingRaw) {
+        const existing = JSON.parse(existingRaw);
+        if (Array.isArray(existing) && existing.length > 0) {
+          // Deduplicate by title+author (case-insensitive) to avoid duplicates.
+          const newKeys = new Set(approvedToStore.map((b: any) =>
+            `${(b.title ?? '').toLowerCase().trim()}|${(b.author ?? '').toLowerCase().trim()}`
+          ));
+          const existingNotInNew = existing.filter((b: any) => {
+            const key = `${(b.title ?? '').toLowerCase().trim()}|${(b.author ?? '').toLowerCase().trim()}`;
+            return !newKeys.has(key);
+          });
+          mergedApproved = [...approvedToStore, ...existingNotInNew];
+        }
+      }
+    } catch {}
     await Promise.all([
-      AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedToStore)),
+      AsyncStorage.setItem(userApprovedKey, JSON.stringify(mergedApproved)),
       AsyncStorage.setItem(userPendingKey, JSON.stringify(job.payload.newPending)),
       AsyncStorage.setItem(userRejectedKey, JSON.stringify(job.payload.newRejected)),
       AsyncStorage.setItem(userPhotosKey, JSON.stringify(result.newPhotosRewritten)),
