@@ -260,7 +260,7 @@ async function getOlSearchCandidates(title: string, author?: string): Promise<Co
  try {
  const res = await fetch(apiUrl);
  if (!res.ok) return [];
- const data = await res.json();
+ const data = await res.json() as { docs?: any[] };
  const docs = data?.docs;
  if (!Array.isArray(docs) || docs.length === 0) return [];
  const candidates: CoverCandidate[] = [];
@@ -375,7 +375,7 @@ async function getGoogleCandidates(title: string, author?: string): Promise<Cove
  try {
  const res = await fetch(url, { headers: { 'User-Agent': 'BookshelfScanner/1.0' } });
  if (res.status === 429 || !res.ok) return [];
- const data = await res.json();
+ const data = await res.json() as { items?: any[] };
  const items = data?.items;
  if (!Array.isArray(items) || items.length === 0) return [];
  // Check ALL results (up to 5) for cover images, not just the first one.
