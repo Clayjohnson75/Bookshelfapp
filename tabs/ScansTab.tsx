@@ -15605,12 +15605,12 @@ const getStyles = (
  pendingGridCoverWrapper: {
  width: '100%',
  position: 'relative',
+ marginBottom: 6,
  },
  pendingGridCover: {
  width: '100%',
  aspectRatio: 1 / 1.45,
  borderRadius: 8,
- marginBottom: 6,
  backgroundColor: t.colors.surface2,
  },
  /** Transparent tile: cover + author on page background (no white card). */
