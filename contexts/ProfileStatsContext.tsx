@@ -109,50 +109,15 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  setLastStableBookCount(profileBookCount);
  }
 
- // Count photos by reading the actual photos list and checking which have approved books.
- // This is the source of truth — each photo entry in photos_${uid} is unique and canonical.
- // The old approach (counting distinct source_photo_id from books) inflated because books
- // could have stale/local/aliased photo IDs for the same physical photo.
- let photoCountValue = 0;
- try {
-   const photosRaw = await AsyncStorage.getItem(`photos_${user.uid}`);
-   if (photosRaw) {
-     const photosList = JSON.parse(photosRaw);
-     if (Array.isArray(photosList)) {
-       // Collect all photo IDs and job IDs that approved books reference.
-       const approvedPhotoIds = new Set<string>();
-       const approvedJobIds = new Set<string>();
-       activeArr.forEach((b: any) => {
-         const pid = getBookSourcePhotoId(b);
-         if (pid) approvedPhotoIds.add(pid.trim().toLowerCase());
-         const jid = b.source_scan_job_id ?? b.scanJobId;
-         if (jid) approvedJobIds.add(jid);
-       });
-       // Count photos that have at least one approved book (by photo ID or job ID match).
-       photoCountValue = photosList.filter((p: any) => {
-         if (!p || !p.id) return false;
-         if ((p as any).deleted_at) return false;
-         const pId = p.id.trim().toLowerCase();
-         if (approvedPhotoIds.has(pId)) return true;
-         // Also check localId (pre-alias) in case books reference the old ID.
-         if (p.localId && approvedPhotoIds.has(p.localId.trim().toLowerCase())) return true;
-         // Check by job ID.
-         const pJobId = p.scan_job_id ?? p.jobId;
-         if (pJobId && approvedJobIds.has(pJobId)) return true;
-         return false;
-       }).length;
-     }
-   }
- } catch {}
- // Fallback: if photos list is empty/missing, count distinct source_photo_id from books.
- if (photoCountValue === 0 && activeArr.length > 0) {
-   const fallbackSet = new Set<string>();
-   activeArr.forEach((b: any) => {
-     const pid = getBookSourcePhotoId(b);
-     if (pid) fallbackSet.add(pid.trim().toLowerCase());
-   });
-   photoCountValue = fallbackSet.size;
- }
+ // Count photos: use distinct source_photo_id from approved books as the count.
+ // This is simple, stable, and doesn't depend on the photos_${uid} list matching.
+ // Each approved book carries the photo ID it came from. Distinct count = photo count.
+ const approvedPhotoIds = new Set<string>();
+ activeArr.forEach((b: any) => {
+   const pid = getBookSourcePhotoId(b);
+   if (pid) approvedPhotoIds.add(pid.trim().toLowerCase());
+ });
+ let photoCountValue = approvedPhotoIds.size;
  const distinctPhotos = { size: photoCountValue };
  if (forceUpdate || !mergeInProgressRef.current) {
  setPhotoCount(distinctPhotos.size);
