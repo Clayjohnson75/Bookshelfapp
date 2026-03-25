@@ -1439,24 +1439,31 @@ return selectedBooks.has(bookId);
 });
 logDeleteAudit(_intent, { bookCount: booksToDelete.length, bookIds: booksToDelete.map(b => b.id).filter((id): id is string => !!id).slice(0, 10), userId: user.uid });
 
-// Delete from Supabase
-const { deleteBookFromSupabase } = await import('../services/supabaseSync');
-for (const book of booksToDelete) {
-await deleteBookFromSupabase(user.uid, book);
-}
-
- // Update local state immediately
+ // Update local state IMMEDIATELY (optimistic) — don't wait for network.
+ const deletedIds = new Set(selectedBooks);
  setBooks(prev => prev.filter(book => {
  const bookId = book.id || `${book.title}_${book.author || ''}`;
- return !selectedBooks.has(bookId);
+ return !deletedIds.has(bookId);
  }));
-
- // Clear selection and exit selection mode
  setSelectedBooks(new Set());
  setIsSelectionMode(false);
 
- // Reload to ensure sync
- await loadUserData();
+ // Update profile stats instantly with the remaining approved books.
+ const remainingApproved = books.filter(book => {
+   const bookId = book.id || `${book.title}_${book.author || ''}`;
+   return !deletedIds.has(bookId) && (book as any).status === 'approved' && !(book as any).deleted_at;
+ });
+ refreshProfileStats(remainingApproved);
+
+ // Persist to AsyncStorage immediately so stats cache stays correct.
+ if (user?.uid) {
+   AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(remainingApproved)).catch(() => {});
+ }
+
+ // Delete from Supabase in background — don't block UI.
+ import('../services/supabaseSync').then(({ deleteBookFromSupabase }) => {
+   Promise.all(booksToDelete.map(book => deleteBookFromSupabase(user.uid, book).catch(() => {})));
+ }).catch(() => {});
 
  Alert.alert('Success', `${bookCount} book${bookCount === 1 ? '' : 's'} deleted.`);
  } catch (error) {
