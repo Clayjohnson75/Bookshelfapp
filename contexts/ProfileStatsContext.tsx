@@ -212,23 +212,31 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  return photoCount ?? null;
  }, [mergeInProgress, statsRefreshing, lastStablePhotoCount, photoCount]);
 
- // Load cached counts FIRST for instant display, then read full approved_books list.
- // The cache is written every time refreshProfileStats completes with real data.
+ // Load cached counts for instant display. Only call refreshProfileStats if no cache
+ // exists — otherwise the full read finds partial AsyncStorage data and overwrites
+ // the correct cached values before loadUserData completes the merge.
+ // loadUserData calls refreshProfileStats after the full merge, so counts will
+ // eventually update to authoritative values.
  useEffect(() => {
  if (!user || user.uid === GUEST_USER_ID) return;
  const cacheKey = `profile_stats_cache_${user.uid}`;
- // Step 1: Read lightweight cache (just two numbers) for instant display.
  AsyncStorage.getItem(cacheKey).then(raw => {
-   if (!raw) return;
-   try {
-     const { books, photos, authors } = JSON.parse(raw);
-     if (typeof books === 'number') { setCanonicalBookCount(books); setLastStableBookCount(books); }
-     if (typeof photos === 'number') { setPhotoCount(photos); setLastStablePhotoCount(photos); }
-     if (typeof authors === 'number') setCachedAuthorCount(authors);
-   } catch {}
- }).catch(() => {});
- // Step 2: Read full approved_books list for authoritative counts.
- refreshProfileStats();
+   if (raw) {
+     try {
+       const { books, photos, authors } = JSON.parse(raw);
+       if (typeof books === 'number') { setCanonicalBookCount(books); setLastStableBookCount(books); }
+       if (typeof photos === 'number') { setPhotoCount(photos); setLastStablePhotoCount(photos); }
+       if (typeof authors === 'number') setCachedAuthorCount(authors);
+     } catch {}
+     // Cache exists — don't call refreshProfileStats now. loadUserData will call it
+     // after the full merge with correct data. This prevents the 39→3→39 flash.
+   } else {
+     // No cache — fall back to reading approved_books (may be partial, but better than nothing).
+     refreshProfileStats();
+   }
+ }).catch(() => {
+   refreshProfileStats();
+ });
  }, [refreshProfileStats]);
 
  const value = useMemo(

@@ -2182,17 +2182,28 @@ const failedOrProcessingPhotos = useMemo(() => {
  setHeaderCollageCovers([]);
  return;
  }
+ // Wait until full data has loaded before generating collage.
+ // If we have a known book count from the stats cache, don't generate until
+ // approvedBooksOnly has at least that many books (prevents 3-cover flash).
+ const expectedCount = effectiveDisplayBookCount ?? 0;
+ const haveFullData = expectedCount === 0 || activeBooksForHeader.length >= expectedCount;
+
  const cached = sessionHeaderCollageCacheByUser.get(userKey);
- // Only use cache if we have enough covers. If the cache was generated from a partial
- // load (e.g. 3 books from AsyncStorage before full merge), regenerate with full data.
- const booksWithCovers = activeBooksForHeader.filter(b => (b as any).coverUrl || (b as any).cover_url).length;
- if (cached && cached.length >= Math.min(booksWithCovers, 10)) {
- setHeaderCollageCovers(cached);
- return;
+ if (cached && haveFullData) {
+   // Regenerate if cached covers are fewer than available (previous partial generation)
+   const booksWithCovers = activeBooksForHeader.filter(b => (b as any).coverUrl || (b as any).cover_url).length;
+   if (cached.length >= Math.min(booksWithCovers, 10)) {
+     setHeaderCollageCovers(cached);
+     return;
+   }
+ } else if (cached && !haveFullData) {
+   // Partial data — use existing cache temporarily but don't regenerate yet
+   setHeaderCollageCovers(cached);
+   return;
  }
 
  // Wait until books are loaded before first generation.
- if (!activeBooksForHeader || activeBooksForHeader.length === 0) return;
+ if (!haveFullData || !activeBooksForHeader || activeBooksForHeader.length === 0) return;
 
  const generated = computeHeaderCollageCovers();
  sessionHeaderCollageCacheByUser.set(userKey, generated);
