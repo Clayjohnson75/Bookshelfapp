@@ -910,9 +910,25 @@ React.useEffect(() => {
        if (ids.length > 0) enqueueBookEnrichmentRef.current(ids);
        if (data?.status !== 'completed' || !Array.isArray(data.books) || data.books.length === 0) return;
        const item = capturedItem;
-       const photoId = item?.photoId ?? item?.id;
+       // Try scanQueue first, then fall back to photos state (durable queue doesn't populate scanQueue).
+       let photoId = item?.photoId ?? item?.id;
+       if (!photoId) {
+         // Look up photoId from photos state by matching scan_job_id.
+         const rawJobUuid = toRawScanJobUuid(canonicalId) ?? canonicalId.replace(/^job_/, '');
+         const matchingPhoto = photosRef.current?.find((p: any) =>
+           (p.scan_job_id === rawJobUuid || p.jobId === rawJobUuid || p.scan_job_id === canonicalId || p.jobId === canonicalId)
+         );
+         photoId = matchingPhoto?.id ?? matchingPhoto?.localId;
+       }
+       // Last resort: check the server response for photo_id.
+       if (!photoId && data.books?.[0]?.source_photo_id) {
+         photoId = data.books[0].source_photo_id;
+       }
        const uri = item?.uri ?? '';
-       if (!photoId) return;
+       if (!photoId) {
+         logger.warn('[SCAN_IMPORT_SKIP]', 'no photoId found for job', { jobId: canonicalId.slice(0, 12) });
+         return;
+       }
        const rawJobUuid = toRawScanJobUuid(canonicalId) ?? canonicalId.replace(/^job_/, '');
        const photoBooks: Book[] = data.books
          .filter((b: any) => b && (b.title || b.author))
