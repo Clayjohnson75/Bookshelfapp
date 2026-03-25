@@ -898,11 +898,6 @@ React.useEffect(() => {
    triggerDataRefreshRef.current();
  }
  if (status === 'completed') {
-   // Skip if the batch pipeline is active (prevents flash from double-import).
-   if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0 || batchDrainingRef.current) {
-     // Batch still running — it will handle import. Just skip.
-     return;
-   }
    (async () => {
      try {
        const { getScanAuthHeaders } = await import('../lib/authHeaders');
