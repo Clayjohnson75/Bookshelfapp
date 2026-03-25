@@ -2620,6 +2620,8 @@ const failedOrProcessingPhotos = useMemo(() => {
         onCancelBatch={cancelActiveBatch}
         onDataCleared={() => {
           logger.debug(' Clearing local state after account clear...');
+          // Invalidate any in-progress loadUserData so it can't overwrite cleared state.
+          ++pendingLoadRequestIdRef.current;
           setBooks([]);
           setPhotos([]);
           setFolders([]);
