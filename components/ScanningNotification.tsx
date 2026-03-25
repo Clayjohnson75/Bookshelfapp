@@ -876,11 +876,25 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
    lastBarInputsRef.current = barInputs;
    logger.trace('[SCAN_BAR_INPUTS]', 'inputs changed', { activeJobId: barInputs.activeJobId, p_progressByJob: barInputs.p_progressByJob, p_serverProgress: barInputs.p_serverProgress, doneCount: barInputs.doneCount, total: barInputs.total, source: serverHasSentProgress ? 'server' : 'ramp' });
  }
- // Show per-job progress (0-100%) for the CURRENT job. The text "Processing scan 1/3"
- // already communicates which job we're on. Dividing by total caused the bar to max at
- // 28% (84/3) because doneCount stayed 0 until all jobs cycled through the poll.
+ // Weighted overall progress: sum all per-job progress values and divide by total.
+ // progressByJobId accumulates: completed jobs stay at 100, current job updates live.
+ // Jobs not yet polled default to 0. This gives accurate overall progress:
+ //   3 scans, job1=100%, job2=50%, job3=0% → (100+50+0)/3 = 50%
  const allJobsDone = total > 0 && doneCountForPercent >= total;
- const normalizedProgress = allJobsDone ? 100 : rawProgress;
+ let normalizedProgress: number;
+ if (allJobsDone) {
+   normalizedProgress = 100;
+ } else if (total > 0) {
+   const allProgress = Object.values(progressByJobId);
+   const sumProgress = allProgress.reduce((sum, p) => sum + (typeof p === 'number' ? Math.min(100, Math.max(0, p)) : 0), 0);
+   // Current job's live rawProgress may be more recent than progressByJobId entry.
+   // Use the higher of rawProgress and the tracked value for the active job.
+   const activeTracked = progressKey ? (progressByJobId[progressKey] ?? 0) : 0;
+   const liveAdjustment = Math.max(0, rawProgress - activeTracked);
+   normalizedProgress = Math.min(100, (sumProgress + liveAdjustment) / total);
+ } else {
+   normalizedProgress = rawProgress;
+ }
  const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
  const clampedProgress = clamp(Number(normalizedProgress ?? 0), 0, 100);
  // During exit phase, force 100%. Otherwise use calculated progress.
