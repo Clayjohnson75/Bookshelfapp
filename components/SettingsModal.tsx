@@ -488,6 +488,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       await AsyncStorage.removeItem(`approve_mutations_${user.uid}`);
       await AsyncStorage.setItem(`library_cleared_at_${user.uid}`, String(Date.now()));
       await resetSafetyBaselines(user.uid);
+      // Clear upload queue so zombie photos don't block future scans.
+      try {
+        const { clearQueueForUser } = await import('../lib/photoUploadQueue');
+        await clearQueueForUser(user.uid);
+      } catch {}
 
       await refreshProfileStats([]);
       // Clear cached stats so stale counts don't flash on next app load.

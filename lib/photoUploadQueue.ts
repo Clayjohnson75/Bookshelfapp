@@ -747,8 +747,29 @@ async function workerTick(): Promise<void> {
   const userId = getCurrentUserId?.() ?? null;
   if (!userId) return;
 
-  const list = await getQueue(userId);
+  let list = await getQueue(userId);
   const now = Date.now();
+
+  // Purge stale items: remove entries older than 10 minutes that are stuck in
+  // 'scan_requested' or 'processing' state. These are zombies from previous sessions
+  // whose scan jobs may have been deleted (profile clear). Without this, they loop
+  // indefinitely, blocking new scans.
+  const STALE_MS = 10 * 60 * 1000; // 10 minutes
+  const beforePurge = list.length;
+  list = list.filter((item) => {
+    const age = now - (item.createdAt ?? 0);
+    const isStuckState = item.state === 'scan_requested' || item.state === 'processing' || item.state === 'uploaded' || item.state === 'queued';
+    if (age > STALE_MS && isStuckState) {
+      logger.info('[UPLOAD_QUEUE]', 'purge stale item', { photoId: item.photoId?.slice(0, 8), state: item.state, ageMs: age });
+      completedPhotoIds.add(item.photoId);
+      return false; // remove from queue
+    }
+    return true;
+  });
+  if (list.length < beforePurge) {
+    await persistQueue(userId, list);
+    logger.info('[UPLOAD_QUEUE]', 'purged stale items', { removed: beforePurge - list.length });
+  }
 
   // Mark items that exceeded MAX_RETRIES as permanently failed.
   let mutated = false;
