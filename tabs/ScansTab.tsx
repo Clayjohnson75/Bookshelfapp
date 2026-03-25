@@ -773,16 +773,30 @@ React.useEffect(() => {
    setOnPhotoUploadFailed((uid, photoId, errorMessage, statusCode) => {
      if (uid !== user?.uid) return;
      const resolvedId = photoIdAliasRef.current[photoId] ?? photoId;
-     // 413 (or other STEP_C failure): set scan_failed so we stop auto-retry and show "Failed — tap to retry".
-     const status: 'scan_failed' | 'failed_upload' = statusCode === 413 ? 'scan_failed' : 'failed_upload';
-     setPhotos((prev) => {
-       const updated = prev.map((p) =>
-         (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status, errorMessage: errorMessage ?? undefined } : p
-       ) as Photo[];
-       const key = `photos_${user?.uid}`;
-       if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
-       return updated;
-     });
+     // 413 (or other permanent failure): set scan_failed immediately.
+     // Transient failures (network, timeout): delay status update so the retry has time
+     // to succeed before the "upload failed" banner flashes.
+     const isPermanent = statusCode === 413 || statusCode === 403 || statusCode === 401;
+     const status: 'scan_failed' | 'failed_upload' = isPermanent ? 'scan_failed' : 'failed_upload';
+     const applyFailedStatus = () => {
+       setPhotos((prev) => {
+         // Don't overwrite if photo already succeeded (retry completed while we waited).
+         const photo = prev.find((p) => p.id === photoId || p.id === resolvedId || p.localId === photoId);
+         if (photo && (photo.status === 'complete' || photo.status === 'uploaded')) return prev;
+         const updated = prev.map((p) =>
+           (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status, errorMessage: errorMessage ?? undefined } : p
+         ) as Photo[];
+         const key = `photos_${user?.uid}`;
+         if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
+         return updated;
+       });
+     };
+     if (isPermanent) {
+       applyFailedStatus();
+     } else {
+       // Delay 8s so the upload queue retry can succeed before banner shows.
+       setTimeout(applyFailedStatus, 8000);
+     }
      // Decrement in-progress: mark matching scanQueue item terminal so bar visibility recalculates (no stuck "Uploading…").
      setScanQueue((prev) =>
        prev.map((item) =>
