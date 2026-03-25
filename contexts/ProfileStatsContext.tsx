@@ -28,6 +28,8 @@ interface ProfileStatsContextType {
  lastStableBookCount: number | null;
  /** Last stable photo count; shown while !libraryHydrated or mergeInProgress. */
  lastStablePhotoCount: number | null;
+ /** Cached author count from last session. Prevents flash from 3→39 on load. */
+ cachedAuthorCount: number | null;
  /** True only after books fetch + photos fetch + merge applied. Gate collage and "—" until then. */
  libraryHydrated: boolean;
  /** True while rehydrate/merge is in progress. */
@@ -63,6 +65,7 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  const [lastStableBookCount, setLastStableBookCount] = useState<number | null>(null);
  const [photoCount, setPhotoCount] = useState<number | null>(null);
  const [lastStablePhotoCount, setLastStablePhotoCount] = useState<number | null>(null);
+ const [cachedAuthorCount, setCachedAuthorCount] = useState<number | null>(null);
  const [libraryHydrated, setLibraryHydrated] = useState(false);
  const [mergeInProgress, setMergeInProgress] = useState(false);
  const [statsRefreshing, setStatsRefreshing] = useState(false);
@@ -106,45 +109,37 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  setLastStableBookCount(profileBookCount);
  }
 
- // Resolve photo IDs through the alias map so local IDs and canonical server IDs
- // for the same photo aren't counted separately (was causing 6 instead of 4).
- // Also build a reverse map so we can resolve canonical → canonical.
- let aliasMap: Record<string, string> = {};
- try {
-   const aliasRaw = await AsyncStorage.getItem(`photo_id_aliases_${user.uid}`);
-   if (aliasRaw) {
-     const parsed = JSON.parse(aliasRaw);
-     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) aliasMap = parsed;
-   }
- } catch {}
- // Build canonical set: all values in the alias map are canonical IDs.
- // Also map canonical → canonical so both directions resolve.
- const canonicalMap: Record<string, string> = { ...aliasMap };
- Object.values(aliasMap).forEach(canonical => { canonicalMap[canonical] = canonical; });
- const countsByPhotoId = new Map<string, number>();
- // Track scan_job_id → photo_id mapping so books from the same scan job
- // count as one photo even if their source_photo_id differs.
- const jobToPhoto = new Map<string, string>();
+ // Count distinct photos by source_scan_job_id (1 job = 1 photo, never aliased).
+ // Fall back to source_photo_id only for legacy books without a job ID.
+ // This replaces the fragile alias-map approach that kept inflating counts.
+ const distinctPhotos = new Set<string>();
  activeArr.forEach((b: any) => {
- const rawKey = getBookSourcePhotoId(b);
- const jobId = b.source_scan_job_id;
- if (!rawKey && !jobId) return;
- // Resolve through alias map
- let key = rawKey ? (canonicalMap[rawKey] ?? rawKey).trim().toLowerCase() : '';
- // If we've seen this job before, use the same photo key for consistency
- if (jobId && jobToPhoto.has(jobId)) {
-   key = jobToPhoto.get(jobId)!;
- } else if (jobId && key) {
-   jobToPhoto.set(jobId, key);
- }
- if (key) countsByPhotoId.set(key, (countsByPhotoId.get(key) ?? 0) + 1);
+   const jobId = b.source_scan_job_id ?? b.scanJobId;
+   if (jobId) { distinctPhotos.add(jobId); return; }
+   const photoId = getBookSourcePhotoId(b);
+   if (photoId) distinctPhotos.add(photoId.trim().toLowerCase());
  });
  if (forceUpdate || !mergeInProgressRef.current) {
- setPhotoCount(countsByPhotoId.size);
- setLastStablePhotoCount(countsByPhotoId.size);
+ setPhotoCount(distinctPhotos.size);
+ setLastStablePhotoCount(distinctPhotos.size);
  } else {
- setPhotoCount(countsByPhotoId.size);
- setLastStablePhotoCount(countsByPhotoId.size);
+ setPhotoCount(distinctPhotos.size);
+ setLastStablePhotoCount(distinctPhotos.size);
+ }
+ // Count distinct authors for cache.
+ const authorSet = new Set<string>();
+ activeArr.forEach((b: any) => {
+   const author = (b.author ?? '').trim().toLowerCase();
+   if (author) authorSet.add(author);
+ });
+ setCachedAuthorCount(authorSet.size);
+ // Persist counts to lightweight cache for instant display on next app open.
+ if (user?.uid) {
+   AsyncStorage.setItem(`profile_stats_cache_${user.uid}`, JSON.stringify({
+     books: profileBookCount,
+     photos: distinctPhotos.size,
+     authors: authorSet.size,
+   })).catch(() => {});
  }
  } catch {
  if (!mergeInProgressRef.current) {
@@ -182,12 +177,22 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  return photoCount ?? null;
  }, [mergeInProgress, statsRefreshing, lastStablePhotoCount, photoCount]);
 
- // Load counts immediately on mount (and when user changes) so profile never shows "—".
- // Also persist last known counts so they're available instantly on next app open.
+ // Load cached counts FIRST for instant display, then read full approved_books list.
+ // The cache is written every time refreshProfileStats completes with real data.
  useEffect(() => {
  if (!user || user.uid === GUEST_USER_ID) return;
- // Read counts from approved_books list. This is async so counts start as null
- // (displayed as empty string) until the read completes (~50ms).
+ const cacheKey = `profile_stats_cache_${user.uid}`;
+ // Step 1: Read lightweight cache (just two numbers) for instant display.
+ AsyncStorage.getItem(cacheKey).then(raw => {
+   if (!raw) return;
+   try {
+     const { books, photos, authors } = JSON.parse(raw);
+     if (typeof books === 'number') { setCanonicalBookCount(books); setLastStableBookCount(books); }
+     if (typeof photos === 'number') { setPhotoCount(photos); setLastStablePhotoCount(photos); }
+     if (typeof authors === 'number') setCachedAuthorCount(authors);
+   } catch {}
+ }).catch(() => {});
+ // Step 2: Read full approved_books list for authoritative counts.
  refreshProfileStats();
  }, [refreshProfileStats]);
 
@@ -196,6 +201,7 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  canonicalBookCount,
  lastStableBookCount,
  lastStablePhotoCount,
+ cachedAuthorCount,
  libraryHydrated,
  mergeInProgress,
  statsRefreshing,
@@ -208,7 +214,7 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  lastApprovedAt,
  setLastApprovedAt,
  }),
- [canonicalBookCount, lastStableBookCount, lastStablePhotoCount, libraryHydrated, mergeInProgress, statsRefreshing, displayBookCount, displayPhotoCount, refreshProfileStats, startRehydrate, completeRehydrate, endRehydrate, lastApprovedAt]
+ [canonicalBookCount, lastStableBookCount, lastStablePhotoCount, cachedAuthorCount, libraryHydrated, mergeInProgress, statsRefreshing, displayBookCount, displayPhotoCount, refreshProfileStats, startRehydrate, completeRehydrate, endRehydrate, lastApprovedAt]
  );
 
  return (

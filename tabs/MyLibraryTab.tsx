@@ -126,7 +126,7 @@ export const MyLibraryTab: React.FC = () => {
  );
  
   const { user, session, signOut, authReady, loading: authLoading } = useAuth();
-  const { displayBookCount, displayPhotoCount, lastStableBookCount, lastStablePhotoCount, refreshProfileStats, mergeInProgress, libraryHydrated, lastApprovedAt } = useProfileStats();
+  const { displayBookCount, displayPhotoCount, lastStableBookCount, lastStablePhotoCount, cachedAuthorCount, refreshProfileStats, mergeInProgress, libraryHydrated, lastApprovedAt } = useProfileStats();
   // Show the best available count immediately — prefer canonical, fall back to stable cache.
   const effectiveDisplayBookCount = displayBookCount ?? lastStableBookCount ?? null;
   const effectiveDisplayPhotoCount = displayPhotoCount ?? lastStablePhotoCount ?? null;
@@ -366,10 +366,12 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  }, [authorsSortedForView, authorsSearchQuery]);
 
  const uniqueAuthorsCount = authorsWithBooks.length;
- // Show live author count, but hide (empty string) while books haven't loaded yet
- // to prevent flashing a wrong number before the real data arrives.
- const booksLoaded = approvedBooksOnly.length > 0 || (effectiveDisplayBookCount != null && effectiveDisplayBookCount === 0);
- const displayAuthorsCount = booksLoaded ? uniqueAuthorsCount : '';
+ // Use cached author count from previous session until full data loads.
+ // This prevents the 3→39 flash on app reload.
+ const booksFullyLoaded = approvedBooksOnly.length >= (effectiveDisplayBookCount ?? 0);
+ const displayAuthorsCount = booksFullyLoaded
+   ? uniqueAuthorsCount
+   : (cachedAuthorCount ?? (uniqueAuthorsCount > 0 ? uniqueAuthorsCount : ''));
 
  // Sort by author's last name (fallback to title when author missing)
  const sortedDisplayedBooks = useMemo(() => {
