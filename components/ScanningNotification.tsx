@@ -876,12 +876,11 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
    lastBarInputsRef.current = barInputs;
    logger.trace('[SCAN_BAR_INPUTS]', 'inputs changed', { activeJobId: barInputs.activeJobId, p_progressByJob: barInputs.p_progressByJob, p_serverProgress: barInputs.p_serverProgress, doneCount: barInputs.doneCount, total: barInputs.total, source: serverHasSentProgress ? 'server' : 'ramp' });
  }
- // Bar must use the same 0–100 value we log. When total===0 (e.g. activeScanJobIds only, no batch), use raw server progress; else batch-weighted.
- // When all jobs are done (doneCount === total && total > 0), force 100% so the bar
- // visually completes instead of jumping from ~43% to hidden.
+ // Show per-job progress (0-100%) for the CURRENT job. The text "Processing scan 1/3"
+ // already communicates which job we're on. Dividing by total caused the bar to max at
+ // 28% (84/3) because doneCount stayed 0 until all jobs cycled through the poll.
  const allJobsDone = total > 0 && doneCountForPercent >= total;
- const overall = allJobsDone ? 1 : (total > 0 ? (doneCountForPercent + Math.min(1, Math.max(0, rawProgress / 100))) / total : rawProgress / 100);
- const normalizedProgress = total > 0 ? overall * 100 : rawProgress;
+ const normalizedProgress = allJobsDone ? 100 : rawProgress;
  const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
  const clampedProgress = clamp(Number(normalizedProgress ?? 0), 0, 100);
  // During exit phase, force 100%. Otherwise use calculated progress.
