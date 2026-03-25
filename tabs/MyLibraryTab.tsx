@@ -470,15 +470,15 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  useEffect(() => {
  if (user) {
  const cacheKey = `cached_profile_${user.uid}`;
- // Load cached profile for instant display (no "User" flash).
+ // Load cached profile for display name only (no "User" flash).
+ // Do NOT restore totalBooks/totalPhotos from cache — they go stale.
  AsyncStorage.getItem(cacheKey).then((raw) => {
    if (!raw) return;
    try {
      const cached = JSON.parse(raw);
      setUserProfile(prev => {
-       // Only use cache if we haven't loaded real data yet
        if (prev && prev.displayName !== 'User') return prev;
-       return { ...cached, lastLogin: new Date() };
+       return { ...prev, displayName: cached.displayName || 'User', email: cached.email || '', createdAt: cached.createdAt ? new Date(cached.createdAt) : new Date(), lastLogin: new Date(), totalBooks: prev?.totalBooks ?? 0, totalPhotos: prev?.totalPhotos ?? 0 };
      });
    } catch {}
  }).catch(() => {});
