@@ -130,7 +130,7 @@ const BookshelfScannerAppInner: React.FC = () => {
  try {
  const parsed = JSON.parse(savedBooks);
  const list = Array.isArray(parsed) ? parsed : [];
- setBooks(prev => dedupeBooks([...prev, ...list]));
+ setBooks(dedupeBooks(list));
  } catch (_) { /* ignore */ }
  }
  if (savedPhotos) {
@@ -703,7 +703,7 @@ const BookshelfScannerAppInner: React.FC = () => {
 
  if (newBooks.length > 0 && user) {
  const updatedBooks = dedupeBooks([...books, ...newBooks]);
- setBooks(prev => dedupeBooks([...prev, ...newBooks]));
+ setBooks(updatedBooks);
  await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
 
  const newPhoto: Photo = {
@@ -890,24 +890,24 @@ const BookshelfScannerAppInner: React.FC = () => {
 
  const replaceBook = async (oldBook: Book, newBook: Book) => {
  if (!user) return;
- const updatedBooks = books.map(book => 
- book.title === oldBook.title ? newBook : book
+ const updatedBooks = books.map(book =>
+ book.title === oldBook.title ? { ...book, ...newBook } : book
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
  setShowReplaceModal(false);
  };
 
  const updateBookAuthor = async (bookToUpdate: Book, newAuthor: string) => {
  if (!user || !newAuthor.trim()) return;
- 
+
  const updatedBook = { ...bookToUpdate, author: newAuthor.trim() };
- const updatedBooks = books.map(book => 
- book.title === bookToUpdate.title && book.author === bookToUpdate.author 
- ? updatedBook 
+ const updatedBooks = books.map(book =>
+ book.title === bookToUpdate.title && book.author === bookToUpdate.author
+ ? { ...book, ...updatedBook }
  : book
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  await AsyncStorage.setItem(`books_${user.uid}`, JSON.stringify(updatedBooks));
  setEditingBook(null);
  setEditAuthorText('');

@@ -1661,12 +1661,12 @@ await deleteBookFromSupabase(user.uid, book);
  if (!user) return;
  try {
  const userApprovedKey = `approved_books_${user.uid}`;
- const updatedBooks = books.map(b => 
+ const updatedBooks = books.map(b =>
  b.id === book.id || (b.title === book.title && b.author === book.author)
- ? book
+ ? { ...b, ...book }
  : b
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  setSelectedBook(book);
  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
  setTimeout(() => {
@@ -2217,15 +2217,15 @@ await deleteBookFromSupabase(user.uid, book);
  try {
  // Update local state immediately
  const userApprovedKey = `approved_books_${user.uid}`;
- const updatedBooks = books.map(b => 
+ const updatedBooks = books.map(b =>
  b.id === book.id || (b.title === book.title && b.author === book.author)
- ? book
+ ? { ...b, ...book }
  : b
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  setSelectedBook(book);
  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
- 
+
  // Reload from Supabase to ensure all views are updated
  setTimeout(() => {
  loadBooks();
