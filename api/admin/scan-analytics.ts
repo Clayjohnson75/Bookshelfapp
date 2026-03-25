@@ -81,11 +81,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .in('status', ['failed', 'error'])
         .order('created_at', { ascending: false })
         .limit(50),
-      // Cover resolution stats — table is keyed by work_key, not id
-      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'ready'),
-      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'missing'),
-      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'error'),
-      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }),
+      // Cover resolution stats
+      supabase.from('cover_resolutions').select('*', { count: 'exact', head: true }).eq('status', 'ready'),
+      supabase.from('cover_resolutions').select('*', { count: 'exact', head: true }).eq('status', 'missing'),
+      supabase.from('cover_resolutions').select('*', { count: 'exact', head: true }).eq('status', 'error'),
+      supabase.from('cover_resolutions').select('*', { count: 'exact', head: true }),
     ]);
 
     // Log any query errors for debugging
@@ -125,11 +125,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // Get per-scan cover counts from books table (covers are resolved AFTER scan completes,
+    // so the scan_jobs.books JSONB never has coverUrl — we must check the books table).
+    const scanJobIds = (recentScansRes.data ?? []).map((s: any) => s.id).filter(Boolean);
+    let booksByScanJob: Record<string, { total: number; withCovers: number }> = {};
+    if (scanJobIds.length > 0) {
+      const { data: scanBooks } = await supabase
+        .from('books')
+        .select('source_scan_job_id, cover_url')
+        .in('source_scan_job_id', scanJobIds);
+      if (scanBooks) {
+        scanBooks.forEach((b: any) => {
+          const jid = b.source_scan_job_id;
+          if (!jid) return;
+          if (!booksByScanJob[jid]) booksByScanJob[jid] = { total: 0, withCovers: 0 };
+          booksByScanJob[jid].total++;
+          if (b.cover_url) booksByScanJob[jid].withCovers++;
+        });
+      }
+    }
+
     // Process recent scans
     const recentScans = (recentScansRes.data ?? []).map((s: any) => {
       const booksArr = Array.isArray(s.books) ? s.books : [];
-      const booksFound = booksArr.length;
-      const booksWithCover = booksArr.filter((b: any) => b.coverUrl || b.cover_url).length;
+      // Use books table counts (accurate with covers) or fall back to JSONB count
+      const dbCounts = booksByScanJob[s.id];
+      const booksFound = dbCounts ? dbCounts.total : booksArr.length;
+      const booksWithCover = dbCounts ? dbCounts.withCovers : 0;
       const duration = s.updated_at && s.created_at
         ? new Date(s.updated_at).getTime() - new Date(s.created_at).getTime()
         : null;
