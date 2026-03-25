@@ -6971,7 +6971,10 @@ return p;
          });
          if (fixed > 0) {
            const canonical = ensureApprovedOnePerBookKey(next);
-           AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(canonical)).catch(() => {});
+           // Only write if count didn't decrease from current state (prevents old data poisoning).
+           if (canonical.length >= prev.length) {
+             AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(canonical)).catch(() => {});
+           }
            return canonical;
          }
          return prev;
@@ -7139,6 +7142,12 @@ refreshProfileStats();
   // to the read replica before we query.
   await new Promise(r => setTimeout(r, 800));
   if (!user) return; // user signed out during delay
+
+  // CRITICAL GUARD: Record the optimistic approved count BEFORE the IIFE fetches.
+  // The IIFE must NEVER write fewer approved books than the optimistic commit.
+  // This prevents old server data (from before a profile clear) from poisoning AsyncStorage.
+  const optimisticApprovedCount = approvedBooks.length;
+
   try {
     // Session check: if the RLS session is missing or expired, the snapshot will
     // return 0 rows and the merge will incorrectly treat the library as empty.
@@ -7217,7 +7226,10 @@ refreshProfileStats();
               }
             });
             const merged = [...byKey.values()];
-            AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(ensureApprovedOnePerBookKey(merged))).catch(() => {});
+            // GUARD: Never write fewer books than optimistic count (prevents old server data poisoning).
+            if (merged.length >= optimisticApprovedCount) {
+              AsyncStorage.setItem(`approved_books_${user.uid}`, JSON.stringify(ensureApprovedOnePerBookKey(merged))).catch(() => {});
+            }
             return merged;
           });
           setPendingBooks((prev) => {
@@ -7274,7 +7286,10 @@ refreshProfileStats();
       const merged = [...byKey.values()];
       _approveLocalApprovedAfter = merged.length;
       // Persist so next boot has the authoritative server snapshot.
-      AsyncStorage.setItem(userApprovedKey, JSON.stringify(ensureApprovedOnePerBookKey(merged))).catch(() => {});
+      // GUARD: Never write fewer books than optimistic count (prevents old server data poisoning).
+      if (merged.length >= optimisticApprovedCount) {
+        AsyncStorage.setItem(userApprovedKey, JSON.stringify(ensureApprovedOnePerBookKey(merged))).catch(() => {});
+      }
       return merged;
     });
     // Merge photos: server rows win for storage fields; preserve any local-only
