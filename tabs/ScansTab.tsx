@@ -13071,7 +13071,10 @@ logger.info('[PENDING_DELETE_RESULT]', {
 // on every render — placing them after a conditional return causes
 // "Rendered fewer hooks than expected" when the camera activates.
 const { setSelectionBarContent, setTabBarHeight } = useBottomDock();
-const tabBarHeight = useBottomTabBarHeight();
+// useBottomTabBarHeight() can fail on web — safe fallback.
+let tabBarHeight = 0;
+try { tabBarHeight = useBottomTabBarHeight(); } catch { tabBarHeight = Platform.OS === 'web' ? 60 : 80; }
+if (!tabBarHeight || typeof tabBarHeight !== 'number') tabBarHeight = Platform.OS === 'web' ? 60 : 80;
 useEffect(() => {
   setTabBarHeight(tabBarHeight);
 }, [tabBarHeight, setTabBarHeight]);

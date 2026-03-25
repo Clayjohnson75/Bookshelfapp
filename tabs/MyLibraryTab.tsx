@@ -136,7 +136,11 @@ export const MyLibraryTab: React.FC = () => {
   const { setTabBarHeight } = useBottomDock();
   // Height of the native bottom tab bar (includes safe-area inset on iOS).
   // Used to anchor the delete bar directly above the tab bar — never at top: 0.
-  const tabBarHeight = useBottomTabBarHeight();
+  // useBottomTabBarHeight() crashes or returns unreliable values on web.
+  // Use a safe fallback for web platform.
+  let tabBarHeight = 0;
+  try { tabBarHeight = useBottomTabBarHeight(); } catch { tabBarHeight = Platform.OS === 'web' ? 60 : 80; }
+  if (!tabBarHeight || typeof tabBarHeight !== 'number') tabBarHeight = Platform.OS === 'web' ? 60 : 80;
   useEffect(() => {
     setTabBarHeight(tabBarHeight);
   }, [tabBarHeight, setTabBarHeight]);
