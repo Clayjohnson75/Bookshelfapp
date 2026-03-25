@@ -6,89 +6,130 @@
   <link rel="icon" href="/logo.png" type="image/png">
   <title>Admin Dashboard | Bookshelf Scanner</title>
   <style>
+    :root {
+      --bg: #F6F3EE;
+      --bg-secondary: #F0ECE6;
+      --surface: #FAF8F5;
+      --accent: #C9A878;
+      --accent-hover: #B8956A;
+      --text: #1B1B1B;
+      --text-secondary: #6B6B6B;
+      --text-muted: #9A9A9A;
+      --border: #E6E1D8;
+      --header-bg: #ECE6DD;
+      --green: #4A7C59;
+      --red: #9B3B3B;
+      --blue: #4A6F9B;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f8f6f0; min-height: 100vh; color: #2c3e50; }
-    .header { background: white; border-bottom: 1px solid #e0e0e0; padding: 16px 0; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
-    .header-content { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; }
-    .logo-link { display: flex; align-items: center; text-decoration: none; color: #2c3e50; font-weight: 700; font-size: 18px; }
-    .logo-link img { width: 32px; height: 32px; margin-right: 10px; }
-    .back-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 14px; font-weight: 500; color: #007AFF; text-decoration: none; border-radius: 8px; background: #f0f4f8; }
-    .back-link:hover { background: #e8eef4; }
-    .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--bg); min-height: 100vh; color: var(--text); }
+    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 0; position: sticky; top: 0; z-index: 100; }
+    .header-content { max-width: 1200px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; }
+    .logo-link { display: flex; align-items: center; text-decoration: none; color: var(--text); font-weight: 700; font-size: 17px; letter-spacing: -0.3px; }
+    .logo-link img { width: 28px; height: 28px; margin-right: 10px; border-radius: 6px; }
+    .back-link { padding: 8px 16px; font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none; border: 1px solid var(--border); border-radius: 8px; }
+    .back-link:hover { background: var(--bg-secondary); }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+    /* Sign-in */
+    .signin-wrap { max-width: 380px; margin: 80px auto; text-align: center; }
+    .signin-wrap h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .signin-wrap p { font-size: 14px; color: var(--text-muted); margin-bottom: 24px; }
+    .signin-form { display: flex; flex-direction: column; gap: 12px; }
+    .signin-input { padding: 12px 16px; font-size: 15px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+    .signin-input:focus { outline: none; border-color: var(--accent); }
+    .signin-btn { padding: 14px; font-size: 15px; font-weight: 600; border: none; border-radius: 10px; background: var(--accent); color: white; cursor: pointer; }
+    .signin-btn:hover { background: var(--accent-hover); }
+    .signin-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .signin-error { color: var(--red); font-size: 13px; margin-top: 8px; }
 
     /* Tabs */
-    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 2px solid #e0e0e0; }
-    .tab { padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: none; color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px; }
-    .tab:hover { color: #2c3e50; }
-    .tab.active { color: #2c3e50; border-bottom-color: #2c3e50; }
+    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+    .tab { padding: 12px 20px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: none; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; letter-spacing: 0.3px; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
     /* Cards */
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-    .card-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 4px; }
-    .card-value { font-size: 28px; font-weight: 700; color: #2c3e50; font-variant-numeric: tabular-nums; }
-    .card-value.green { color: #27ae60; }
-    .card-value.red { color: #c0392b; }
-    .card-value.blue { color: #2980b9; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 6px; }
+    .card-value { font-size: 26px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+    .card-value.green { color: var(--green); }
+    .card-value.red { color: var(--red); }
+    .card-value.blue { color: var(--blue); }
 
     /* Tables */
-    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 20px; }
-    .search-input { padding: 10px 14px; font-size: 14px; border: 2px solid #e0e0e0; border-radius: 8px; width: 260px; max-width: 100%; }
-    .search-input:focus { outline: none; border-color: #007AFF; }
-    .btn { padding: 10px 18px; font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer; border: none; background: #34495e; color: white; }
-    .btn:hover { background: #2c3e50; }
-    .meta { font-size: 13px; color: #666; margin-bottom: 12px; }
-    .table-wrap { overflow-x: auto; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; }
-    table { width: 100%; border-collapse: collapse; min-width: 800px; }
-    th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #eee; }
-    th { background: #f5f5f5; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #555; white-space: nowrap; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+    .search-input { padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 10px; width: 260px; max-width: 100%; background: var(--surface); }
+    .search-input:focus { outline: none; border-color: var(--accent); }
+    .btn { padding: 10px 18px; font-size: 13px; font-weight: 600; border-radius: 10px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+    .btn:hover { background: var(--bg-secondary); }
+    .meta { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+    .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; min-width: 700px; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: var(--bg-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); white-space: nowrap; }
     th.sortable { cursor: pointer; }
-    th.sortable:hover { color: #007AFF; }
-    td { font-size: 14px; }
-    tr:hover { background: #fafafa; }
+    th.sortable:hover { color: var(--accent); }
+    td { font-size: 13px; }
+    tr:hover { background: var(--bg); }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
-    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-    .badge-completed { background: #d4edda; color: #155724; }
-    .badge-failed { background: #f8d7da; color: #721c24; }
-    .badge-processing { background: #fff3cd; color: #856404; }
-    .badge-error { background: #f8d7da; color: #721c24; }
-    .message { padding: 24px; text-align: center; color: #666; }
-    .error { color: #c33; padding: 20px; text-align: center; }
-    .loading { padding: 40px; text-align: center; color: #666; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .badge-completed { background: #E8F0E4; color: var(--green); }
+    .badge-failed, .badge-error { background: #F4E4E4; color: var(--red); }
+    .badge-processing { background: #F0ECE6; color: var(--accent-hover); }
+    .message { padding: 24px; text-align: center; color: var(--text-muted); font-size: 14px; }
+    .error-msg { color: var(--red); padding: 20px; text-align: center; font-size: 14px; }
+    .loading { padding: 40px; text-align: center; color: var(--text-muted); font-size: 14px; }
 
-    /* Cover stats */
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
-    .stats-section { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-    .stats-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #555; }
-    .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+    /* Stats grid */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .stats-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .stats-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--text-secondary); }
+    .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--bg); font-size: 13px; }
     .stat-row:last-child { border-bottom: none; }
-    .stat-label { color: #666; }
+    .stat-label { color: var(--text-secondary); }
     .stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
 
     @media (max-width: 768px) {
       .stats-grid { grid-template-columns: 1fr; }
       .cards { grid-template-columns: repeat(2, 1fr); }
+      .container { padding: 16px; }
     }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="header-content">
-      <a href="/" class="logo-link"><img src="/logo.png" alt="BS"><span>Bookshelf Scanner</span></a>
-      <a href="/profile" class="back-link">Back to profile</a>
+      <a href="/" class="logo-link"><img src="/logo.png" alt="">Bookshelf Scanner</a>
+      <a href="/" class="back-link">Home</a>
     </div>
   </div>
 
-  <div class="container">
+  <!-- Sign-in screen (shown when no session) -->
+  <div id="signinScreen" class="signin-wrap" style="display:none;">
+    <h2>Admin Dashboard</h2>
+    <p>Sign in with your admin account</p>
+    <form class="signin-form" id="signinForm">
+      <input type="text" class="signin-input" id="signinEmail" placeholder="Email or username" autocomplete="username" />
+      <input type="password" class="signin-input" id="signinPassword" placeholder="Password" autocomplete="current-password" />
+      <button type="submit" class="signin-btn" id="signinBtn">Sign In</button>
+      <div class="signin-error" id="signinError"></div>
+    </form>
+  </div>
+
+  <!-- Dashboard (shown when authenticated) -->
+  <div id="dashboard" class="container" style="display:none;">
     <div class="tabs">
       <button class="tab active" data-tab="users">Users</button>
       <button class="tab" data-tab="analytics">Scan Analytics</button>
       <button class="tab" data-tab="errors">Errors</button>
     </div>
 
-    <!-- USERS TAB (existing) -->
+    <!-- USERS TAB -->
     <div class="tab-content active" id="tab-users">
       <div class="toolbar">
         <input type="text" class="search-input" id="searchInput" placeholder="Search username, email..." />
@@ -96,53 +137,45 @@
       </div>
       <div class="meta" id="meta">Last updated: --</div>
       <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable" data-sort="username" data-tab="users">username</th>
-            <th class="sortable" data-sort="display_name" data-tab="users">display_name</th>
-            <th class="sortable" data-sort="email" data-tab="users">email</th>
-            <th class="sortable num" data-sort="total_completed_scans" data-tab="users">scans</th>
-            <th class="sortable num" data-sort="scans_last_7d" data-tab="users">7d</th>
-            <th class="sortable num" data-sort="scans_last_30d" data-tab="users">30d</th>
-            <th class="sortable num" data-sort="total_books" data-tab="users">books</th>
-            <th class="sortable num" data-sort="avg_books_per_completed_scan" data-tab="users">avg/scan</th>
-            <th class="sortable" data-sort="last_scan_at" data-tab="users">last_scan</th>
-          </tr></thead>
-          <tbody id="tbody"></tbody>
-        </table>
+        <table><thead><tr>
+          <th class="sortable" data-sort="username" data-tab="users">Username</th>
+          <th class="sortable" data-sort="display_name" data-tab="users">Name</th>
+          <th class="sortable" data-sort="email" data-tab="users">Email</th>
+          <th class="sortable num" data-sort="total_completed_scans" data-tab="users">Scans</th>
+          <th class="sortable num" data-sort="scans_last_7d" data-tab="users">7d</th>
+          <th class="sortable num" data-sort="scans_last_30d" data-tab="users">30d</th>
+          <th class="sortable num" data-sort="total_books" data-tab="users">Books</th>
+          <th class="sortable num" data-sort="avg_books_per_completed_scan" data-tab="users">Avg/Scan</th>
+          <th class="sortable" data-sort="last_scan_at" data-tab="users">Last Scan</th>
+        </tr></thead><tbody id="tbody"></tbody></table>
       </div>
       <div id="usersLoading" class="loading" style="display:none;">Loading...</div>
-      <div id="usersError" class="error" style="display:none;"></div>
+      <div id="usersError" class="error-msg" style="display:none;"></div>
     </div>
 
     <!-- ANALYTICS TAB -->
     <div class="tab-content" id="tab-analytics">
       <div id="analyticsCards" class="cards"></div>
-      <h3 style="margin-bottom:12px;font-size:16px;font-weight:600;">Recent Scans</h3>
+      <div class="section-title">Recent Scans</div>
       <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>User</th><th>Time</th><th>Status</th>
-            <th class="num">Books</th><th class="num">Covers</th><th class="num">Cover %</th>
-            <th class="num">Duration</th><th>Stage</th>
-          </tr></thead>
-          <tbody id="recentScansTbody"></tbody>
-        </table>
+        <table><thead><tr>
+          <th>User</th><th>Time</th><th>Status</th>
+          <th class="num">Books</th><th class="num">Covers</th><th class="num">Cover %</th>
+          <th class="num">Duration</th><th>Stage</th>
+        </tr></thead><tbody id="recentScansTbody"></tbody></table>
       </div>
+      <div class="section-title">Cover Resolution</div>
       <div class="stats-grid" id="coverStatsGrid"></div>
       <div id="analyticsLoading" class="loading" style="display:none;">Loading...</div>
-      <div id="analyticsError" class="error" style="display:none;"></div>
+      <div id="analyticsError" class="error-msg" style="display:none;"></div>
     </div>
 
     <!-- ERRORS TAB -->
     <div class="tab-content" id="tab-errors">
       <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>User</th><th>Time</th><th>Status</th><th>Stage</th><th>Detail</th><th>Job ID</th>
-          </tr></thead>
-          <tbody id="errorsTbody"></tbody>
-        </table>
+        <table><thead><tr>
+          <th>User</th><th>Time</th><th>Status</th><th>Stage</th><th>Detail</th><th>Job ID</th>
+        </tr></thead><tbody id="errorsTbody"></tbody></table>
       </div>
       <div id="errorsLoading" class="loading" style="display:none;">Loading...</div>
       <div id="errorsEmpty" class="message" style="display:none;">No errors found.</div>
@@ -151,32 +184,68 @@
 
   <script>
   (function() {
-    // --- Shared ---
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function getSession() { try { const r = localStorage.getItem('supabase_session'); if (!r) return null; const s = JSON.parse(r); return s && s.access_token ? s : null; } catch(e) { return null; } }
-    function redirectToSignIn() { window.location.href = '/signin?returnUrl=' + encodeURIComponent('/admin'); }
-    function timeAgo(d) { if (!d) return '--'; const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000); if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago'; if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago'; }
-    function badge(status) { const c = status === 'completed' ? 'completed' : status === 'failed' || status === 'error' ? 'failed' : 'processing'; return '<span class="badge badge-' + c + '">' + esc(status) + '</span>'; }
-    function formatMs(ms) { if (ms == null) return '--'; if (ms < 1000) return ms + 'ms'; return (ms / 1000).toFixed(1) + 's'; }
+    function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function timeAgo(d) { if (!d) return '--'; var s = Math.floor((Date.now() - new Date(d).getTime()) / 1000); if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago'; if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago'; }
+    function badge(status) { var c = status === 'completed' ? 'completed' : (status === 'failed' || status === 'error') ? 'failed' : 'processing'; return '<span class="badge badge-' + c + '">' + esc(status || '--') + '</span>'; }
+    function fmtMs(ms) { if (ms == null) return '--'; if (ms < 1000) return ms + 'ms'; return (ms / 1000).toFixed(1) + 's'; }
+    function getSession() { try { var r = localStorage.getItem('supabase_session'); if (!r) return null; var s = JSON.parse(r); return s && s.access_token ? s : null; } catch(e) { return null; } }
+    function getApiBase() { return window.location.origin; }
+
+    // --- Auth ---
+    var signinScreen = document.getElementById('signinScreen');
+    var dashboard = document.getElementById('dashboard');
+    var signinForm = document.getElementById('signinForm');
+    var signinError = document.getElementById('signinError');
+    var signinBtn = document.getElementById('signinBtn');
+
+    function showDashboard() { signinScreen.style.display = 'none'; dashboard.style.display = 'block'; fetchUsers(); }
+    function showSignin() { signinScreen.style.display = 'block'; dashboard.style.display = 'none'; }
+
+    signinForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      signinError.textContent = '';
+      signinBtn.disabled = true;
+      signinBtn.textContent = 'Signing in...';
+      var email = document.getElementById('signinEmail').value.trim();
+      var pw = document.getElementById('signinPassword').value;
+      fetch(getApiBase() + '/api/web-signin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ emailOrUsername: email, password: pw })
+      })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(r) {
+        if (!r.ok) { signinError.textContent = r.data.message || r.data.error || 'Sign in failed'; return; }
+        var session = r.data.session || r.data;
+        if (session && session.access_token) {
+          localStorage.setItem('supabase_session', JSON.stringify(session));
+          showDashboard();
+        } else {
+          signinError.textContent = 'No session returned';
+        }
+      })
+      .catch(function(err) { signinError.textContent = err.message || 'Network error'; })
+      .finally(function() { signinBtn.disabled = false; signinBtn.textContent = 'Sign In'; });
+    });
 
     // --- Tab switching ---
-    const tabs = document.querySelectorAll('.tab');
-    const tabContents = document.querySelectorAll('.tab-content');
-    let activeTab = 'users';
+    var tabs = document.querySelectorAll('.tab');
+    var tabContents = document.querySelectorAll('.tab-content');
+    var activeTab = 'users';
     tabs.forEach(function(t) {
       t.addEventListener('click', function() {
         tabs.forEach(function(x) { x.classList.remove('active'); });
         tabContents.forEach(function(x) { x.classList.remove('active'); });
         t.classList.add('active');
-        const tab = t.getAttribute('data-tab');
+        var tab = t.getAttribute('data-tab');
         document.getElementById('tab-' + tab).classList.add('active');
         activeTab = tab;
-        if (tab === 'analytics' && !analyticsLoaded) loadAnalytics();
-        if (tab === 'errors' && !errorsLoaded) loadAnalytics();
+        if ((tab === 'analytics' || tab === 'errors') && !analyticsLoaded) loadAnalytics();
       });
     });
 
-    // --- Users Tab (existing logic) ---
+    // --- Users Tab ---
     var allRows = [], sortKey = 'scans_last_7d', sortDir = 'desc';
     var tbody = document.getElementById('tbody');
     var searchInput = document.getElementById('searchInput');
@@ -194,14 +263,14 @@
           '<td class="num">' + (r.total_books ?? '--') + '</td><td class="num">' + (r.avg_books_per_completed_scan ?? '--') + '</td><td>' + timeAgo(r.last_scan_at) + '</td>';
         tbody.appendChild(tr);
       });
-      document.getElementById('meta').textContent = 'Last updated: ' + new Date().toLocaleString() + ' | ' + sorted.length + ' users';
+      document.getElementById('meta').textContent = 'Updated ' + new Date().toLocaleTimeString() + ' \u00b7 ' + sorted.length + ' users';
     }
 
     function fetchUsers() {
-      var session = getSession(); if (!session) { redirectToSignIn(); return; }
+      var session = getSession(); if (!session) { showSignin(); return; }
       document.getElementById('usersLoading').style.display = 'block';
       fetch('/api/admin/user-stats?limit=500', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
-        .then(function(r) { if (r.status === 401) { redirectToSignIn(); return; } if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return; } return r.json(); })
+        .then(function(r) { if (r.status === 401) { showSignin(); return null; } if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return null; } return r.json(); })
         .then(function(d) { if (!d) return; allRows = d.data || []; renderUsers(allRows); })
         .catch(function(e) { document.getElementById('usersError').textContent = e.message; document.getElementById('usersError').style.display = 'block'; });
     }
@@ -212,24 +281,16 @@
       th.addEventListener('click', function() { var k = th.getAttribute('data-sort'); if (sortKey === k) sortDir = sortDir === 'asc' ? 'desc' : 'asc'; else { sortKey = k; sortDir = 'desc'; } renderUsers(allRows); });
     });
 
-    // --- Analytics & Errors Tabs ---
-    var analyticsLoaded = false, errorsLoaded = false;
-    var analyticsData = null;
+    // --- Analytics & Errors ---
+    var analyticsLoaded = false;
 
     function loadAnalytics() {
-      var session = getSession(); if (!session) { redirectToSignIn(); return; }
+      var session = getSession(); if (!session) { showSignin(); return; }
       document.getElementById('analyticsLoading').style.display = 'block';
       document.getElementById('errorsLoading').style.display = 'block';
       fetch('/api/admin/scan-analytics', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
-        .then(function(r) { if (r.status === 401) { redirectToSignIn(); return; } if (!r.ok) throw new Error('Failed to load'); return r.json(); })
-        .then(function(d) {
-          if (!d) return;
-          analyticsData = d;
-          analyticsLoaded = true;
-          errorsLoaded = true;
-          renderAnalytics(d);
-          renderErrors(d.recentErrors || []);
-        })
+        .then(function(r) { if (r.status === 401) { showSignin(); return null; } if (!r.ok) throw new Error('Failed to load'); return r.json(); })
+        .then(function(d) { if (!d) return; analyticsLoaded = true; renderAnalytics(d); renderErrors(d.recentErrors || []); })
         .catch(function(e) { document.getElementById('analyticsError').textContent = e.message; document.getElementById('analyticsError').style.display = 'block'; })
         .finally(function() { document.getElementById('analyticsLoading').style.display = 'none'; document.getElementById('errorsLoading').style.display = 'none'; });
     }
@@ -238,58 +299,56 @@
       var o = d.overview || {};
       var cards = [
         { label: 'Total Users', value: o.totalUsers ?? 0, color: '' },
-        { label: 'Total Scans', value: o.completedScans ?? 0, color: '' },
+        { label: 'Completed Scans', value: o.completedScans ?? 0, color: '' },
         { label: 'Total Books', value: o.totalBooks ?? 0, color: '' },
         { label: 'Cover Rate', value: Math.round((o.coverRate ?? 0) * 100) + '%', color: 'green' },
         { label: 'Avg Books/Scan', value: o.avgBooksPerScan ?? 0, color: 'blue' },
         { label: 'Scans (7d)', value: o.scans7d ?? 0, color: '' },
         { label: 'Failed (24h)', value: o.failedScans24h ?? 0, color: (o.failedScans24h ?? 0) > 0 ? 'red' : '' },
       ];
-      var html = '';
-      cards.forEach(function(c) { html += '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value ' + c.color + '">' + c.value + '</div></div>'; });
-      document.getElementById('analyticsCards').innerHTML = html;
+      document.getElementById('analyticsCards').innerHTML = cards.map(function(c) {
+        return '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value ' + c.color + '">' + c.value + '</div></div>';
+      }).join('');
 
-      // Recent scans table
       var stbody = document.getElementById('recentScansTbody');
       stbody.innerHTML = '';
       (d.recentScans || []).forEach(function(s) {
         var tr = document.createElement('tr');
         tr.innerHTML = '<td>' + esc(s.username || '--') + '</td><td>' + timeAgo(s.createdAt) + '</td><td>' + badge(s.status) + '</td>' +
           '<td class="num">' + s.booksFound + '</td><td class="num">' + s.booksWithCovers + '</td><td class="num">' + s.coverRate + '%</td>' +
-          '<td class="num">' + formatMs(s.durationMs) + '</td><td>' + esc(s.stage || '--') + '</td>';
+          '<td class="num">' + fmtMs(s.durationMs) + '</td><td>' + esc(s.stage || '--') + '</td>';
         stbody.appendChild(tr);
       });
 
-      // Cover stats
       var cs = d.coverStats || {};
       var byStatus = cs.byStatus || {};
       var bySource = cs.bySource || {};
-      var grid = document.getElementById('coverStatsGrid');
-      var statusHtml = '<div class="stats-section"><h3>Cover Resolution by Status</h3>';
+      var statusHtml = '<div class="stats-section"><h3>By Status</h3>';
       Object.keys(byStatus).sort().forEach(function(k) { statusHtml += '<div class="stat-row"><span class="stat-label">' + esc(k) + '</span><span class="stat-value">' + byStatus[k] + '</span></div>'; });
-      statusHtml += '<div class="stat-row" style="font-weight:600;border-top:2px solid #e0e0e0;padding-top:8px;"><span class="stat-label">Total</span><span class="stat-value">' + (cs.total ?? 0) + '</span></div></div>';
-      var sourceHtml = '<div class="stats-section"><h3>Cover Resolution by Source</h3>';
+      statusHtml += '<div class="stat-row" style="font-weight:600;border-top:1px solid var(--border);padding-top:8px;margin-top:4px;"><span class="stat-label">Total</span><span class="stat-value">' + (cs.total ?? 0) + '</span></div></div>';
+      var sourceHtml = '<div class="stats-section"><h3>By Source</h3>';
       Object.keys(bySource).sort().forEach(function(k) { sourceHtml += '<div class="stat-row"><span class="stat-label">' + esc(k) + '</span><span class="stat-value">' + bySource[k] + '</span></div>'; });
       sourceHtml += '</div>';
-      grid.innerHTML = statusHtml + sourceHtml;
+      document.getElementById('coverStatsGrid').innerHTML = statusHtml + sourceHtml;
     }
 
     function renderErrors(errors) {
       var etbody = document.getElementById('errorsTbody');
       etbody.innerHTML = '';
       if (errors.length === 0) { document.getElementById('errorsEmpty').style.display = 'block'; return; }
+      document.getElementById('errorsEmpty').style.display = 'none';
       errors.forEach(function(e) {
         var tr = document.createElement('tr');
         tr.innerHTML = '<td>' + esc(e.username || '--') + '</td><td>' + timeAgo(e.createdAt) + '</td><td>' + badge(e.status) + '</td>' +
-          '<td>' + esc(e.stage || '--') + '</td><td>' + esc(e.detail || '--') + '</td><td style="font-size:11px;color:#888;">' + esc((e.jobId || '').slice(0, 12)) + '</td>';
+          '<td>' + esc(e.stage || '--') + '</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + esc(e.detail || '--') + '</td>' +
+          '<td style="font-size:11px;color:var(--text-muted);">' + esc((e.jobId || '').slice(0, 12)) + '</td>';
         etbody.appendChild(tr);
       });
     }
 
     // --- Init ---
-    if (!getSession()) { redirectToSignIn(); return; }
-    fetchUsers();
-    setInterval(function() { if (activeTab === 'users') fetchUsers(); else loadAnalytics(); }, 60000);
+    if (getSession()) { showDashboard(); } else { showSignin(); }
+    setInterval(function() { if (!getSession()) return; if (activeTab === 'users') fetchUsers(); else loadAnalytics(); }, 60000);
   })();
   </script>
 </body>
