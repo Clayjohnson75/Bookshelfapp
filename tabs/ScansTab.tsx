@@ -876,10 +876,11 @@ React.useEffect(() => {
     if (canonicalId.length < 40) return;
     // Idempotency guard: skip if we already handled this job.
     if (handledTerminalJobsRef.current.has(canonicalId)) {
-      logger.debug('[SCAN_TERMINAL_SKIP]', 'already handled', { jobId: canonicalId.slice(0, 12), status });
+      logger.info('[SCAN_TERMINAL_SKIP]', 'already handled', { jobId: canonicalId.slice(0, 12), status, setSize: handledTerminalJobsRef.current.size });
       return;
     }
     handledTerminalJobsRef.current.add(canonicalId);
+    logger.info('[SCAN_TERMINAL_ACCEPTED]', 'processing terminal', { jobId: canonicalId.slice(0, 12), status, setSize: handledTerminalJobsRef.current.size });
  const activeJobIdsBefore = activeScanJobIdsRef.current.length;
  removeActiveScanJobId(canonicalId);
  logger.info('[SCAN_TERMINAL_REMOVE]', 'remove job from active list (durable store + in-memory)', {
