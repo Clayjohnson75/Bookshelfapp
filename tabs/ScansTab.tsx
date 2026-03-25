@@ -8545,6 +8545,17 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
 
   setScanQueue((prev) => [...prev, ...records]);
   logQueueDelta('enqueue_atomic', records.length);
+  // Set scanProgress with total count immediately so the progress bar knows
+  // how many images are being scanned from the start (not just 1).
+  setScanProgress({
+    totalScans: records.length,
+    completedScans: 0,
+    failedScans: 0,
+    canceledScans: 0,
+    currentScanId: records[0]?.id ?? null,
+    batchId,
+    startTimestamp: now,
+  } as any);
   // Serial gate above guarantees no other batch is in-flight when we reach here.
   // Always promote to activeBatch and persist immediately.
   setActiveBatch(initialBatch);
