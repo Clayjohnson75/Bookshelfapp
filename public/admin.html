@@ -389,7 +389,12 @@
       document.getElementById('usersLoading').style.display = 'block';
       adminFetch('/api/admin/user-stats?limit=500')
         .then(function(r) { if (!r) return null; if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return null; } return r.json(); })
-        .then(function(d) { if (!d) return; allRows = d.data || []; renderUsers(allRows); })
+        .then(function(d) {
+          if (!d) return;
+          if (d.error) { document.getElementById('usersError').textContent = 'API error: ' + d.error; document.getElementById('usersError').style.display = 'block'; }
+          allRows = d.data || [];
+          renderUsers(allRows);
+        })
         .catch(function(e) { document.getElementById('usersError').textContent = e.message; document.getElementById('usersError').style.display = 'block'; });
     }
 

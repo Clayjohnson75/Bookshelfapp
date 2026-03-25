@@ -88,13 +88,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  try {
  const { data: rows, error } = await query;
 
- if (error) {
- console.error('[ADMIN_STATS] requester=' + requesterId + ' ok=false error=' + error.message);
- return res.status(200).json({ data: [], error: error.message });
+ if (!error && rows && rows.length > 0) {
+   console.log('[ADMIN_STATS] requester=' + requesterId + ' ok=true rows=' + rows.length);
+   return res.status(200).json({ data: rows });
  }
 
- console.log('[ADMIN_STATS] requester=' + requesterId + ' ok=true rows=' + (rows?.length ?? 0));
- return res.status(200).json({ data: rows ?? [] });
+ // Fallback: if private view fails or returns empty, query profiles + scan_jobs directly.
+ if (error) console.warn('[ADMIN_STATS] view query failed, using fallback:', error.message);
+
+ const { data: profiles } = await supabase
+   .from('profiles')
+   .select('id, username, display_name')
+   .is('deleted_at', null)
+   .limit(limit);
+
+ if (!profiles || profiles.length === 0) {
+   return res.status(200).json({ data: [], error: error?.message || 'No profiles found' });
+ }
+
+ // Get scan counts per user
+ const userIds = profiles.map((p: any) => p.id);
+ const { data: scans } = await supabase
+   .from('scan_jobs')
+   .select('user_id, status, created_at')
+   .in('user_id', userIds)
+   .is('deleted_at', null);
+
+ const { data: books } = await supabase
+   .from('books')
+   .select('user_id')
+   .in('user_id', userIds)
+   .eq('status', 'approved')
+   .is('deleted_at', null);
+
+ const now = Date.now();
+ const d7 = 7 * 24 * 60 * 60 * 1000;
+ const d30 = 30 * 24 * 60 * 60 * 1000;
+
+ const fallbackRows = profiles.map((p: any) => {
+   const userScans = (scans || []).filter((s: any) => s.user_id === p.id);
+   const completed = userScans.filter((s: any) => s.status === 'completed');
+   const userBooks = (books || []).filter((b: any) => b.user_id === p.id);
+   const last = completed.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+   return {
+     user_id: p.id,
+     username: p.username,
+     display_name: p.display_name,
+     email: null,
+     total_completed_scans: completed.length,
+     scans_last_7d: completed.filter((s: any) => now - new Date(s.created_at).getTime() < d7).length,
+     scans_last_30d: completed.filter((s: any) => now - new Date(s.created_at).getTime() < d30).length,
+     total_books: userBooks.length,
+     avg_books_per_completed_scan: completed.length > 0 ? Math.round((userBooks.length / completed.length) * 10) / 10 : null,
+     last_scan_at: last?.created_at || null,
+   };
+ });
+
+ console.log('[ADMIN_STATS] requester=' + requesterId + ' ok=true rows=' + fallbackRows.length + ' (fallback)');
+ return res.status(200).json({ data: fallbackRows });
  } catch (err: unknown) {
  const message = err instanceof Error ? err.message : String(err);
  console.error('[ADMIN_STATS] requester=' + requesterId + ' ok=false exception=' + message);
