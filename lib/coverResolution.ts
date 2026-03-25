@@ -37,7 +37,7 @@ export async function resizeCoverForStorage(buffer: Buffer): Promise<Buffer> {
 export { buildWorkKey, normalizeAuthor };
 
 const BUCKET = 'book-covers';
-export const MISS_RETRY_HOURS = 4;
+export const MISS_RETRY_HOURS = 0.5; // 30 minutes — retry failed covers sooner
 export const PLACEHOLDER_URL = 'https://placehold.co/128x192/e5e7eb/9ca3af?text=No+cover';
 
 export interface BookMetadata {
@@ -323,6 +323,28 @@ function correctTitleAuthorSwap(title: string, author: string): { title: string;
  return { title: t, author: a };
 }
 
+/**
+ * Strip volume/edition/series info from titles for better cover search matching.
+ * "The Divine Comedy Vol. I: Inferno" → "The Divine Comedy Inferno"
+ * "Selected Writings Volume 2" → "Selected Writings"
+ * "Emma (Penguin Classics)" → "Emma"
+ */
+function simplifyTitleForSearch(title: string): string {
+ return (title || '')
+   // Remove "Vol.", "Volume", "Vol" + number
+   .replace(/\b(?:vol(?:ume)?\.?\s*(?:[ivxlcdm]+|\d+))\b/gi, '')
+   // Remove edition info
+   .replace(/\b(?:\d+(?:st|nd|rd|th)\s+edition)\b/gi, '')
+   // Remove parenthetical series/publisher info
+   .replace(/\([^)]*(?:classics|edition|series|press|books|library|penguin|oxford|norton|vintage)[^)]*\)/gi, '')
+   // Remove standalone Roman numerals after colon (": I", ": III")
+   .replace(/:\s*[ivxlcdm]+\s*$/i, '')
+   // Clean up leftover punctuation
+   .replace(/\s*:\s*$/, '')
+   .replace(/\s{2,}/g, ' ')
+   .trim();
+}
+
 /** Google Books API: return candidates extraLarge large medium thumbnail smallThumbnail (escalation). */
 async function getGoogleCandidates(title: string, author?: string): Promise<CoverCandidate[]> {
  const apiKey = process.env.GOOGLE_BOOKS_API_KEY;
@@ -523,12 +545,19 @@ export async function resolveOne(
  candidates.push(...ol);
  }
  if (searchTitle?.trim()) {
+ // Simplify title for better matching (strip vol/edition info)
+ const simpleTitle = simplifyTitleForSearch(searchTitle);
  // OpenLibrary search first (free, no rate limit issues)
- const olSearch = await getOlSearchCandidates(searchTitle, searchAuthor || undefined);
+ const olSearch = await getOlSearchCandidates(simpleTitle, searchAuthor || undefined);
  if (olSearch.length === 0) rejectReasons.push('openlibrary_search none_found');
  candidates.push(...olSearch);
+ // If simplified title differs, also try original (some titles need the exact match)
+ if (simpleTitle !== searchTitle.trim() && olSearch.length === 0) {
+   const olOriginal = await getOlSearchCandidates(searchTitle, searchAuthor || undefined);
+   if (olOriginal.length > 0) candidates.push(...olOriginal);
+ }
  // Google Books as fallback (has API key quota limits)
- const google = await getGoogleCandidates(searchTitle, searchAuthor || undefined);
+ const google = await getGoogleCandidates(simpleTitle, searchAuthor || undefined);
  if (google.length === 0) rejectReasons.push('google_books none_found');
  candidates.push(...google);
  }
