@@ -1588,7 +1588,7 @@ logDeleteAudit(_intent, { bookCount: booksToDelete.length, bookIds: booksToDelet
  />
  ) : (
  <View style={[styles.bookCover, styles.bookCoverInWrap, styles.placeholderCover]}>
- <Text style={styles.placeholderText} numberOfLines={(item.title?.trim().split(/\s+/).length ?? 1) <= 1 ? 1 : (item.title?.trim().split(/\s+/).length ?? 2) <= 3 ? 3 : 4} adjustsFontSizeToFit minimumFontScale={0.3}>
+ <Text style={styles.placeholderText} numberOfLines={Math.min(item.title?.trim().split(/\s+/).length ?? 1, 5)} adjustsFontSizeToFit minimumFontScale={0.45}>
  {item.title}
  </Text>
  </View>
@@ -4590,14 +4590,12 @@ const getStyles = (
  borderWidth: 0,
  },
  placeholderText: {
- fontSize: 11,
- fontWeight: '700',
+ fontSize: 10,
+ fontWeight: '600',
  color: t.colors.textMuted,
  textAlign: 'center',
- lineHeight: 14,
- paddingHorizontal: 6,
- textTransform: 'uppercase',
- letterSpacing: 0.3,
+ lineHeight: 13,
+ paddingHorizontal: 4,
  },
  bookAuthor: {
  fontSize: 11,

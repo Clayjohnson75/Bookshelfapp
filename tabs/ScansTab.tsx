@@ -13297,9 +13297,9 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
                     <View style={[styles.pendingGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
                       <Text
                         style={[styles.placeholderText, { color: t.colors.textMuted }]}
-                        numberOfLines={(book.title?.trim().split(/\s+/).length ?? 1) <= 1 ? 1 : (book.title?.trim().split(/\s+/).length ?? 2) <= 3 ? 3 : 4}
+                        numberOfLines={Math.min(book.title?.trim().split(/\s+/).length ?? 1, 5)}
                         adjustsFontSizeToFit
-                        minimumFontScale={0.3}
+                        minimumFontScale={0.45}
                       >{book.title}</Text>
                     </View>
                   )}
@@ -14013,7 +14013,7 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  <Image source={{ uri: getBookCoverUri(book) }} style={styles.scanSheetGridCover} />
  ) : (
  <View style={[styles.scanSheetGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
- <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={((book.title || 'Untitled').trim().split(/\s+/).length) <= 1 ? 1 : ((book.title || 'Untitled').trim().split(/\s+/).length) <= 3 ? 3 : 4} adjustsFontSizeToFit minimumFontScale={0.3}>{book.title || 'Untitled'}</Text>
+ <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={Math.min((book.title || 'Untitled').trim().split(/\s+/).length, 5)} adjustsFontSizeToFit minimumFontScale={0.45}>{book.title || 'Untitled'}</Text>
  </View>
  )}
  <Text style={[styles.scanSheetGridAuthorLine, { color: t.colors.textMuted }, !(book.author?.trim()) && (book.id ?? book.dbId) && { fontStyle: 'italic', opacity: 0.85 }]} numberOfLines={2} ellipsizeMode="tail">
@@ -15731,14 +15731,12 @@ const getStyles = (
  borderColor: t.colors.border, // Subtle gray border
  },
  placeholderText: {
- fontSize: 11,
+ fontSize: 10,
  fontWeight: '600',
  color: t.colors.textMuted,
  textAlign: 'center',
- lineHeight: 14,
- paddingHorizontal: 6,
- textTransform: 'uppercase',
- letterSpacing: 0.3,
+ lineHeight: 13,
+ paddingHorizontal: 4,
  },
  bookInfo: {
  width: '100%',
