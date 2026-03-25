@@ -9006,7 +9006,7 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
             if (!base) return;
             const stillMissing = booksNeedingCovers.filter(b => !b.coverUrl);
             const resolved = new Map<string, string>();
-            for (const book of stillMissing.slice(0, 10)) {
+            for (const book of stillMissing.slice(0, 30)) {
               const wk = (book as any).workKey ?? (book as any).work_key;
               if (!wk) continue;
               try {

@@ -345,7 +345,7 @@ function correctTitleAuthorSwap(title: string, author: string): { title: string;
  * "Emma (Penguin Classics)" → "Emma"
  */
 function simplifyTitleForSearch(title: string): string {
- return (title || '')
+ let t = (title || '')
    // Remove "Vol.", "Volume", "Vol" + number
    .replace(/\b(?:vol(?:ume)?\.?\s*(?:[ivxlcdm]+|\d+))\b/gi, '')
    // Remove edition info
@@ -354,10 +354,18 @@ function simplifyTitleForSearch(title: string): string {
    .replace(/\([^)]*(?:classics|edition|series|press|books|library|penguin|oxford|norton|vintage)[^)]*\)/gi, '')
    // Remove standalone Roman numerals after colon (": I", ": III")
    .replace(/:\s*[ivxlcdm]+\s*$/i, '')
+   // Remove subtitle after colon for cleaner search (keep original as fallback)
+   .replace(/\s*:.*$/, '')
    // Clean up leftover punctuation
    .replace(/\s*:\s*$/, '')
    .replace(/\s{2,}/g, ' ')
    .trim();
+ // Convert ALL CAPS to Title Case for better search matching.
+ // Search engines rank title-case queries higher than all-caps.
+ if (t === t.toUpperCase() && t.length > 3) {
+   t = t.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+ }
+ return t;
 }
 
 /** Google Books API: return candidates extraLarge large medium thumbnail smallThumbnail (escalation). */
@@ -560,19 +568,24 @@ export async function resolveOne(
  candidates.push(...ol);
  }
  if (searchTitle?.trim()) {
- // Simplify title for better matching (strip vol/edition info)
+ // Simplify title for better matching (strip vol/edition info, convert ALL CAPS)
  const simpleTitle = simplifyTitleForSearch(searchTitle);
+ // Normalize author for search: convert ALL CAPS to Title Case
+ let normalizedAuthor = (searchAuthor || '').trim();
+ if (normalizedAuthor === normalizedAuthor.toUpperCase() && normalizedAuthor.length > 3) {
+   normalizedAuthor = normalizedAuthor.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+ }
  // OpenLibrary search first (free, no rate limit issues)
- const olSearch = await getOlSearchCandidates(simpleTitle, searchAuthor || undefined);
+ const olSearch = await getOlSearchCandidates(simpleTitle, normalizedAuthor || undefined);
  if (olSearch.length === 0) rejectReasons.push('openlibrary_search none_found');
  candidates.push(...olSearch);
  // If simplified title differs, also try original (some titles need the exact match)
  if (simpleTitle !== searchTitle.trim() && olSearch.length === 0) {
-   const olOriginal = await getOlSearchCandidates(searchTitle, searchAuthor || undefined);
+   const olOriginal = await getOlSearchCandidates(searchTitle, normalizedAuthor || undefined);
    if (olOriginal.length > 0) candidates.push(...olOriginal);
  }
  // Google Books as fallback (has API key quota limits)
- const google = await getGoogleCandidates(simpleTitle, searchAuthor || undefined);
+ const google = await getGoogleCandidates(simpleTitle, normalizedAuthor || undefined);
  if (google.length === 0) rejectReasons.push('google_books none_found');
  candidates.push(...google);
  }
