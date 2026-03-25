@@ -128,8 +128,9 @@ const countsByPhotoId = useMemo(() => {
  return map;
 }, [approvedBooks, pendingBooks, photoIdAliasMap, photos]);
 
-// Show photos that have ANY books (pending OR approved) OR are complete/draft/stalled (processing with 0 books).
-// Sort by timestamp desc so recent scans appear first — avoids new scans feeling like they "didn't work."
+// Show ONLY photos that have live books (pending or approved). Photos from cleared/deleted
+// scans that have no books are filtered out — they're just stale entries in AsyncStorage.
+// Sort by timestamp desc so recent scans appear first.
 const displayedPhotos = useMemo(() => {
  const list = dedupBy(photos, canonicalPhotoListKey)
    .filter((photo) => {
@@ -137,21 +138,13 @@ const displayedPhotos = useMemo(() => {
      if (photo.status === 'discarded' || photo.status === 'rejected' || (photo as any).status === 'scan_failed') return false;
      const key = canon(photo.id);
      const bookCount = countsByPhotoId.get(key) ?? 0;
-     const hasBooks = bookCount > 0;
-     const showableStatus = photo.status === 'complete' || photo.status === 'draft' || photo.status === 'stalled';
-     if (hasBooks) return true;
-     // Only show photos with no books if they have a confirmed storage_path (uploaded to server).
-     // This prevents orphaned local_pending/draft photos from cluttering the Photos tab.
-     if (!showableStatus) return false;
-     if (!photo.storage_path) return false;
-     return true;
+     return bookCount > 0;
    })
    .map((photo) => {
      const key = canon(photo.id);
      const bookCount = countsByPhotoId.get(key) ?? 0;
      const thumbnailUri = photo.thumbnail_uri ?? photo.uri ?? null;
-     const isProcessingZeroBooks = bookCount === 0 && (photo.status === 'complete' || photo.status === 'draft' || photo.status === 'stalled');
-     return { photo, bookCount, thumbnailUri, isProcessingZeroBooks };
+     return { photo, bookCount, thumbnailUri, isProcessingZeroBooks: false };
    });
  const byTimestamp = (a: { photo: Photo }, b: { photo: Photo }) =>
    ((b.photo as { timestamp?: number }).timestamp ?? 0) - ((a.photo as { timestamp?: number }).timestamp ?? 0);
