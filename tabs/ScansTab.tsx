@@ -1232,8 +1232,19 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
       });
     }
   }
-  if (scanProgress !== null) setScanProgress(null);
-  if (activeBatch !== null) clearActiveBatch(undefined, justCanceled ? 'cancel' : 'import_complete');
+  // Delay clearing so the progress bar has time to show 100% before disappearing.
+  // On cancel, clear immediately (user expects instant feedback).
+  if (justCanceled) {
+    if (scanProgress !== null) setScanProgress(null);
+    if (activeBatch !== null) clearActiveBatch(undefined, 'cancel');
+  } else {
+    // Show 100% briefly, then clear after 1.5s
+    const clearTimer = setTimeout(() => {
+      setScanProgress(null);
+      if (activeBatchRef.current !== null) clearActiveBatch(undefined, 'import_complete');
+    }, 1500);
+    return () => clearTimeout(clearTimer);
+  }
   }, [jobsInProgress, scanProgress, activeBatch, lastServerActiveJobIds, scanQueue, setScanProgress, clearActiveBatch]);
 
  // ── Stuck-queue watchdog ─────────────────────────────────────────────────────
@@ -2983,6 +2994,17 @@ if (savedApproved) {
  };
 
  const loadUserData = async () => {
+ // CRITICAL GUARD: Never run loadUserData while scanning is in progress.
+ // The server merge in loadUserData replaces pendingBooks with server data,
+ // wiping locally-imported books from scans that haven't synced yet.
+ // The data will refresh naturally when all scanning completes.
+ if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0) {
+   logger.debug('[LOAD_USER_DATA] skip: scanning in progress', {
+     inFlightBatches: inFlightBatchIdsRef.current.size,
+     serialQueue: serialScanQueueRef.current.length,
+   });
+   return;
+ }
  // A) Don't run any pending fetch until auth is ready and we have a session (or guest). If !userId, return don't set pending, don't replace, don't merge.
  if (!authReady) {
  logger.debug(' Auth not ready yet, delaying data load');
