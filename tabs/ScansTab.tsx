@@ -1397,11 +1397,22 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
  );
  const setBooksFromBuckets = useCallback((approved: Book[], pending: Book[], rejected: Book[]) => {
    type Status = NonNullable<Book['status']>;
-   setBooks([
-     ...approved.map((b): Book => ({ ...b, status: 'approved' })),
-     ...pending.map((b): Book => ({ ...b, status: ((b as any).status === 'incomplete' ? 'incomplete' : 'pending') as Status })),
-     ...rejected.map((b): Book => ({ ...b, status: 'rejected' })),
-   ]);
+   const pendingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+   const newPendingKeys = new Set(pending.map(pendingKey));
+   setBooks((prev) => {
+     // Preserve existing pending/incomplete books that aren't in the new pending list.
+     // This prevents locally-imported scan results from being wiped by server merges.
+     const existingPending = prev.filter((b) =>
+       ((b as any).status === 'pending' || (b as any).status === 'incomplete') &&
+       !newPendingKeys.has(pendingKey(b))
+     );
+     return [
+       ...approved.map((b): Book => ({ ...b, status: 'approved' })),
+       ...pending.map((b): Book => ({ ...b, status: ((b as any).status === 'incomplete' ? 'incomplete' : 'pending') as Status })),
+       ...existingPending,
+       ...rejected.map((b): Book => ({ ...b, status: 'rejected' })),
+     ];
+   });
  }, []);
  const setApprovedBooks = useCallback((updater: Book[] | ((prev: Book[]) => Book[])) => {
    setBooks((prev) => {
