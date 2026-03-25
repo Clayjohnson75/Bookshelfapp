@@ -873,16 +873,16 @@ async function resolveCoversInWorker(
  console.log(`[COVER] cache check: total=${entries.length} hit=${hitCount} miss=${missCount}`);
 
  if (misses.length > 0) {
- // Resolve covers inline for up to 15 books (most scans have <30 books).
- // This gives users covers immediately instead of waiting for background queue.
+ // Resolve covers inline for up to 8 books to avoid Vercel function timeout.
+ // 5 concurrent to maximize speed within the ~10s window.
  const { resolveOne } = await import('../lib/coverResolution');
- const INLINE_LIMIT = 15;
+ const INLINE_LIMIT = 8;
  const inlineMisses = misses.slice(0, INLINE_LIMIT);
  const deferredMisses = misses.slice(INLINE_LIMIT);
 
- // Resolve inline batch concurrently (3 at a time to avoid rate limits)
- for (let i = 0; i < inlineMisses.length; i += 3) {
-   const batch = inlineMisses.slice(i, i + 3);
+ // Resolve inline batch concurrently (5 at a time — fast but within rate limits)
+ for (let i = 0; i < inlineMisses.length; i += 5) {
+   const batch = inlineMisses.slice(i, i + 5);
    const results = await Promise.allSettled(
      batch.map(async (e) => {
        try {
@@ -903,18 +903,16 @@ async function resolveCoversInWorker(
    );
  }
 
- // Queue remaining misses for background resolution
- if (deferredMisses.length > 0) {
-   for (const e of deferredMisses) {
-     await upsertPending(db, e.workKey, e.isbn, e.title, e.author);
+ // Queue ALL misses (including inline ones that failed) for background resolution.
+ // This ensures every book eventually gets a cover attempt even if inline timed out.
+ const allMissItems = misses
+   .filter(e => !out[e.idx]?.coverUrl) // Only books still missing covers
+   .map(e => ({ workKey: e.workKey, isbn: e.isbn, title: e.title, author: e.author }));
+ if (allMissItems.length > 0) {
+   for (const item of allMissItems) {
+     await upsertPending(db, item.workKey, item.isbn, item.title, item.author);
    }
-   const items = deferredMisses.map(e => ({
-     workKey: e.workKey,
-     isbn: e.isbn,
-     title: e.title,
-     author: e.author,
-   }));
-   enqueueCoverResolve(items).catch(err =>
+   enqueueCoverResolve(allMissItems).catch(err =>
      console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Cover enqueue failed:`, err?.message)
    );
  }
