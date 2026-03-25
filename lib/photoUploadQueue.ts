@@ -577,7 +577,14 @@ async function requestScanAndPoll(
       const raw = jobId != null && typeof jobId === 'string' ? jobId.trim() : '';
       if (raw && raw.length >= 8) {
         const fullId = toScanJobId(raw);
-        if (fullId.length >= 40) onJobTerminalStatus?.(fullId, 'completed');
+        logger.info('[UPLOAD_QUEUE]', 'job terminal dispatch', { photoId: photoId.slice(0, 8), jobId: fullId.slice(0, 12), hasCallback: !!onJobTerminalStatus, fullIdLen: fullId.length });
+        if (fullId.length >= 40) {
+          try {
+            onJobTerminalStatus?.(fullId, 'completed');
+          } catch (e) {
+            logger.error('[UPLOAD_QUEUE]', 'onJobTerminalStatus threw', { photoId: photoId.slice(0, 8), error: String(e) });
+          }
+        }
       }
       onPhotoComplete?.(userId, photoId);
       await removeFromQueue(userId, photoId);
