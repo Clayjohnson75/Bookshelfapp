@@ -673,8 +673,9 @@ async function _processOneItemInner(item: UploadQueueItem): Promise<void> {
     return;
   }
 
-  // If already past upload, skip to scan request (resume after restart).
-  if (item.state === 'uploaded') {
+  // If already past upload, skip to scan request (resume after restart/re-process).
+  // This prevents zombie re-uploads for items that already have a scan job.
+  if (item.state === 'uploaded' || item.state === 'scan_requested' || item.state === 'processing') {
     const fileInfoResume = await FileSystem.getInfoAsync(localUri);
     if (!fileInfoResume.exists) {
       const errMsg = 'Photo file missing, please re-select.';
@@ -787,7 +788,8 @@ async function workerTick(): Promise<void> {
 
   const runnable = list.filter(
     (i) =>
-      (i.state === 'queued' || i.state === 'uploaded' || (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
+      (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
+       (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
       i.state !== 'canceled'
   );
   const toProcess = runnable.slice(0, MAX_CONCURRENT);
