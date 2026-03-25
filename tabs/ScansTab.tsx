@@ -13271,10 +13271,17 @@ const recentScansFooter = useMemo(() => {
   }
   const completePhotos = photos.filter((photo) => {
     if (photo.status === 'discarded' || (photo as any).deleted_at) return false;
-    // Show photo if it has live books in pending or approved state, OR has approved_count from server.
+    // Show photo if ANY of these are true:
+    // 1. Has live books in current pending or approved state (source_photo_id match)
     const hasLiveBooks = photo.id ? livePhotoIds.has(photo.id) : false;
+    // 2. Has approved_count set (from optimistic update or server)
     const hasApprovedCount = typeof photo.approved_count === 'number' && photo.approved_count > 0;
-    return hasLiveBooks || hasApprovedCount;
+    // 3. Has embedded books with approved status (from scan import snapshot)
+    const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
+    // 4. Is a completed upload that the server knows about (storage_path exists)
+    //    and has any books at all (pending or approved in snapshot)
+    const hasServerPhoto = !!photo.storage_path && (photo.books ?? []).length > 0;
+    return hasLiveBooks || hasApprovedCount || hasApprovedInSnapshot || hasServerPhoto;
   });
   const recentCanonical = completePhotos.length === 0 ? [] : dedupBy(completePhotos, canonicalPhotoListKey);
   const recentListFull = recentCanonical.slice().reverse().map((p) => ({
