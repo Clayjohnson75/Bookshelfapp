@@ -11291,21 +11291,24 @@ const closeScanModal = () => {
  };
 
  const toggleBookSelection = useCallback((bookId: string) => {
-   if (selectAllMode) {
-     setExcludedIds(prev => {
-       const next = new Set(prev);
-       if (next.has(bookId)) next.delete(bookId);
-       else next.add(bookId);
-       return next;
-     });
-   } else {
-     setSelectedBooks(prev => {
-       const newSelected = new Set(prev);
-       if (newSelected.has(bookId)) newSelected.delete(bookId);
-       else newSelected.add(bookId);
-       return newSelected;
-     });
-   }
+   // Use requestAnimationFrame to let touch feedback render before state update
+   requestAnimationFrame(() => {
+     if (selectAllMode) {
+       setExcludedIds(prev => {
+         const next = new Set(prev);
+         if (next.has(bookId)) next.delete(bookId);
+         else next.add(bookId);
+         return next;
+       });
+     } else {
+       setSelectedBooks(prev => {
+         const newSelected = new Set(prev);
+         if (newSelected.has(bookId)) newSelected.delete(bookId);
+         else newSelected.add(bookId);
+         return newSelected;
+       });
+     }
+   });
  }, [selectAllMode]);
  const toggleBookSelectionRef = useRef(toggleBookSelection);
  toggleBookSelectionRef.current = toggleBookSelection;
@@ -13580,10 +13583,10 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  data={pendingListRows}
  renderItem={renderPendingRow}
  keyExtractor={keyExtractorPendingRow}
- initialNumToRender={6}
- maxToRenderPerBatch={4}
- windowSize={5}
- updateCellsBatchingPeriod={100}
+ initialNumToRender={8}
+ maxToRenderPerBatch={6}
+ windowSize={7}
+ updateCellsBatchingPeriod={50}
  removeClippedSubviews={true}
  extraData={selectedBooks.size + excludedIds.size + (selectAllMode ? 1 : 0)}
  contentContainerStyle={[
