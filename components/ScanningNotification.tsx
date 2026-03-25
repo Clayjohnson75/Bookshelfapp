@@ -876,22 +876,22 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
    lastBarInputsRef.current = barInputs;
    logger.trace('[SCAN_BAR_INPUTS]', 'inputs changed', { activeJobId: barInputs.activeJobId, p_progressByJob: barInputs.p_progressByJob, p_serverProgress: barInputs.p_serverProgress, doneCount: barInputs.doneCount, total: barInputs.total, source: serverHasSentProgress ? 'server' : 'ramp' });
  }
- // Weighted overall progress: sum all per-job progress values and divide by total.
- // progressByJobId accumulates: completed jobs stay at 100, current job updates live.
- // Jobs not yet polled default to 0. This gives accurate overall progress:
- //   3 scans, job1=100%, job2=50%, job3=0% → (100+50+0)/3 = 50%
+ // Overall progress: server jobs run IN PARALLEL, so all jobs progress at roughly the
+ // same rate. The tracked job's rawProgress is the best proxy for ALL jobs since they
+ // started together and the server processes them concurrently.
+ // When a job completes (progressByJobId[id] >= 100), bump up proportionally.
  const allJobsDone = total > 0 && doneCountForPercent >= total;
  let normalizedProgress: number;
  if (allJobsDone) {
    normalizedProgress = 100;
  } else if (total > 0) {
-   const allProgress = Object.values(progressByJobId);
-   const sumProgress = allProgress.reduce((sum, p) => sum + (typeof p === 'number' ? Math.min(100, Math.max(0, p)) : 0), 0);
-   // Current job's live rawProgress may be more recent than progressByJobId entry.
-   // Use the higher of rawProgress and the tracked value for the active job.
-   const activeTracked = progressKey ? (progressByJobId[progressKey] ?? 0) : 0;
-   const liveAdjustment = Math.max(0, rawProgress - activeTracked);
-   normalizedProgress = Math.min(100, (sumProgress + liveAdjustment) / total);
+   // Since jobs run in parallel, assume all untracked jobs are at roughly rawProgress too.
+   // Completed jobs (100%) pull the average up. This gives smooth 0→100% progression.
+   const completedFromProgress = Object.values(progressByJobId).filter((p) => typeof p === 'number' && p >= 100).length;
+   const inProgressCount = total - completedFromProgress;
+   // Completed jobs contribute 100 each, in-progress jobs contribute rawProgress each.
+   const totalProgress = (completedFromProgress * 100) + (inProgressCount * rawProgress);
+   normalizedProgress = Math.min(99, totalProgress / total);
  } else {
    normalizedProgress = rawProgress;
  }
