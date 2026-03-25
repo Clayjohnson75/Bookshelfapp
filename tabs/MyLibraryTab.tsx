@@ -366,14 +366,9 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  }, [authorsSortedForView, authorsSearchQuery]);
 
  const uniqueAuthorsCount = authorsWithBooks.length;
- // Keep last-known-good during merge/load so author count doesn't flash to 0.
- if (!mergeInProgress && !isLoadingData && uniqueAuthorsCount > 0) {
-   lastStableUniqueAuthorsCountRef.current = uniqueAuthorsCount;
-   if (user) AsyncStorage.setItem(`cached_author_count_${user.uid}`, String(uniqueAuthorsCount)).catch(() => {});
- }
- const displayAuthorsCount = (mergeInProgress || isLoadingData)
-   ? (lastStableUniqueAuthorsCountRef.current ?? uniqueAuthorsCount)
-   : uniqueAuthorsCount;
+ // Always show the live computed count — no caching. The count derives from
+ // approvedBooksOnly which updates when books state changes.
+ const displayAuthorsCount = uniqueAuthorsCount;
 
  // Sort by author's last name (fallback to title when author missing)
  const sortedDisplayedBooks = useMemo(() => {
@@ -471,19 +466,9 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  };
  }, [librarySearch, booksSectionY, isSelectionMode, selectedBooks.size]);
 
- // Initialize userProfile immediately: try cached profile + author count first (instant).
+ // Initialize userProfile immediately: try cached profile first (instant).
  useEffect(() => {
  if (user) {
- // Load cached author count for instant display (no "0 authors" flash).
- AsyncStorage.getItem(`cached_author_count_${user.uid}`).then((val) => {
-   if (val != null) {
-     const n = parseInt(val, 10);
-     if (!isNaN(n) && lastStableUniqueAuthorsCountRef.current == null) {
-       lastStableUniqueAuthorsCountRef.current = n;
-     }
-   }
- }).catch(() => {});
-
  const cacheKey = `cached_profile_${user.uid}`;
  // Load cached profile for instant display (no "User" flash).
  AsyncStorage.getItem(cacheKey).then((raw) => {
