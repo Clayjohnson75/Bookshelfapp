@@ -118,6 +118,11 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  setPhotoCount(countsByPhotoId.size);
  setLastStablePhotoCount(countsByPhotoId.size);
  }
+ // Persist counts for instant load on next mount.
+ if (user) {
+   AsyncStorage.setItem(`profile_book_count_${user.uid}`, String(profileBookCount)).catch(() => {});
+   AsyncStorage.setItem(`profile_photo_count_${user.uid}`, String(countsByPhotoId.size)).catch(() => {});
+ }
  } catch {
  if (!mergeInProgressRef.current) {
  setCanonicalBookCount(null);
@@ -154,7 +159,26 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  return photoCount ?? null;
  }, [mergeInProgress, statsRefreshing, lastStablePhotoCount, photoCount]);
 
+ // Load counts immediately on mount (and when user changes) so profile never shows "—".
+ // Also persist last known counts so they're available instantly on next app open.
  useEffect(() => {
+ if (!user || user.uid === GUEST_USER_ID) return;
+ // Try to load cached counts first (instant, no async parse of full book list).
+ const cachedBookKey = `profile_book_count_${user.uid}`;
+ const cachedPhotoKey = `profile_photo_count_${user.uid}`;
+ AsyncStorage.multiGet([cachedBookKey, cachedPhotoKey]).then(([[, bRaw], [, pRaw]]) => {
+   const cachedBooks = bRaw != null ? parseInt(bRaw, 10) : NaN;
+   const cachedPhotos = pRaw != null ? parseInt(pRaw, 10) : NaN;
+   if (!isNaN(cachedBooks)) {
+     setCanonicalBookCount(prev => prev ?? cachedBooks);
+     setLastStableBookCount(prev => prev ?? cachedBooks);
+   }
+   if (!isNaN(cachedPhotos)) {
+     setPhotoCount(prev => prev ?? cachedPhotos);
+     setLastStablePhotoCount(prev => prev ?? cachedPhotos);
+   }
+ }).catch(() => {});
+ // Then do the full refresh (reads approved_books list).
  refreshProfileStats();
  }, [refreshProfileStats]);
 
@@ -193,7 +217,7 @@ export function useProfileStats(): ProfileStatsContextType {
  return ctx;
 }
 
-/** Format count for UI: null/undefined = "—" (unknown); number = string (0 = "0" = truly zero). */
+/** Format count for UI: null/undefined = "0" (assume zero until loaded); number = string. */
 export function formatCountForDisplay(count: number | null | undefined): string {
- return count == null ? '—' : String(count);
+ return count == null ? '0' : String(count);
 }
