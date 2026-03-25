@@ -758,7 +758,7 @@ React.useEffect(() => {
        return updated;
      });
    });
-   setOnPhotoComplete((uid, completedPhotoId) => {
+   setOnPhotoComplete((uid, completedPhotoId, completedJobId) => {
      if (uid !== user?.uid) return;
      const resolvedId = photoIdAliasRef.current[completedPhotoId] ?? completedPhotoId;
      setPhotos((prev) => {
@@ -775,11 +775,12 @@ React.useEffect(() => {
      // Look up the jobId from the photo, fetch books, and import to pending.
      (async () => {
        try {
-         // Find the jobId for this photo from photos state or scan queue.
+         // Use the jobId passed directly from the upload queue (most reliable).
+         // Fall back to photo record lookup if not passed.
          const photo = photosRef.current?.find((p: any) =>
            p.id === completedPhotoId || p.id === resolvedId || p.localId === completedPhotoId
          );
-         const jobId = photo?.scan_job_id ?? photo?.jobId;
+         const jobId = completedJobId ?? photo?.scan_job_id ?? photo?.jobId;
          if (!jobId) {
            logger.warn('[PHOTO_COMPLETE_IMPORT]', 'no jobId for photo', { photoId: completedPhotoId.slice(0, 8) });
            return;

@@ -216,7 +216,7 @@ let workerPausedByBackground = false;
 /** Called when a photo is uploaded to Storage and photos row is upserted; client can update local state. */
 let onPhotoUploaded: ((userId: string, photoId: string, storagePath: string) => void) | null = null;
 /** Called when scan job is complete and books are imported; client can set photo status 'complete'. */
-let onPhotoComplete: ((userId: string, photoId: string) => void) | null = null;
+let onPhotoComplete: ((userId: string, photoId: string, jobId?: string) => void) | null = null;
 /** Called when upload or processing fails; client can set photo status 'failed_upload' or 'scan_failed' and show "Failed — tap to retry". Optional statusCode (e.g. 413) so UI can set scan_failed. */
 let onPhotoUploadFailed: ((userId: string, photoId: string, errorMessage?: string, statusCode?: number) => void) | null = null;
 /** Called when Step C returns (scan job created). Client can add scanJobId to activeScanJobIds so bar stays visible until terminal. */
@@ -236,7 +236,7 @@ export function setOnJobTerminalStatusQueue(cb: ((jobId: string, status: 'comple
   onJobTerminalStatus = cb;
 }
 
-export function setOnPhotoComplete(cb: ((userId: string, photoId: string) => void) | null): void {
+export function setOnPhotoComplete(cb: ((userId: string, photoId: string, jobId?: string) => void) | null): void {
   onPhotoComplete = cb;
 }
 
@@ -596,7 +596,7 @@ async function requestScanAndPoll(
         }
       }
       completedPhotoIds.add(photoId); // Mark permanently done — prevents zombie re-processing.
-      onPhotoComplete?.(userId, photoId);
+      onPhotoComplete?.(userId, photoId, jobId);
       await removeFromQueue(userId, photoId);
       if (localUri && (localUri.startsWith('file://') || localUri.startsWith('file:'))) {
         try {
