@@ -200,34 +200,55 @@ async function processOneJob(userId: string, job: ApproveQueueItem): Promise<voi
     const userRejectedKey = `rejected_books_${userId}`;
     const userPhotosKey = `photos_${userId}`;
 
-    // Persist by book ID: do not collapse by book_key. Approve selected N books → N must stay in approved list.
-    // CRITICAL: MERGE with existing approved books — don't replace the entire list.
-    // The user may have previously approved books that aren't in this batch.
+    // ENRICH existing approved books with server-assigned IDs — don't rewrite the list.
+    // ScansTab's approveSelectedBooks already wrote the correct full list to AsyncStorage.
+    // The worker's job is ONLY to patch in dbId/id from the server response.
+    // DO NOT overwrite pending/rejected/photos — the user may have scanned more since approval.
     const approvedToStore = result.approvedWithRealIds;
-    let mergedApproved = approvedToStore;
     try {
       const existingRaw = await AsyncStorage.getItem(userApprovedKey);
       if (existingRaw) {
         const existing = JSON.parse(existingRaw);
-        if (Array.isArray(existing) && existing.length > 0) {
-          // Deduplicate by title+author (case-insensitive) to avoid duplicates.
-          const newKeys = new Set(approvedToStore.map((b: any) =>
-            `${(b.title ?? '').toLowerCase().trim()}|${(b.author ?? '').toLowerCase().trim()}`
-          ));
-          const existingNotInNew = existing.filter((b: any) => {
+        if (Array.isArray(existing)) {
+          // Build lookup: title+author → server book (with real IDs)
+          const serverBookMap = new Map<string, any>();
+          approvedToStore.forEach((b: any) => {
             const key = `${(b.title ?? '').toLowerCase().trim()}|${(b.author ?? '').toLowerCase().trim()}`;
-            return !newKeys.has(key);
+            serverBookMap.set(key, b);
           });
-          mergedApproved = [...approvedToStore, ...existingNotInNew];
+          // Enrich existing entries with server IDs, don't add/remove any books
+          const enriched = existing.map((b: any) => {
+            const key = `${(b.title ?? '').toLowerCase().trim()}|${(b.author ?? '').toLowerCase().trim()}`;
+            const serverBook = serverBookMap.get(key);
+            if (serverBook) {
+              // Patch in server IDs and identity_locked, keep everything else from local
+              return {
+                ...b,
+                id: serverBook.id || b.id,
+                dbId: serverBook.dbId || b.dbId,
+                identity_locked: true,
+                source_photo_id: serverBook.source_photo_id || b.source_photo_id,
+              };
+            }
+            return b;
+          });
+          await AsyncStorage.setItem(userApprovedKey, JSON.stringify(enriched));
         }
       }
     } catch {}
-    await Promise.all([
-      AsyncStorage.setItem(userApprovedKey, JSON.stringify(mergedApproved)),
-      AsyncStorage.setItem(userPendingKey, JSON.stringify(job.payload.newPending)),
-      AsyncStorage.setItem(userRejectedKey, JSON.stringify(job.payload.newRejected)),
-      AsyncStorage.setItem(userPhotosKey, JSON.stringify(result.newPhotosRewritten)),
-    ]);
+    // Only update photos (with resolved aliases), NOT pending/rejected
+    // (user may have scanned more books since this approval was queued).
+    if (result.newPhotosRewritten?.length > 0) {
+      try {
+        const existingPhotosRaw = await AsyncStorage.getItem(userPhotosKey);
+        const existingPhotos = existingPhotosRaw ? JSON.parse(existingPhotosRaw) : [];
+        // Merge: update existing photos by ID, add new ones
+        const photoMap = new Map<string, any>();
+        (Array.isArray(existingPhotos) ? existingPhotos : []).forEach((p: any) => { if (p.id) photoMap.set(p.id, p); });
+        result.newPhotosRewritten.forEach((p: any) => { if (p.id) photoMap.set(p.id, { ...photoMap.get(p.id), ...p }); });
+        await AsyncStorage.setItem(userPhotosKey, JSON.stringify([...photoMap.values()]));
+      } catch {}
+    }
 
     await callScanMarkImported(userId, result.jobIdsToClose);
 
