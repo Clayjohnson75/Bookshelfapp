@@ -873,49 +873,23 @@ async function resolveCoversInWorker(
  console.log(`[COVER] cache check: total=${entries.length} hit=${hitCount} miss=${missCount}`);
 
  if (misses.length > 0) {
- // Resolve covers inline for up to 8 books to avoid Vercel function timeout.
- // 5 concurrent to maximize speed within the ~10s window.
- const { resolveOne } = await import('../lib/coverResolution');
- const INLINE_LIMIT = 8;
- const inlineMisses = misses.slice(0, INLINE_LIMIT);
- const deferredMisses = misses.slice(INLINE_LIMIT);
-
- // Resolve inline batch concurrently (5 at a time — fast but within rate limits)
- for (let i = 0; i < inlineMisses.length; i += 5) {
-   const batch = inlineMisses.slice(i, i + 5);
-   const results = await Promise.allSettled(
-     batch.map(async (e) => {
-       try {
-         const result = await resolveOne(db, e.isbn, e.title, e.author, e.workKey);
-         if (result && 'coverUrl' in result && result.coverUrl) {
-           out[e.idx] = {
-             ...out[e.idx],
-             coverUrl: result.coverUrl,
-             googleBooksId: (result as any).googleBooksId || out[e.idx].googleBooksId,
-             google_books_id: (result as any).googleBooksId || out[e.idx].google_books_id,
-           };
-           console.log(`[COVER] INLINE_RESOLVED workKey=${e.workKey}`);
-         }
-       } catch (err: any) {
-         console.warn(`[COVER] INLINE_FAILED workKey=${e.workKey}`, err?.message);
-       }
-     })
-   );
+ // Queue ALL misses for background cover resolution (QStash worker).
+ // IMPORTANT: Do NOT resolve covers inline — it causes Vercel function timeout,
+ // which prevents the scan job from being marked 'completed'. This left jobs stuck
+ // in 'processing' forever, causing the client to never receive scan results.
+ // The client-side backfill at 12s and the background worker handle covers.
+ for (const e of misses) {
+   await upsertPending(db, e.workKey, e.isbn, e.title, e.author);
  }
-
- // Queue ALL misses (including inline ones that failed) for background resolution.
- // This ensures every book eventually gets a cover attempt even if inline timed out.
- const allMissItems = misses
-   .filter(e => !out[e.idx]?.coverUrl) // Only books still missing covers
-   .map(e => ({ workKey: e.workKey, isbn: e.isbn, title: e.title, author: e.author }));
- if (allMissItems.length > 0) {
-   for (const item of allMissItems) {
-     await upsertPending(db, item.workKey, item.isbn, item.title, item.author);
-   }
-   enqueueCoverResolve(allMissItems).catch(err =>
-     console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Cover enqueue failed:`, err?.message)
-   );
- }
+ const items = misses.map(e => ({
+   workKey: e.workKey,
+   isbn: e.isbn,
+   title: e.title,
+   author: e.author,
+ }));
+ enqueueCoverResolve(items).catch(err =>
+   console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Cover enqueue failed:`, err?.message)
+ );
  }
 
  // Ensure every book has work_key (including those we couldn't look up)
