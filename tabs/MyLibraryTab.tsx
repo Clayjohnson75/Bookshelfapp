@@ -300,7 +300,7 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
     });
     return Array.from(byId.values());
   }, [resolvePhotoId]);
-  const LOAD_USER_DATA_DEBOUNCE_MS = 2000;
+  const LOAD_USER_DATA_DEBOUNCE_MS = 30000; // 30s: don't re-fetch from server on every tab switch
 
   // Profile: only approved books. Must be defined before filteredBooks/displayedBooks/authorsWithBooks.
   const approvedBooksOnly = useMemo(
@@ -549,7 +549,10 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  if (isFocusLoad) perfLog('photos_tab_open', 'tap', { tapAt: Date.now() });
  if (__DEV__) logger.debug('[LIB] refresh start', { source, user: user.uid.slice(0, 6) });
 
- setIsLoadingData(true);
+ // Only show loading state if we don't already have data. This prevents the
+ // profile/covers from blanking out when navigating back from a detail page.
+ const hasExistingData = (books ?? []).length > 0;
+ if (!hasExistingData) setIsLoadingData(true);
  setSessionMissingForLibrary(false);
 
  try {
