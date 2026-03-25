@@ -7602,19 +7602,19 @@ refreshProfileStats();
  const author = (book.author || '').trim();
  const titleLower = title.toLowerCase();
  const authorLower = author.toLowerCase();
- 
+
  // Check for missing or invalid data
  if (!title || !author) return true;
  if (title === '' || author === '') return true;
- 
+
  // Check for Unknown author (case-insensitive) - main case for ChatGPT failures
  if (authorLower === 'unknown' || authorLower === 'n/a' || authorLower === 'not found' || authorLower === '') return true;
  if (titleLower === 'unknown' || titleLower === 'n/a' || titleLower === 'not found') return true;
- 
+
  // Check if ChatGPT marked it as invalid with Unknown author
  if (book.confidence === 'low' && (authorLower === 'unknown' || !author || author.trim() === '')) return true;
  if (book.chatgptReason && (book.chatgptReason.toLowerCase().includes('not a real book') || book.chatgptReason.toLowerCase().includes('unknown'))) return true;
- 
+
  // Check for common OCR errors or invalid text
  if (title.length < 2 || author.length < 2) return true;
  if (/^[^a-zA-Z0-9\s]+$/.test(title) || /^[^a-zA-Z0-9\s]+$/.test(author)) return true;
@@ -8738,6 +8738,20 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
  const allBooks = result.books;
  const newPendingBooks = allBooks.filter((book: Book) => !isIncompleteBook(book));
  const newIncompleteBooks = allBooks.filter((book: Book) => isIncompleteBook(book));
+ // Log exactly how many books survived the incomplete filter
+ if (newIncompleteBooks.length > 0) {
+   logger.warn('[SCAN_IMPORT_FILTERED]', {
+     jobId,
+     serverTotal: allBooks.length,
+     pending: newPendingBooks.length,
+     incomplete: newIncompleteBooks.length,
+     droppedTitles: newIncompleteBooks.slice(0, 5).map((b: Book) => ({
+       title: (b.title ?? '').slice(0, 40),
+       author: (b.author ?? '').slice(0, 30),
+       confidence: (b as any).confidence,
+     })),
+   });
+ }
  const existingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
  const keyForDedupe = photoStableKey({ id: scanId, photoFingerprint: imageHash } as Photo);
  const prevPhotos = photosRef.current;
