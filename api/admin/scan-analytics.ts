@@ -81,12 +81,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .in('status', ['failed', 'error'])
         .order('created_at', { ascending: false })
         .limit(50),
-      // Cover resolution stats — use separate count queries instead of fetching all rows
-      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'ready'),
-      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'missing'),
-      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'error'),
-      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }),
+      // Cover resolution stats — table is keyed by work_key, not id
+      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'ready'),
+      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'missing'),
+      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }).eq('status', 'error'),
+      supabase.from('cover_resolutions').select('work_key', { count: 'exact', head: true }),
     ]);
+
+    // Log any query errors for debugging
+    const queryErrors = [
+      totalUsersRes.error && 'totalUsers: ' + totalUsersRes.error.message,
+      totalScansRes.error && 'totalScans: ' + totalScansRes.error.message,
+      recentScansRes.error && 'recentScans: ' + recentScansRes.error.message,
+      recentErrorsRes.error && 'recentErrors: ' + recentErrorsRes.error.message,
+      coverReadyRes.error && 'coverReady: ' + coverReadyRes.error.message,
+      coverTotalRes.error && 'coverTotal: ' + coverTotalRes.error.message,
+    ].filter(Boolean);
+    if (queryErrors.length > 0) console.warn('[ADMIN_ANALYTICS] query errors:', queryErrors.join('; '));
 
     const totalUsers = totalUsersRes.count ?? 0;
     const totalScans = totalScansRes.count ?? 0;
