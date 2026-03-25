@@ -851,12 +851,21 @@ React.useEffect(() => {
  /** Watchdog uses this only — refresh scan-job list (sync-scans?active=1), never profile/books/photos. */
  const refreshScanJobsOnlyRef = React.useRef<() => Promise<void>>(async () => {});
  const enqueueBookEnrichmentRef = React.useRef<(bookIds: string[]) => void | Promise<void>>(() => {});
+ // Track which jobs have already been fully handled to prevent duplicate imports.
+ // The upload queue can fire onJobTerminalStatus multiple times for the same job.
+ const handledTerminalJobsRef = React.useRef(new Set<string>());
   const handleJobTerminalStatus = React.useCallback((jobId: string, status: 'completed' | 'failed' | 'canceled') => {
     if (jobId == null || typeof jobId !== 'string') return;
     const raw = jobId.trim();
     if (!raw || raw.length < 8) return;
     const canonicalId = toScanJobId(raw);
     if (canonicalId.length < 40) return;
+    // Idempotency guard: skip if we already handled this job.
+    if (handledTerminalJobsRef.current.has(canonicalId)) {
+      logger.debug('[SCAN_TERMINAL_SKIP]', 'already handled', { jobId: canonicalId.slice(0, 12), status });
+      return;
+    }
+    handledTerminalJobsRef.current.add(canonicalId);
  const activeJobIdsBefore = activeScanJobIdsRef.current.length;
  removeActiveScanJobId(canonicalId);
  logger.info('[SCAN_TERMINAL_REMOVE]', 'remove job from active list (durable store + in-memory)', {

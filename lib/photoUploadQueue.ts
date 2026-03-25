@@ -613,7 +613,25 @@ async function requestScanAndPoll(
   onPhotoUploadFailed?.(userId, photoId, errMsg);
 }
 
+// Track items currently being processed to prevent concurrent duplicate processing.
+const inFlightPhotoIds = new Set<string>();
+
 async function processOneItem(item: UploadQueueItem): Promise<void> {
+  const { userId, photoId, localUri } = item;
+  // Prevent concurrent processing of the same photo.
+  if (inFlightPhotoIds.has(photoId)) {
+    logger.debug('[UPLOAD_QUEUE]', 'skip: already in-flight', { photoId: photoId.slice(0, 8) });
+    return;
+  }
+  inFlightPhotoIds.add(photoId);
+  try {
+    return await _processOneItemInner(item);
+  } finally {
+    inFlightPhotoIds.delete(photoId);
+  }
+}
+
+async function _processOneItemInner(item: UploadQueueItem): Promise<void> {
   const { userId, photoId, localUri } = item;
   const baseUrl = getApiBaseUrl();
   if (!baseUrl) {
