@@ -4,351 +4,293 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="/logo.png" type="image/png">
-  <title>Admin – User Stats | Bookshelf Scanner</title>
+  <title>Admin Dashboard | Bookshelf Scanner</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: #f8f6f0;
-      min-height: 100vh;
-      color: #2c3e50;
-    }
-    .header {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 16px 0;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    }
-    .header-content {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 0 20px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .logo-link {
-      display: flex;
-      align-items: center;
-      text-decoration: none;
-      color: #2c3e50;
-      font-weight: 700;
-      font-size: 18px;
-    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f8f6f0; min-height: 100vh; color: #2c3e50; }
+    .header { background: white; border-bottom: 1px solid #e0e0e0; padding: 16px 0; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+    .header-content { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; }
+    .logo-link { display: flex; align-items: center; text-decoration: none; color: #2c3e50; font-weight: 700; font-size: 18px; }
     .logo-link img { width: 32px; height: 32px; margin-right: 10px; }
-    .admin-title { font-size: 18px; font-weight: 600; color: #2c3e50; }
-    .back-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 14px;
-      font-size: 14px;
-      font-weight: 500;
-      color: #007AFF;
-      text-decoration: none;
-      border-radius: 8px;
-      background: #f0f4f8;
-    }
-    .back-link:hover { background: #e8eef4; color: #0056b3; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 14px; font-weight: 500; color: #007AFF; text-decoration: none; border-radius: 8px; background: #f0f4f8; }
+    .back-link:hover { background: #e8eef4; }
     .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .search-input {
-      padding: 10px 14px;
-      font-size: 14px;
-      border: 2px solid #e0e0e0;
-      border-radius: 8px;
-      width: 260px;
-      max-width: 100%;
-    }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 2px solid #e0e0e0; }
+    .tab { padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: none; color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+    .tab:hover { color: #2c3e50; }
+    .tab.active { color: #2c3e50; border-bottom-color: #2c3e50; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Cards */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .card-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 4px; }
+    .card-value { font-size: 28px; font-weight: 700; color: #2c3e50; font-variant-numeric: tabular-nums; }
+    .card-value.green { color: #27ae60; }
+    .card-value.red { color: #c0392b; }
+    .card-value.blue { color: #2980b9; }
+
+    /* Tables */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 20px; }
+    .search-input { padding: 10px 14px; font-size: 14px; border: 2px solid #e0e0e0; border-radius: 8px; width: 260px; max-width: 100%; }
     .search-input:focus { outline: none; border-color: #007AFF; }
-    .btn {
-      padding: 10px 18px;
-      font-size: 14px;
-      font-weight: 600;
-      border-radius: 8px;
-      cursor: pointer;
-      border: none;
-      background: #34495e;
-      color: white;
-    }
+    .btn { padding: 10px 18px; font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer; border: none; background: #34495e; color: white; }
     .btn:hover { background: #2c3e50; }
-    .btn:disabled { background: #ccc; cursor: not-allowed; }
     .meta { font-size: 13px; color: #666; margin-bottom: 12px; }
-    .table-wrap { overflow-x: auto; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
-    table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    .table-wrap { overflow-x: auto; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; min-width: 800px; }
     th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #eee; }
-    th {
-      background: #f5f5f5;
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: #555;
-      white-space: nowrap;
-    }
+    th { background: #f5f5f5; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #555; white-space: nowrap; }
     th.sortable { cursor: pointer; }
     th.sortable:hover { color: #007AFF; }
     td { font-size: 14px; }
     tr:hover { background: #fafafa; }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-completed { background: #d4edda; color: #155724; }
+    .badge-failed { background: #f8d7da; color: #721c24; }
+    .badge-processing { background: #fff3cd; color: #856404; }
+    .badge-error { background: #f8d7da; color: #721c24; }
     .message { padding: 24px; text-align: center; color: #666; }
     .error { color: #c33; padding: 20px; text-align: center; }
     .loading { padding: 40px; text-align: center; color: #666; }
+
+    /* Cover stats */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    .stats-section { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .stats-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #555; }
+    .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { color: #666; }
+    .stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    @media (max-width: 768px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: repeat(2, 1fr); }
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="header-content">
-      <a href="/" class="logo-link">
-        <img src="/logo.png" alt="Bookshelf Scanner">
-        <span>Bookshelf Scanner</span>
-      </a>
-      <a href="/profile" class="back-link" title="Back to my profile">← Back to my profile</a>
-      <span class="admin-title">Admin – User Stats</span>
+      <a href="/" class="logo-link"><img src="/logo.png" alt="BS"><span>Bookshelf Scanner</span></a>
+      <a href="/profile" class="back-link">Back to profile</a>
     </div>
   </div>
 
   <div class="container">
-    <div class="toolbar">
-      <input type="text" class="search-input" id="searchInput" placeholder="Search username, display name, email…" />
-      <button type="button" class="btn" id="refreshBtn">Refresh</button>
+    <div class="tabs">
+      <button class="tab active" data-tab="users">Users</button>
+      <button class="tab" data-tab="analytics">Scan Analytics</button>
+      <button class="tab" data-tab="errors">Errors</button>
     </div>
-    <div class="meta" id="meta">Last updated: —</div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th class="sortable" data-sort="username">username</th>
-            <th class="sortable" data-sort="display_name">display_name</th>
-            <th class="sortable" data-sort="email">email</th>
-            <th class="sortable num" data-sort="total_completed_scans">total_completed_scans</th>
-            <th class="sortable num" data-sort="scans_last_7d">scans_last_7d</th>
-            <th class="sortable num" data-sort="scans_last_30d">scans_last_30d</th>
-            <th class="sortable num" data-sort="total_books">total_books</th>
-            <th class="sortable num" data-sort="avg_books_per_completed_scan">avg_books/scan</th>
-            <th class="sortable" data-sort="last_scan_at">last_scan_at</th>
-          </tr>
-        </thead>
-        <tbody id="tbody"></tbody>
-      </table>
+
+    <!-- USERS TAB (existing) -->
+    <div class="tab-content active" id="tab-users">
+      <div class="toolbar">
+        <input type="text" class="search-input" id="searchInput" placeholder="Search username, email..." />
+        <button type="button" class="btn" id="refreshBtn">Refresh</button>
+      </div>
+      <div class="meta" id="meta">Last updated: --</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="sortable" data-sort="username" data-tab="users">username</th>
+            <th class="sortable" data-sort="display_name" data-tab="users">display_name</th>
+            <th class="sortable" data-sort="email" data-tab="users">email</th>
+            <th class="sortable num" data-sort="total_completed_scans" data-tab="users">scans</th>
+            <th class="sortable num" data-sort="scans_last_7d" data-tab="users">7d</th>
+            <th class="sortable num" data-sort="scans_last_30d" data-tab="users">30d</th>
+            <th class="sortable num" data-sort="total_books" data-tab="users">books</th>
+            <th class="sortable num" data-sort="avg_books_per_completed_scan" data-tab="users">avg/scan</th>
+            <th class="sortable" data-sort="last_scan_at" data-tab="users">last_scan</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div id="usersLoading" class="loading" style="display:none;">Loading...</div>
+      <div id="usersError" class="error" style="display:none;"></div>
     </div>
-    <div id="message" class="message" style="display:none;"></div>
-    <div id="error" class="error" style="display:none;"></div>
-    <div id="loading" class="loading" style="display:none;">Loading…</div>
+
+    <!-- ANALYTICS TAB -->
+    <div class="tab-content" id="tab-analytics">
+      <div id="analyticsCards" class="cards"></div>
+      <h3 style="margin-bottom:12px;font-size:16px;font-weight:600;">Recent Scans</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>User</th><th>Time</th><th>Status</th>
+            <th class="num">Books</th><th class="num">Covers</th><th class="num">Cover %</th>
+            <th class="num">Duration</th><th>Stage</th>
+          </tr></thead>
+          <tbody id="recentScansTbody"></tbody>
+        </table>
+      </div>
+      <div class="stats-grid" id="coverStatsGrid"></div>
+      <div id="analyticsLoading" class="loading" style="display:none;">Loading...</div>
+      <div id="analyticsError" class="error" style="display:none;"></div>
+    </div>
+
+    <!-- ERRORS TAB -->
+    <div class="tab-content" id="tab-errors">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>User</th><th>Time</th><th>Status</th><th>Stage</th><th>Detail</th><th>Job ID</th>
+          </tr></thead>
+          <tbody id="errorsTbody"></tbody>
+        </table>
+      </div>
+      <div id="errorsLoading" class="loading" style="display:none;">Loading...</div>
+      <div id="errorsEmpty" class="message" style="display:none;">No errors found.</div>
+    </div>
   </div>
 
   <script>
-    (function() {
-      const tbody = document.getElementById('tbody');
-      const meta = document.getElementById('meta');
-      const messageEl = document.getElementById('message');
-      const errorEl = document.getElementById('error');
-      const loadingEl = document.getElementById('loading');
-      const searchInput = document.getElementById('searchInput');
-      const refreshBtn = document.getElementById('refreshBtn');
+  (function() {
+    // --- Shared ---
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function getSession() { try { const r = localStorage.getItem('supabase_session'); if (!r) return null; const s = JSON.parse(r); return s && s.access_token ? s : null; } catch(e) { return null; } }
+    function redirectToSignIn() { window.location.href = '/signin?returnUrl=' + encodeURIComponent('/admin'); }
+    function timeAgo(d) { if (!d) return '--'; const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000); if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago'; if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago'; }
+    function badge(status) { const c = status === 'completed' ? 'completed' : status === 'failed' || status === 'error' ? 'failed' : 'processing'; return '<span class="badge badge-' + c + '">' + esc(status) + '</span>'; }
+    function formatMs(ms) { if (ms == null) return '--'; if (ms < 1000) return ms + 'ms'; return (ms / 1000).toFixed(1) + 's'; }
 
-      let allRows = [];
-      let sortKey = 'scans_last_7d';
-      let sortDir = 'desc';
-      let refreshTimer = null;
-      const REFRESH_MS = 60000;
+    // --- Tab switching ---
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
+    let activeTab = 'users';
+    tabs.forEach(function(t) {
+      t.addEventListener('click', function() {
+        tabs.forEach(function(x) { x.classList.remove('active'); });
+        tabContents.forEach(function(x) { x.classList.remove('active'); });
+        t.classList.add('active');
+        const tab = t.getAttribute('data-tab');
+        document.getElementById('tab-' + tab).classList.add('active');
+        activeTab = tab;
+        if (tab === 'analytics' && !analyticsLoaded) loadAnalytics();
+        if (tab === 'errors' && !errorsLoaded) loadAnalytics();
+      });
+    });
 
-      function hideAll() {
-        tbody.innerHTML = '';
-        messageEl.style.display = 'none';
-        errorEl.style.display = 'none';
-        loadingEl.style.display = 'none';
-      }
+    // --- Users Tab (existing logic) ---
+    var allRows = [], sortKey = 'scans_last_7d', sortDir = 'desc';
+    var tbody = document.getElementById('tbody');
+    var searchInput = document.getElementById('searchInput');
 
-      function showMessage(msg) {
-        hideAll();
-        messageEl.textContent = msg;
-        messageEl.style.display = 'block';
-      }
+    function renderUsers(rows) {
+      document.getElementById('usersLoading').style.display = 'none';
+      var q = searchInput.value.trim().toLowerCase();
+      var filtered = q ? rows.filter(function(r) { return [r.username, r.display_name, r.email].some(function(v) { return v != null && String(v).toLowerCase().indexOf(q) !== -1; }); }) : rows;
+      var sorted = filtered.sort(function(a, b) { var va = a[sortKey], vb = b[sortKey]; if (va == null) return 1; if (vb == null) return -1; var c = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb), undefined, {numeric:true}); return sortDir === 'asc' ? c : -c; });
+      tbody.innerHTML = '';
+      sorted.forEach(function(r) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(r.username || '--') + '</td><td>' + esc(r.display_name || '--') + '</td><td>' + esc(r.email || '--') + '</td>' +
+          '<td class="num">' + (r.total_completed_scans ?? '--') + '</td><td class="num">' + (r.scans_last_7d ?? '--') + '</td><td class="num">' + (r.scans_last_30d ?? '--') + '</td>' +
+          '<td class="num">' + (r.total_books ?? '--') + '</td><td class="num">' + (r.avg_books_per_completed_scan ?? '--') + '</td><td>' + timeAgo(r.last_scan_at) + '</td>';
+        tbody.appendChild(tr);
+      });
+      document.getElementById('meta').textContent = 'Last updated: ' + new Date().toLocaleString() + ' | ' + sorted.length + ' users';
+    }
 
-      function showError(msg) {
-        hideAll();
-        errorEl.textContent = msg;
-        errorEl.style.display = 'block';
-      }
+    function fetchUsers() {
+      var session = getSession(); if (!session) { redirectToSignIn(); return; }
+      document.getElementById('usersLoading').style.display = 'block';
+      fetch('/api/admin/user-stats?limit=500', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
+        .then(function(r) { if (r.status === 401) { redirectToSignIn(); return; } if (r.status === 403) { document.getElementById('usersError').textContent = 'Admin access required'; document.getElementById('usersError').style.display = 'block'; return; } return r.json(); })
+        .then(function(d) { if (!d) return; allRows = d.data || []; renderUsers(allRows); })
+        .catch(function(e) { document.getElementById('usersError').textContent = e.message; document.getElementById('usersError').style.display = 'block'; });
+    }
 
-      function showLoading() {
-        errorEl.style.display = 'none';
-        messageEl.style.display = 'none';
-        loadingEl.style.display = 'block';
-        loadingEl.textContent = 'Loading…';
-      }
+    document.getElementById('refreshBtn').addEventListener('click', fetchUsers);
+    searchInput.addEventListener('input', function() { renderUsers(allRows); });
+    document.querySelectorAll('th.sortable[data-tab="users"]').forEach(function(th) {
+      th.addEventListener('click', function() { var k = th.getAttribute('data-sort'); if (sortKey === k) sortDir = sortDir === 'asc' ? 'desc' : 'asc'; else { sortKey = k; sortDir = 'desc'; } renderUsers(allRows); });
+    });
 
-      function getSession() {
-        try {
-          const raw = localStorage.getItem('supabase_session');
-          if (!raw) return null;
-          const s = JSON.parse(raw);
-          return s && s.access_token ? s : null;
-        } catch (e) {
-          return null;
-        }
-      }
+    // --- Analytics & Errors Tabs ---
+    var analyticsLoaded = false, errorsLoaded = false;
+    var analyticsData = null;
 
-      function redirectToSignIn() {
-        window.location.href = '/signin?returnUrl=' + encodeURIComponent('/admin');
-      }
-
-      function formatDate(v) {
-        if (v == null || v === '') return '—';
-        const d = new Date(v);
-        return isNaN(d.getTime()) ? v : d.toLocaleString();
-      }
-
-      function compare(a, b, key) {
-        const va = a[key];
-        const vb = b[key];
-        if (va == null && vb == null) return 0;
-        if (va == null) return sortDir === 'asc' ? -1 : 1;
-        if (vb == null) return sortDir === 'asc' ? 1 : -1;
-        if (typeof va === 'number' && typeof vb === 'number') return va - vb;
-        const sa = String(va);
-        const sb = String(vb);
-        return sa.localeCompare(sb, undefined, { numeric: true });
-      }
-
-      function sortRows(rows) {
-        return [...rows].sort(function(a, b) {
-          const c = compare(a, b, sortKey);
-          return sortDir === 'asc' ? c : -c;
-        });
-      }
-
-      function filterRows(rows, q) {
-        if (!q || !q.trim()) return rows;
-        const lower = q.trim().toLowerCase();
-        return rows.filter(function(r) {
-          return [r.username, r.display_name, r.email].some(function(v) {
-            return v != null && String(v).toLowerCase().indexOf(lower) !== -1;
-          });
-        });
-      }
-
-      function render(rows) {
-        loadingEl.style.display = 'none';
-        errorEl.style.display = 'none';
-        messageEl.style.display = 'none';
-        const filtered = filterRows(rows, searchInput.value.trim());
-        const sorted = sortRows(filtered);
-        tbody.innerHTML = '';
-        if (sorted.length === 0) {
-          showMessage('No rows to show.');
-          return;
-        }
-        sorted.forEach(function(r) {
-          const tr = document.createElement('tr');
-          tr.innerHTML =
-            '<td>' + (r.username != null ? escapeHtml(String(r.username)) : '—') + '</td>' +
-            '<td>' + (r.display_name != null ? escapeHtml(String(r.display_name)) : '—') + '</td>' +
-            '<td>' + (r.email != null ? escapeHtml(String(r.email)) : '—') + '</td>' +
-            '<td class="num">' + (r.total_completed_scans != null ? r.total_completed_scans : '—') + '</td>' +
-            '<td class="num">' + (r.scans_last_7d != null ? r.scans_last_7d : '—') + '</td>' +
-            '<td class="num">' + (r.scans_last_30d != null ? r.scans_last_30d : '—') + '</td>' +
-            '<td class="num">' + (r.total_books != null ? r.total_books : '—') + '</td>' +
-            '<td class="num">' + (r.avg_books_per_completed_scan != null ? r.avg_books_per_completed_scan : '—') + '</td>' +
-            '<td>' + formatDate(r.last_scan_at) + '</td>';
-          tbody.appendChild(tr);
-        });
-      }
-
-      function escapeHtml(s) {
-        const div = document.createElement('div');
-        div.textContent = s;
-        return div.innerHTML;
-      }
-
-      function fetchStats(params) {
-        const session = getSession();
-        if (!session) {
-          redirectToSignIn();
-          return;
-        }
-        showLoading();
-        const qs = new URLSearchParams(params || {}).toString();
-        const url = '/api/admin/user-stats' + (qs ? '?' + qs : '');
-        fetch(url, {
-          method: 'GET',
-          headers: { 'Authorization': 'Bearer ' + session.access_token },
+    function loadAnalytics() {
+      var session = getSession(); if (!session) { redirectToSignIn(); return; }
+      document.getElementById('analyticsLoading').style.display = 'block';
+      document.getElementById('errorsLoading').style.display = 'block';
+      fetch('/api/admin/scan-analytics', { headers: { 'Authorization': 'Bearer ' + session.access_token } })
+        .then(function(r) { if (r.status === 401) { redirectToSignIn(); return; } if (!r.ok) throw new Error('Failed to load'); return r.json(); })
+        .then(function(d) {
+          if (!d) return;
+          analyticsData = d;
+          analyticsLoaded = true;
+          errorsLoaded = true;
+          renderAnalytics(d);
+          renderErrors(d.recentErrors || []);
         })
-          .then(function(res) {
-            if (res.status === 401) {
-              redirectToSignIn();
-              return;
-            }
-            if (res.status === 403) {
-              showError('Access denied. Admin only.');
-              return;
-            }
-            if (!res.ok) {
-              return res.json().then(function(j) {
-                showError(j.message || j.error || 'Request failed');
-              }).catch(function() {
-                showError('Request failed');
-              });
-              return;
-            }
-            return res.json();
-          })
-          .then(function(data) {
-            if (!data) return;
-            allRows = data.data || [];
-            meta.textContent = 'Last updated: ' + new Date().toLocaleString();
-            render(allRows);
-          })
-          .catch(function(err) {
-            showError(err.message || 'Network error');
-          });
-      }
+        .catch(function(e) { document.getElementById('analyticsError').textContent = e.message; document.getElementById('analyticsError').style.display = 'block'; })
+        .finally(function() { document.getElementById('analyticsLoading').style.display = 'none'; document.getElementById('errorsLoading').style.display = 'none'; });
+    }
 
-      function refresh() {
-        const q = searchInput.value.trim();
-        fetchStats({ limit: 500, q: q || undefined });
-      }
+    function renderAnalytics(d) {
+      var o = d.overview || {};
+      var cards = [
+        { label: 'Total Users', value: o.totalUsers ?? 0, color: '' },
+        { label: 'Total Scans', value: o.completedScans ?? 0, color: '' },
+        { label: 'Total Books', value: o.totalBooks ?? 0, color: '' },
+        { label: 'Cover Rate', value: Math.round((o.coverRate ?? 0) * 100) + '%', color: 'green' },
+        { label: 'Avg Books/Scan', value: o.avgBooksPerScan ?? 0, color: 'blue' },
+        { label: 'Scans (7d)', value: o.scans7d ?? 0, color: '' },
+        { label: 'Failed (24h)', value: o.failedScans24h ?? 0, color: (o.failedScans24h ?? 0) > 0 ? 'red' : '' },
+      ];
+      var html = '';
+      cards.forEach(function(c) { html += '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value ' + c.color + '">' + c.value + '</div></div>'; });
+      document.getElementById('analyticsCards').innerHTML = html;
 
-      refreshBtn.addEventListener('click', function() {
-        refresh();
+      // Recent scans table
+      var stbody = document.getElementById('recentScansTbody');
+      stbody.innerHTML = '';
+      (d.recentScans || []).forEach(function(s) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(s.username || '--') + '</td><td>' + timeAgo(s.createdAt) + '</td><td>' + badge(s.status) + '</td>' +
+          '<td class="num">' + s.booksFound + '</td><td class="num">' + s.booksWithCovers + '</td><td class="num">' + s.coverRate + '%</td>' +
+          '<td class="num">' + formatMs(s.durationMs) + '</td><td>' + esc(s.stage || '--') + '</td>';
+        stbody.appendChild(tr);
       });
 
-      searchInput.addEventListener('input', function() {
-        render(allRows);
-      });
-      searchInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') refresh();
-      });
+      // Cover stats
+      var cs = d.coverStats || {};
+      var byStatus = cs.byStatus || {};
+      var bySource = cs.bySource || {};
+      var grid = document.getElementById('coverStatsGrid');
+      var statusHtml = '<div class="stats-section"><h3>Cover Resolution by Status</h3>';
+      Object.keys(byStatus).sort().forEach(function(k) { statusHtml += '<div class="stat-row"><span class="stat-label">' + esc(k) + '</span><span class="stat-value">' + byStatus[k] + '</span></div>'; });
+      statusHtml += '<div class="stat-row" style="font-weight:600;border-top:2px solid #e0e0e0;padding-top:8px;"><span class="stat-label">Total</span><span class="stat-value">' + (cs.total ?? 0) + '</span></div></div>';
+      var sourceHtml = '<div class="stats-section"><h3>Cover Resolution by Source</h3>';
+      Object.keys(bySource).sort().forEach(function(k) { sourceHtml += '<div class="stat-row"><span class="stat-label">' + esc(k) + '</span><span class="stat-value">' + bySource[k] + '</span></div>'; });
+      sourceHtml += '</div>';
+      grid.innerHTML = statusHtml + sourceHtml;
+    }
 
-      document.querySelectorAll('th.sortable').forEach(function(th) {
-        th.addEventListener('click', function() {
-          const key = th.getAttribute('data-sort');
-          if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-          else { sortKey = key; sortDir = 'desc'; }
-          render(allRows);
-        });
+    function renderErrors(errors) {
+      var etbody = document.getElementById('errorsTbody');
+      etbody.innerHTML = '';
+      if (errors.length === 0) { document.getElementById('errorsEmpty').style.display = 'block'; return; }
+      errors.forEach(function(e) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(e.username || '--') + '</td><td>' + timeAgo(e.createdAt) + '</td><td>' + badge(e.status) + '</td>' +
+          '<td>' + esc(e.stage || '--') + '</td><td>' + esc(e.detail || '--') + '</td><td style="font-size:11px;color:#888;">' + esc((e.jobId || '').slice(0, 12)) + '</td>';
+        etbody.appendChild(tr);
       });
+    }
 
-      refreshTimer = setInterval(refresh, REFRESH_MS);
-
-      window.addEventListener('DOMContentLoaded', function() {
-        if (!getSession()) {
-          redirectToSignIn();
-          return;
-        }
-        fetchStats({ limit: 500 });
-      });
-    })();
+    // --- Init ---
+    if (!getSession()) { redirectToSignIn(); return; }
+    fetchUsers();
+    setInterval(function() { if (activeTab === 'users') fetchUsers(); else loadAnalytics(); }, 60000);
+  })();
   </script>
 </body>
 </html>
