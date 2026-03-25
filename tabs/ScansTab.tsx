@@ -2656,8 +2656,12 @@ useEffect(() => {
  if (savedPending) {
  try {
  const parsed = JSON.parse(savedPending);
- setPendingBooks(parsed);
- storagePending = parsed.length;
+ const pk = new Set((Array.isArray(parsed) ? parsed : []).map((b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+ setPendingBooks((prev) => {
+   const localOnly = prev.filter(b => !pk.has(`${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+   return [...(Array.isArray(parsed) ? parsed : []), ...localOnly];
+ });
+ storagePending = Array.isArray(parsed) ? parsed.length : 0;
  } catch (e) {
  logger.error('Error parsing pending books:', e);
  }
@@ -3170,7 +3174,11 @@ if (savedPhotoAliases) {
  } else if (savedPending) {
  try {
  const parsed = resolveBookPhotoIdsCb(JSON.parse(savedPending) as Book[], 'ingestion');
- setPendingBooks(parsed);
+ const pKeys = new Set(parsed.map((b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+ setPendingBooks((prev) => {
+   const localOnly = prev.filter(b => !pKeys.has(`${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+   return [...parsed, ...localOnly];
+ });
  storagePending = parsed.length;
  } catch (e) {
  logger.error('Error parsing pending books:', e);
@@ -5101,7 +5109,12 @@ try {
 const parsed = resolveBookPhotoIdsCb(JSON.parse(savedPending) as Book[], 'ingestion');
 const arr = Array.isArray(parsed) ? parsed : [];
 loadedPending = arr;
-setPendingBooks(arr);
+// Use functional update to merge with existing pending (preserves locally-imported scan books).
+const storedKeys = new Set(arr.map((b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+setPendingBooks((prev) => {
+  const localOnly = prev.filter(b => !storedKeys.has(`${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`));
+  return [...arr, ...localOnly];
+});
 } catch (e) {
 logger.error('Error parsing pending books:', e);
 }
