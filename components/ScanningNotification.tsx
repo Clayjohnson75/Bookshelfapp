@@ -881,9 +881,14 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
  const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
  const clampedProgress = clamp(Number(normalizedProgress ?? 0), 0, 100);
  // During exit phase, force 100%. Otherwise use calculated progress.
- const progressPercent = showExitAt100 ? 100 : Math.round(clampedProgress);
- // Track last non-zero progress for exit detection.
- if (progressPercent > 0 && !showExitAt100) lastProgressPercentRef.current = progressPercent;
+ // NEVER decrease: clamp to the highest value seen so the bar doesn't jump backwards
+ // (e.g. client ramp shows 2%, then server sends 0% — bar should stay at 2%).
+ const rawPercent = showExitAt100 ? 100 : Math.round(clampedProgress);
+ const progressPercent = Math.max(rawPercent, lastProgressPercentRef.current);
+ // Track high-water mark for exit detection and never-decrease guard.
+ if (progressPercent > 0) lastProgressPercentRef.current = progressPercent;
+ // Reset high-water when a new batch starts (inFlightCount went from 0 to >0).
+ if (inFlightCount > 0 && lastProgressPercentRef.current >= 100) lastProgressPercentRef.current = 0;
  // Diagnostic: ensure bar fill uses same value we log (0–100, not fraction).
  if (__DEV__ && shouldShow && (progressPercent > 0 || rawProgress > 0)) {
    logger.trace('[SCAN_BAR_PROGRESS_WIRE]', {
