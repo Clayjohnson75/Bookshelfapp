@@ -106,9 +106,22 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  setLastStableBookCount(profileBookCount);
  }
 
+ // Resolve photo IDs through the alias map so local IDs and canonical server IDs
+ // for the same photo aren't counted separately (was causing 6 instead of 4).
+ let aliasMap: Record<string, string> = {};
+ try {
+   const aliasRaw = await AsyncStorage.getItem(`photo_id_aliases_${user.uid}`);
+   if (aliasRaw) {
+     const parsed = JSON.parse(aliasRaw);
+     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) aliasMap = parsed;
+   }
+ } catch {}
  const countsByPhotoId = new Map<string, number>();
  activeArr.forEach((b: { source_photo_id?: string | null; sourcePhotoId?: string | null; photoId?: string | null }) => {
- const key = getBookSourcePhotoId(b);
+ const rawKey = getBookSourcePhotoId(b);
+ if (!rawKey) return;
+ // Resolve through alias map: local_abc → server_xyz
+ const key = (aliasMap[rawKey] ?? rawKey).trim().toLowerCase();
  if (key) countsByPhotoId.set(key, (countsByPhotoId.get(key) ?? 0) + 1);
  });
  if (forceUpdate || !mergeInProgressRef.current) {
