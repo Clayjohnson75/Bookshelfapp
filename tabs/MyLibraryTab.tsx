@@ -679,14 +679,10 @@ setFolders([]);
  // This ensures no local books are lost if Supabase is missing them
  let mergedBooks: Book[] = [];
 
- // If user just cleared library, do NOT repopulate from Supabase (avoids 250-book flash)
- const clearedAt = libraryClearedAt ? parseInt(libraryClearedAt, 10) : NaN;
- const recentlyCleared = !isNaN(clearedAt) && (Date.now() - clearedAt < 120000);
- // Only remove the key after the grace period has expired so subsequent loads within
- // the window still see the guard. Prevents server books from flowing back in.
- if (!isNaN(clearedAt) && Date.now() - clearedAt >= 120000) {
-   AsyncStorage.removeItem(libraryClearedAtKey).catch(() => {});
- }
+ // If user cleared library, do NOT repopulate from server. The cleared state persists
+ // until the user explicitly approves new books (which removes the key).
+ // Previously used a 120s timer that expired and let stale server data flow back in.
+ const recentlyCleared = !!libraryClearedAt;
  if (recentlyCleared) {
  mergedBooks = [];
  if (user) {

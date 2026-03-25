@@ -3011,6 +3011,14 @@ if (savedApproved) {
  };
 
  const loadUserData = async () => {
+ // CLEARED GUARD: If user cleared library, don't load server data until they approve new books.
+ if (user?.uid) {
+   const clearedAt = await AsyncStorage.getItem(`library_cleared_at_${user.uid}`);
+   if (clearedAt) {
+     logger.debug('[LOAD_USER_DATA] skip: library cleared, waiting for user to approve books');
+     return;
+   }
+ }
  // CRITICAL GUARD: Never run loadUserData while scanning is in progress.
  if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0 || batchDrainingRef.current) {
    logger.debug('[LOAD_USER_DATA] skip: scanning in progress', {
@@ -11747,6 +11755,8 @@ const approveSelectedBooks = useCallback(async () => {
     const APPROVAL_GRACE_MS = 15000;
     lastApprovedAtRef.current = now;
     approvalGraceUntilRef.current = now + APPROVAL_GRACE_MS;
+    // Clear the "library cleared" flag so MyLibraryTab shows the newly approved books.
+    if (user) AsyncStorage.removeItem(`library_cleared_at_${user.uid}`).catch(() => {});
     setLastApprovedAt(now);
 
     setPendingBooks(remainingBooks);
