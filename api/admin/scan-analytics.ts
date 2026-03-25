@@ -52,7 +52,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       booksWithCoversRes,
       recentScansRes,
       recentErrorsRes,
-      coverStatsRes,
+      coverReadyRes,
+      coverMissingRes,
+      coverErrorRes,
+      coverTotalRes,
     ] = await Promise.all([
       supabase.from('profiles').select('id', { count: 'exact', head: true }).is('deleted_at', null),
       supabase.from('scan_jobs').select('id', { count: 'exact', head: true }),
@@ -78,9 +81,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .in('status', ['failed', 'error'])
         .order('created_at', { ascending: false })
         .limit(50),
-      // Cover resolution stats
-      supabase.from('cover_resolutions')
-        .select('status, source'),
+      // Cover resolution stats — use separate count queries instead of fetching all rows
+      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'ready'),
+      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'missing'),
+      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }).eq('status', 'error'),
+      supabase.from('cover_resolutions').select('id', { count: 'exact', head: true }),
     ]);
 
     const totalUsers = totalUsersRes.count ?? 0;
@@ -142,18 +147,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       detail: s.stage_detail,
     }));
 
-    // Process cover stats
-    const coverStats: Record<string, number> = {};
-    const coverBySource: Record<string, number> = {};
-    let totalResolutions = 0;
-    (coverStatsRes.data ?? []).forEach((r: any) => {
-      const status = r.status || 'unknown';
-      coverStats[status] = (coverStats[status] ?? 0) + 1;
-      if (r.source) {
-        coverBySource[r.source] = (coverBySource[r.source] ?? 0) + 1;
-      }
-      totalResolutions++;
-    });
+    // Cover stats from count queries
+    const coverReady = coverReadyRes.count ?? 0;
+    const coverMissing = coverMissingRes.count ?? 0;
+    const coverError = coverErrorRes.count ?? 0;
+    const totalResolutions = coverTotalRes.count ?? 0;
 
     return res.status(200).json({
       overview: {
@@ -171,8 +169,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       recentErrors,
       coverStats: {
         total: totalResolutions,
-        byStatus: coverStats,
-        bySource: coverBySource,
+        byStatus: { ready: coverReady, missing: coverMissing, error: coverError, other: totalResolutions - coverReady - coverMissing - coverError },
+        bySource: {},
       },
     });
   } catch (err: any) {
