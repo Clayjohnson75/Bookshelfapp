@@ -7153,24 +7153,22 @@ photosNow: photosWithAccepted.length,
 });
 refreshProfileStats();
 
-// ── Full-Refresh Barrier ────────────────────────────────────────────────────
-// Re-fetch the FULL library (books + photos) from the server immediately after
-// approve commits so any "1 photo / 7 books" mismatch between local state and
-// DB is resolved on the same render cycle that cleared pending.
-// This runs non-blocking (fire-and-forget after a short settle delay) so it
-// does NOT extend the approve loading spinner, but it does overwrite state with
-// the ground-truth server snapshot once the writes have propagated.
-// Field-level merge (mergeBookFieldLevel) prevents the refresh from regressing
-// any identity fields (title/author) that were just approved.
+// ── Full-Refresh Barrier (DISABLED) ─────────────────────────────────────────
+// Previously re-fetched the FULL library from server after approve. DISABLED because:
+// 1. Server returns old soft-deleted books that weren't properly cleared
+// 2. Count guard fails when old + new > new (39 > 31, passes guard, pollutes state)
+// 3. Causes book count to jump from correct (31) to inflated (39) after 4 seconds
+// The optimistic write at approveSelectedBooks is the source of truth.
+// Server sync will happen naturally through loadUserData on next focus/rehydrate.
 ;(async () => {
-  // Small settle delay so the DB writes (upserts in approvePromises) are visible
-  // to the read replica before we query.
-  await new Promise(r => setTimeout(r, 800));
-  if (!user) return; // user signed out during delay
+  // DISABLED: skip the entire server refresh to prevent stale data pollution.
+  // The optimistic commit above already wrote correct data to state + AsyncStorage.
+  setPostApproveIdsSettled(true);
+  return;
 
-  // CRITICAL GUARD: Record the optimistic approved count BEFORE the IIFE fetches.
-  // The IIFE must NEVER write fewer approved books than the optimistic commit.
-  // This prevents old server data (from before a profile clear) from poisoning AsyncStorage.
+  // --- ORIGINAL CODE BELOW (kept for reference, never reached) ---
+  await new Promise(r => setTimeout(r, 800));
+  if (!user) return;
   const optimisticApprovedCount = approvedBooks.length;
 
   try {
