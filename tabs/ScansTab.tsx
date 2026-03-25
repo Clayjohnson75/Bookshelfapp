@@ -8748,9 +8748,19 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
  // Preserve storage_path and status from the existing Step A photo if it was already
  // uploaded by the durable queue. Without this, the scan import creates a fresh 'draft'
  // photo that overwrites the uploaded one, making the spinner show forever.
- const existingStepA = prevPhotos.find(p => p.id === canonicalPhotoId || (p.localId && p.localId === canonicalPhotoId));
+ // Match by multiple criteria since IDs can differ between Step A (local scanId) and
+ // scan import (canonicalPhotoId from server/hash dedup).
+ const trimUri = uri?.trim();
+ const existingStepA = prevPhotos.find(p =>
+   p.id === canonicalPhotoId ||
+   p.id === scanId ||
+   (p.localId && (p.localId === canonicalPhotoId || p.localId === scanId)) ||
+   (trimUri && ((p as any).local_uri ?? p.uri)?.trim() === trimUri)
+ );
  const preservedStoragePath = existingStepA?.storage_path ?? undefined;
- const preservedStatus = preservedStoragePath ? 'complete' as const : 'draft' as const;
+ // Once scan results are imported (we have books), mark photo as complete.
+ // The upload may still be in progress but the scan is done — no spinner needed.
+ const preservedStatus = 'complete' as const;
  const newPhoto: Photo = {
  id: canonicalPhotoId,
  uri: existingStepA?.uri ?? uri,
