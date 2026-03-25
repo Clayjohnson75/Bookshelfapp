@@ -158,7 +158,8 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  // Also persist last known counts so they're available instantly on next app open.
  useEffect(() => {
  if (!user || user.uid === GUEST_USER_ID) return;
- // Read counts directly from approved_books list (no stale cache layer).
+ // Read counts from approved_books list. This is async so counts start as null
+ // (displayed as empty string) until the read completes (~50ms).
  refreshProfileStats();
  }, [refreshProfileStats]);
 
@@ -197,7 +198,7 @@ export function useProfileStats(): ProfileStatsContextType {
  return ctx;
 }
 
-/** Format count for UI: null/undefined = "0" (assume zero until loaded); number = string. */
+/** Format count for UI: null/undefined = "" (hidden while loading); number = string. */
 export function formatCountForDisplay(count: number | null | undefined): string {
- return count == null ? '0' : String(count);
+ return count == null ? '' : String(count);
 }

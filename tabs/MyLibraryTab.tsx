@@ -366,9 +366,10 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  }, [authorsSortedForView, authorsSearchQuery]);
 
  const uniqueAuthorsCount = authorsWithBooks.length;
- // Always show the live computed count — no caching. The count derives from
- // approvedBooksOnly which updates when books state changes.
- const displayAuthorsCount = uniqueAuthorsCount;
+ // Show live author count, but hide (empty string) while books haven't loaded yet
+ // to prevent flashing a wrong number before the real data arrives.
+ const booksLoaded = approvedBooksOnly.length > 0 || (effectiveDisplayBookCount != null && effectiveDisplayBookCount === 0);
+ const displayAuthorsCount = booksLoaded ? uniqueAuthorsCount : '';
 
  // Sort by author's last name (fallback to title when author missing)
  const sortedDisplayedBooks = useMemo(() => {
