@@ -127,9 +127,9 @@ export const MyLibraryTab: React.FC = () => {
  
   const { user, session, signOut, authReady, loading: authLoading } = useAuth();
   const { displayBookCount, displayPhotoCount, lastStableBookCount, lastStablePhotoCount, refreshProfileStats, mergeInProgress, libraryHydrated, lastApprovedAt } = useProfileStats();
-  // Until hydration is stable, show last known count or "—" to prevent 0 flicker; don't render collage from pending/staging.
-  const effectiveDisplayBookCount = libraryHydrated ? displayBookCount : (lastStableBookCount ?? null);
-  const effectiveDisplayPhotoCount = libraryHydrated ? displayPhotoCount : (lastStablePhotoCount ?? null);
+  // Show the best available count immediately — prefer canonical, fall back to stable cache.
+  const effectiveDisplayBookCount = displayBookCount ?? lastStableBookCount ?? null;
+  const effectiveDisplayPhotoCount = displayPhotoCount ?? lastStablePhotoCount ?? null;
   const displayBookCountText = formatCountForDisplay(effectiveDisplayBookCount);
   const displayPhotoCountText = formatCountForDisplay(effectiveDisplayPhotoCount);
   const { onCancelComplete: cancelActiveBatch, activeScanJobIds } = useScanning();
@@ -2126,7 +2126,10 @@ const failedOrProcessingPhotos = useMemo(() => {
  }),
  [approvedBooksOnly]
  );
- const showHeaderCovers = libraryHydrated && (effectiveDisplayBookCount != null && effectiveDisplayBookCount > 0) && activeBooksForHeader.length > 0;
+ // Show collage as soon as we have approved books — don't wait for libraryHydrated
+ // (which depends on ScansTab's loadUserData completing the full server merge).
+ // Books from AsyncStorage cache are available almost instantly.
+ const showHeaderCovers = activeBooksForHeader.length > 0;
 
  const stableHash = useCallback((input: string): number => {
  let h = 2166136261;
