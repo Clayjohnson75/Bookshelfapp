@@ -3235,12 +3235,12 @@ onPress={() => {
  try {
  // Update local state immediately
  const userApprovedKey = `approved_books_${user.uid}`;
- const updatedBooks = books.map(b => 
+ const updatedBooks = books.map(b =>
  b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
- ? updatedBook
+ ? { ...b, ...updatedBook }
  : b
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  setSelectedBook(updatedBook);
  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
  
@@ -3546,10 +3546,10 @@ onPress={() => {
  const userApprovedKey = `approved_books_${user.uid}`;
  const updatedBooks = books.map(b =>
  b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
- ? updatedBook
+ ? { ...b, ...updatedBook }
  : b
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  setSelectedBook(updatedBook);
  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
  setTimeout(() => loadUserData(), 500);
@@ -3619,10 +3619,10 @@ onPress={() => {
  const userApprovedKey = `approved_books_${user.uid}`;
  const updatedBooks = books.map(b =>
  b.id === updatedBook.id || (b.title === updatedBook.title && b.author === updatedBook.author)
- ? updatedBook
+ ? { ...b, ...updatedBook }
  : b
  );
- setBooks(prev => dedupeBooks([...prev, ...updatedBooks]));
+ setBooks(dedupeBooks(updatedBooks));
  setSelectedBook(updatedBook);
  await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
  setTimeout(() => loadUserData(), 500);
