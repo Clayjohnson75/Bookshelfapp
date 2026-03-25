@@ -873,18 +873,51 @@ async function resolveCoversInWorker(
  console.log(`[COVER] cache check: total=${entries.length} hit=${hitCount} miss=${missCount}`);
 
  if (misses.length > 0) {
- for (const e of misses) {
- await upsertPending(db, e.workKey, e.isbn, e.title, e.author);
+ // Resolve covers inline for up to 15 books (most scans have <30 books).
+ // This gives users covers immediately instead of waiting for background queue.
+ const { resolveOne } = await import('../lib/coverResolution');
+ const INLINE_LIMIT = 15;
+ const inlineMisses = misses.slice(0, INLINE_LIMIT);
+ const deferredMisses = misses.slice(INLINE_LIMIT);
+
+ // Resolve inline batch concurrently (3 at a time to avoid rate limits)
+ for (let i = 0; i < inlineMisses.length; i += 3) {
+   const batch = inlineMisses.slice(i, i + 3);
+   const results = await Promise.allSettled(
+     batch.map(async (e) => {
+       try {
+         const result = await resolveOne(db, e.isbn, e.title, e.author, e.workKey);
+         if (result && 'coverUrl' in result && result.coverUrl) {
+           out[e.idx] = {
+             ...out[e.idx],
+             coverUrl: result.coverUrl,
+             googleBooksId: (result as any).googleBooksId || out[e.idx].googleBooksId,
+             google_books_id: (result as any).googleBooksId || out[e.idx].google_books_id,
+           };
+           console.log(`[COVER] INLINE_RESOLVED workKey=${e.workKey}`);
+         }
+       } catch (err: any) {
+         console.warn(`[COVER] INLINE_FAILED workKey=${e.workKey}`, err?.message);
+       }
+     })
+   );
  }
- const items = misses.map(e => ({
- workKey: e.workKey,
- isbn: e.isbn,
- title: e.title,
- author: e.author,
- }));
- enqueueCoverResolve(items).catch(err =>
- console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Cover enqueue failed:`, err?.message)
- );
+
+ // Queue remaining misses for background resolution
+ if (deferredMisses.length > 0) {
+   for (const e of deferredMisses) {
+     await upsertPending(db, e.workKey, e.isbn, e.title, e.author);
+   }
+   const items = deferredMisses.map(e => ({
+     workKey: e.workKey,
+     isbn: e.isbn,
+     title: e.title,
+     author: e.author,
+   }));
+   enqueueCoverResolve(items).catch(err =>
+     console.warn(`[API] [SCAN ${scanId}] [JOB ${jobId}] Cover enqueue failed:`, err?.message)
+   );
+ }
  }
 
  // Ensure every book has work_key (including those we couldn't look up)
