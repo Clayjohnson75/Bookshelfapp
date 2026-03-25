@@ -758,17 +758,105 @@ React.useEffect(() => {
        return updated;
      });
    });
-   setOnPhotoComplete((uid, photoId) => {
+   setOnPhotoComplete((uid, completedPhotoId) => {
      if (uid !== user?.uid) return;
-     const resolvedId = photoIdAliasRef.current[photoId] ?? photoId;
+     const resolvedId = photoIdAliasRef.current[completedPhotoId] ?? completedPhotoId;
      setPhotos((prev) => {
        const updated = prev.map((p) =>
-         (p.id === photoId || p.id === resolvedId || p.localId === photoId) ? { ...p, status: 'complete' as const } : p
+         (p.id === completedPhotoId || p.id === resolvedId || p.localId === completedPhotoId) ? { ...p, status: 'complete' as const } : p
        );
        const key = `photos_${user?.uid}`;
        if (user?.uid) AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
        return updated;
      });
+
+     // DIRECT BOOK IMPORT: bypass handleJobTerminalStatus entirely.
+     // The upload queue fires onPhotoComplete AFTER the scan job completes.
+     // Look up the jobId from the photo, fetch books, and import to pending.
+     (async () => {
+       try {
+         // Find the jobId for this photo from photos state or scan queue.
+         const photo = photosRef.current?.find((p: any) =>
+           p.id === completedPhotoId || p.id === resolvedId || p.localId === completedPhotoId
+         );
+         const jobId = photo?.scan_job_id ?? photo?.jobId;
+         if (!jobId) {
+           logger.warn('[PHOTO_COMPLETE_IMPORT]', 'no jobId for photo', { photoId: completedPhotoId.slice(0, 8) });
+           return;
+         }
+         const rawJobUuid = typeof jobId === 'string' ? jobId.replace(/^job_/, '') : jobId;
+         const canonicalJobId_val = toScanJobId(rawJobUuid);
+
+         // Check if already imported by handleJobTerminalStatus.
+         if (handledTerminalJobsRef.current.has(canonicalJobId_val)) return;
+         handledTerminalJobsRef.current.add(canonicalJobId_val);
+
+         const { getScanAuthHeaders } = await import('../lib/authHeaders');
+         const headers = await getScanAuthHeaders();
+         const base = getApiBaseUrl();
+         const res = await fetch(`${base}/api/scan/${encodeURIComponent(rawJobUuid)}`, { headers });
+         if (!res.ok) {
+           logger.warn('[PHOTO_COMPLETE_IMPORT]', 'fetch failed', { photoId: completedPhotoId.slice(0, 8), status: res.status });
+           return;
+         }
+         const data = await res.json() as { status?: string; books?: any[] };
+         if (data?.status !== 'completed' || !Array.isArray(data.books) || data.books.length === 0) return;
+
+         logger.info('[PHOTO_COMPLETE_IMPORT]', 'importing books', { photoId: completedPhotoId.slice(0, 8), bookCount: data.books.length });
+
+         const photoBooks: Book[] = data.books
+           .filter((b: any) => b && (b.title || b.author))
+           .map((b: any) => ({
+             id: b.id,
+             title: b.title ?? '',
+             author: b.author ?? '',
+             status: 'pending' as const,
+             source_photo_id: completedPhotoId,
+             source_scan_job_id: rawJobUuid,
+             ...(b.book_key && { book_key: b.book_key }),
+             ...(b.work_key && { workKey: b.work_key, work_key: b.work_key }),
+             ...(b.coverUrl && { coverUrl: b.coverUrl }),
+             ...(b.cover_url && { coverUrl: b.cover_url }),
+             ...(b.description && { description: b.description }),
+           }));
+
+         if (photoBooks.length === 0) return;
+         const existingKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+
+         setPhotos((prev) => dedupBy([...prev, {
+           id: completedPhotoId,
+           uri: photo?.uri ?? '',
+           books: photoBooks,
+           timestamp: Date.now(),
+           jobId: rawJobUuid,
+           scan_job_id: rawJobUuid,
+           status: 'complete' as const,
+         }], photoStableKey));
+
+         setPendingBooks((prev) => {
+           const approvedKeys = new Set(approvedBooksRef.current.map((b) => existingKey(b)));
+           const existingKeys = new Set(prev.map((b) => existingKey(b)));
+           const deduped = photoBooks.filter((b: Book) => {
+             const k = existingKey(b);
+             if (approvedKeys.has(k) || existingKeys.has(k)) return false;
+             existingKeys.add(k);
+             return true;
+           });
+           return [...prev, ...deduped];
+         });
+
+         clearSelection();
+         const snap = booksSnapshotRef.current;
+         if (user && snap) {
+           const newPhotos = photosRef.current ?? [];
+           InteractionManager.runAfterInteractions(() => {
+             saveUserData(pendingBooksRef.current, snap.approved ?? [], snap.rejected ?? [], newPhotos).catch(() => {});
+           });
+         }
+       } catch (err) {
+         logger.error('[PHOTO_COMPLETE_IMPORT]', 'error', { photoId: completedPhotoId.slice(0, 8), error: String(err) });
+       }
+     })();
    });
    setOnPhotoUploadFailed((uid, photoId, errorMessage, statusCode) => {
      if (uid !== user?.uid) return;
