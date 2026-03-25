@@ -537,7 +537,9 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  return;
  }
  const now = Date.now();
- if (now - lastLoadUserDataAtRef.current < LOAD_USER_DATA_DEBOUNCE_MS) {
+ // Bypass debounce if user recently approved books — the book list needs to refresh.
+ const recentlyApproved = lastApprovedAt > 0 && (now - lastApprovedAt < 15000);
+ if (!recentlyApproved && now - lastLoadUserDataAtRef.current < LOAD_USER_DATA_DEBOUNCE_MS) {
  if (__DEV__ && LOG_TRACE) logger.debug('[MYLIB_LOAD_USER_DATA] skip: debounce', { ms: now - lastLoadUserDataAtRef.current });
  return;
  }
