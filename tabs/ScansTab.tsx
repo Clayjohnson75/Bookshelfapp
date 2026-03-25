@@ -8857,14 +8857,10 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
         });
         return nextPhotos;
       });
-      if (user) await addImportedPhotoKey(user.uid, photoImportKey);
-      // No exceptions: after dedupe always patch scan_jobs.photo_id = canonicalPhotoId. Await so sync never sees job without photo_id.
+      // Fire-and-forget: don't await non-critical writes so the UI stays responsive.
+      if (user) addImportedPhotoKey(user.uid, photoImportKey).catch(() => {});
       if (user && jobId && canonicalPhotoId) {
-        try {
-          await patchScanJobPhotoId(user.uid, jobId, canonicalPhotoId);
-        } catch (err) {
-          if (__DEV__) logger.info('[BATCH] patchScanJobPhotoId failed (non-fatal):', err);
-        }
+        patchScanJobPhotoId(user.uid, jobId, canonicalPhotoId).catch(() => {});
       }
       scanTerminalGraceUntilRef.current = Date.now() + 15000;
       emitLibraryInvalidate({ reason: 'scan_terminal', jobId: scanJobId ?? jobId, photoId: canonicalPhotoId });
@@ -8875,19 +8871,21 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
       if (LOG_TRACE) logger.debug(`[BATCH] job ${index}/${total} completed, +${uniqueNewPending.length} pending`);
 
       // Fetch covers for books that arrived without coverUrl (cover worker may still be running).
-      // Fire-and-forget so it doesn't block the batch pipeline; updates pendingBooks when ready.
+      // Delay 3s so the UI is responsive for tapping books right after scan results appear.
       const booksNeedingCovers = uniqueNewPending.filter((b: Book) => !b.coverUrl);
       if (booksNeedingCovers.length > 0) {
-        loadCoversForBooks(booksNeedingCovers).then((coverMap) => {
-          if (coverMap.size === 0) return;
-          setPendingBooks(prev => prev.map(b => {
-            const key = (b as any).workKey ?? (b as any).work_key;
-            const url = key ? coverMap.get(key) : undefined;
-            if (url && !b.coverUrl) return { ...b, coverUrl: url };
-            return b;
-          }));
-          logger.info('[SCAN_COVERS_BACKFILL]', { jobId, resolved: coverMap.size, needed: booksNeedingCovers.length });
-        }).catch(() => {});
+        setTimeout(() => {
+          loadCoversForBooks(booksNeedingCovers).then((coverMap) => {
+            if (coverMap.size === 0) return;
+            setPendingBooks(prev => prev.map(b => {
+              const key = (b as any).workKey ?? (b as any).work_key;
+              const url = key ? coverMap.get(key) : undefined;
+              if (url && !b.coverUrl) return { ...b, coverUrl: url };
+              return b;
+            }));
+            logger.info('[SCAN_COVERS_BACKFILL]', { jobId, resolved: coverMap.size, needed: booksNeedingCovers.length });
+          }).catch(() => {});
+        }, 3000);
       }
     } catch (importErr: any) {
       // Server job succeeded but local import threw. Mark as import_failed so user can retry
