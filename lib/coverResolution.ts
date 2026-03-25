@@ -515,7 +515,7 @@ export async function resolveOne(
  console.log(`[COVER] title/author swap corrected for lookup workKey=${workKey} -> title="${searchTitle}" author="${searchAuthor}"`);
  }
 
- // Build candidates: best identifier first (ISBN title+author), large size first per provider.
+ // Build candidates: OpenLibrary first (no API key needed), Google Books as fallback.
  const candidates: CoverCandidate[] = [];
  if (isbn?.trim()) {
  const ol = await getOlByIsbnCandidates(isbn);
@@ -523,12 +523,14 @@ export async function resolveOne(
  candidates.push(...ol);
  }
  if (searchTitle?.trim()) {
- const google = await getGoogleCandidates(searchTitle, searchAuthor || undefined);
- if (google.length === 0) rejectReasons.push('google_books none_found');
- candidates.push(...google);
+ // OpenLibrary search first (free, no rate limit issues)
  const olSearch = await getOlSearchCandidates(searchTitle, searchAuthor || undefined);
  if (olSearch.length === 0) rejectReasons.push('openlibrary_search none_found');
  candidates.push(...olSearch);
+ // Google Books as fallback (has API key quota limits)
+ const google = await getGoogleCandidates(searchTitle, searchAuthor || undefined);
+ if (google.length === 0) rejectReasons.push('google_books none_found');
+ candidates.push(...google);
  }
 
  for (const c of candidates) {
