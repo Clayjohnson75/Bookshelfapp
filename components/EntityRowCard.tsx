@@ -1,6 +1,6 @@
 /**
  * Reusable row card: left CoverStack (up to 3 covers), center text (title + subtext/count), right chevron.
- * Used for Authors list and other entity lists. Themed; tap feedback via slight opacity/surface change.
+ * Used for Authors list and other entity lists. Themed; tap feedback via slight opacity.
  */
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, Image } from 'react-native';
@@ -8,20 +8,14 @@ import { PersonOutlineIcon, ChevronForwardIcon } from '../components/Icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useResponsive } from '../lib/useResponsive';
 
-const COVER_SIZE = 40;
-const COVER_OVERLAP = -10;
-const CARD_RADIUS = 15;
-const CARD_GAP = 10;
+const COVER_SIZE = 36;
+const COVER_OVERLAP = -8;
 
 export interface EntityRowCardProps {
-  /** Main line (e.g. author name). Uses textPrimary, semibold. */
   title: string;
-  /** Secondary line or count (e.g. "5 books"). Uses textSecondary or small pill. */
   subtext?: string;
-  /** Up to 3 cover image URIs; rendered as stacked thumbnails on the left. */
   coverUris?: (string | undefined | null)[];
   onPress: () => void;
-  /** Optional testID for E2E. */
   testID?: string;
 }
 
@@ -38,8 +32,8 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
       style={({ pressed }) => [
         styles.card,
         {
-          backgroundColor: pressed ? (c.surface2 ?? c.surface) : c.surface,
-          borderColor: c.border,
+          borderBottomColor: c.divider ?? c.border,
+          opacity: pressed ? 0.6 : 1,
         },
       ]}
     >
@@ -53,7 +47,7 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
                 {
                   marginLeft: idx === 0 ? 0 : COVER_OVERLAP,
                   backgroundColor: c.surface2 ?? c.surface,
-                  borderColor: c.surface,
+                  borderColor: c.bg,
                   borderWidth: 1.5,
                   zIndex: displayUris.length - idx,
                 },
@@ -63,13 +57,13 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
             </View>
           ))
         ) : (
-          <View style={[styles.coverWrap, styles.coverPlaceholder, { backgroundColor: c.surface2 ?? c.surface }]}>
-            <PersonOutlineIcon size={20} color={c.textMuted} />
+          <View style={[styles.coverWrap, { backgroundColor: c.surface2 ?? c.surface }]}>
+            <PersonOutlineIcon size={18} color={c.textMuted} />
           </View>
         )}
       </View>
       <View style={styles.textBlock}>
-        <Text style={[styles.title, { color: c.textPrimary ?? c.text, fontSize: Math.round(16 * typeScale) }]} numberOfLines={1}>
+        <Text style={[styles.title, { color: c.textPrimary ?? c.text, fontSize: Math.round(15 * typeScale) }]} numberOfLines={1}>
           {title}
         </Text>
         {subtext ? (
@@ -78,7 +72,7 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
           </Text>
         ) : null}
       </View>
-      <ChevronForwardIcon size={20} color={c.textSecondary ?? c.textMuted} style={styles.chevron} />
+      <ChevronForwardIcon size={18} color={c.textMuted} style={styles.chevron} />
     </Pressable>
   );
 }
@@ -88,21 +82,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    marginBottom: CARD_GAP,
-    minHeight: 56,
+    paddingHorizontal: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    minHeight: 52,
   },
   coverStack: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 14,
+    marginRight: 12,
   },
   coverWrap: {
     width: COVER_SIZE,
     height: COVER_SIZE,
-    borderRadius: 8,
+    borderRadius: 6,
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
@@ -111,21 +103,19 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  coverPlaceholder: {},
   textBlock: {
     flex: 1,
     minWidth: 0,
     justifyContent: 'center',
   },
   title: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-    letterSpacing: 0.2,
   },
   subtext: {
     fontSize: 13,
-    marginTop: 2,
-    fontWeight: '500',
+    marginTop: 1,
+    fontWeight: '400',
   },
   chevron: {
     marginLeft: 8,
