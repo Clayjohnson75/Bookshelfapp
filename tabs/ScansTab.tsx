@@ -958,11 +958,12 @@ React.useEffect(() => {
  // The upload queue can fire onJobTerminalStatus multiple times for the same job.
  const handledTerminalJobsRef = React.useRef(new Set<string>());
   const handleJobTerminalStatus = React.useCallback((jobId: string, status: 'completed' | 'failed' | 'canceled') => {
-    if (jobId == null || typeof jobId !== 'string') return;
+    logger.info('[HANDLE_TERMINAL_ENTRY]', { jobId: typeof jobId === 'string' ? jobId.slice(0, 12) : String(jobId), status, type: typeof jobId });
+    if (jobId == null || typeof jobId !== 'string') { logger.warn('[HANDLE_TERMINAL_BAIL]', 'null or not string'); return; }
     const raw = jobId.trim();
-    if (!raw || raw.length < 8) return;
+    if (!raw || raw.length < 8) { logger.warn('[HANDLE_TERMINAL_BAIL]', 'too short', { len: raw.length }); return; }
     const canonicalId = toScanJobId(raw);
-    if (canonicalId.length < 40) return;
+    if (canonicalId.length < 40) { logger.warn('[HANDLE_TERMINAL_BAIL]', 'canonical too short', { len: canonicalId.length, canonical: canonicalId }); return; }
     // Idempotency guard: skip if we already handled this job.
     if (handledTerminalJobsRef.current.has(canonicalId)) {
       logger.info('[SCAN_TERMINAL_SKIP]', 'already handled', { jobId: canonicalId.slice(0, 12), status, setSize: handledTerminalJobsRef.current.size });
