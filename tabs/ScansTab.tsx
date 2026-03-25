@@ -2188,6 +2188,10 @@ const isBookSelected = useCallback(
   (key: string) => selectAllMode ? !excludedIds.has(key) : selectedBooks.has(key),
   [selectAllMode, excludedIds, selectedBooks]
 );
+// Stable refs for render callbacks — prevents FlatList from re-rendering all rows
+// every time selection state changes. The ref always points to the latest callback.
+const isBookSelectedRef = useRef(isBookSelected);
+isBookSelectedRef.current = isBookSelected;
 /** Clear all selection state (use after approve, reject, clear, add to queue, etc.). */
 const clearSelection = useCallback(() => {
   setSelectAllMode(false);
@@ -11253,6 +11257,8 @@ const closeScanModal = () => {
      });
    }
  }, [selectAllMode]);
+ const toggleBookSelectionRef = useRef(toggleBookSelection);
+ toggleBookSelectionRef.current = toggleBookSelection;
 
  const selectAllBooks = useCallback(() => {
    const tapAt = Date.now();
@@ -13134,6 +13140,10 @@ const pendingContentWrap = useMemo(
   [pendingGridContainerWidth]
 );
 
+// Stable callbacks that delegate to refs — never change reference, so FlatList doesn't re-render all rows.
+const stableIsBookSelected = useCallback((key: string) => isBookSelectedRef.current(key), []);
+const stableToggleBookSelection = useCallback((key: string) => toggleBookSelectionRef.current(key), []);
+
 const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
   if (item.type === 'group_header') {
     const { group, groupIndex } = item;
@@ -13152,7 +13162,7 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
               <View style={[styles.pendingGroupPill, { backgroundColor: t.colors.surface2 ?? t.colors.surface }]}>
                 <Text style={[styles.pendingGroupPillText, { color: t.colors.textMuted }]}>
                   ({group.books.length} books{(() => {
-                    const selectedInGroup = group.books.filter(b => isBookSelected(pendingBookStableKey(b))).length;
+                    const selectedInGroup = group.books.filter(b => stableIsBookSelected(pendingBookStableKey(b))).length;
                     return selectedInGroup > 0 ? ` · ${selectedInGroup} selected` : '';
                   })()})
                 </Text>
@@ -13191,7 +13201,7 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
       <View style={[styles.pendingGroupGrid, { marginBottom: isLastRowOfGroup ? 12 : 0 }]}>
         {books.map((book, index) => {
           const bookStableKey = pendingBookStableKey(book);
-          const isSelected = isBookSelected(bookStableKey);
+          const isSelected = stableIsBookSelected(bookStableKey);
           const coverUri = getBookCoverUri(book);
           const colIndex = rowIndex * pendingGridColumns + index;
           return (
@@ -13208,7 +13218,7 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
             >
               <TouchableOpacity
                 style={styles.pendingGridCard}
-                onPress={() => toggleBookSelection(bookStableKey)}
+                onPress={() => stableToggleBookSelection(bookStableKey)}
                 activeOpacity={0.7}
               >
                 <View style={styles.pendingGridCoverWrapper}>
@@ -13250,36 +13260,33 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
       </View>
     </View>
   );
-}, [t, openScanReview, isBookSelected, pendingBookStableKey, getBookCoverUri, toggleBookSelection, pendingGridColumns, pendingGridItemWidth, pendingContentWrap, styles]);
+}, [t, openScanReview, stableIsBookSelected, pendingBookStableKey, getBookCoverUri, stableToggleBookSelection, pendingGridColumns, pendingGridItemWidth, pendingContentWrap, styles]);
 
 const keyExtractorPendingRow = useCallback((item: PendingListRow): string => {
   if (item.type === 'group_header') return `h-${item.group.scanJobId || item.group.photoId || item.groupIndex}`;
   return `b-${item.group.scanJobId || item.group.photoId}-${item.groupIndex}-${item.rowIndex}`;
 }, []);
 
-const recentScansFooter = useMemo(() => {
-  // Build a set of photo IDs that still have live books (pending or approved).
-  // This prevents stale photos from showing after their books were cleared.
-  const livePhotoIds = new Set<string>();
+// Pre-compute livePhotoIds outside the heavy useMemo so it doesn't cause full footer re-renders.
+const livePhotoIds = useMemo(() => {
+  const set = new Set<string>();
   for (const b of pendingBooks) {
     const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
-    if (pid) livePhotoIds.add(pid);
+    if (pid) set.add(pid);
   }
   for (const b of approvedBooks) {
     const pid = (b as any).source_photo_id ?? (b as any).sourcePhotoId ?? (b as any).photoId;
-    if (pid) livePhotoIds.add(pid);
+    if (pid) set.add(pid);
   }
+  return set;
+}, [pendingBooks, approvedBooks]);
+
+const recentScansFooter = useMemo(() => {
   const completePhotos = photos.filter((photo) => {
     if (photo.status === 'discarded' || (photo as any).deleted_at) return false;
-    // Show photo if ANY of these are true:
-    // 1. Has live books in current pending or approved state (source_photo_id match)
     const hasLiveBooks = photo.id ? livePhotoIds.has(photo.id) : false;
-    // 2. Has approved_count set (from optimistic update or server)
     const hasApprovedCount = typeof photo.approved_count === 'number' && photo.approved_count > 0;
-    // 3. Has embedded books with approved status (from scan import snapshot)
     const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
-    // 4. Is a completed upload that the server knows about (storage_path exists)
-    //    and has any books at all (pending or approved in snapshot)
     const hasServerPhoto = !!photo.storage_path && (photo.books ?? []).length > 0;
     return hasLiveBooks || hasApprovedCount || hasApprovedInSnapshot || hasServerPhoto;
   });
@@ -13386,7 +13393,7 @@ const recentScansFooter = useMemo(() => {
       )}
     </View>
   );
-}, [photos, pendingBooks, approvedBooks, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
+}, [photos, livePhotoIds, t, styles, handleStartCamera, pickImage, openScanModal, setShowAllScansModal]);
 
  if (isCameraActive) {
  return (
