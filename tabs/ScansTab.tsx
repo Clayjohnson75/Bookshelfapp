@@ -13280,9 +13280,9 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
                     <View style={[styles.pendingGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
                       <Text
                         style={[styles.placeholderText, { color: t.colors.textMuted }]}
-                        numberOfLines={3}
+                        numberOfLines={4}
                         adjustsFontSizeToFit
-                        minimumFontScale={0.7}
+                        minimumFontScale={0.35}
                       >{book.title}</Text>
                     </View>
                   )}
@@ -14008,7 +14008,7 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  <Image source={{ uri: getBookCoverUri(book) }} style={styles.scanSheetGridCover} />
  ) : (
  <View style={[styles.scanSheetGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
- <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={3} adjustsFontSizeToFit minimumFontScale={0.7}>{book.title || 'Untitled'}</Text>
+ <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={4} adjustsFontSizeToFit minimumFontScale={0.35}>{book.title || 'Untitled'}</Text>
  </View>
  )}
  <Text style={[styles.scanSheetGridAuthorLine, { color: t.colors.textMuted }, !(book.author?.trim()) && (book.id ?? book.dbId) && { fontStyle: 'italic', opacity: 0.85 }]} numberOfLines={2} ellipsizeMode="tail">
@@ -14583,7 +14583,7 @@ return (
  />
  ) : (
  <View style={[styles.currentBookCover, styles.placeholderCover]}>
- <Text style={styles.placeholderText} numberOfLines={3}>
+ <Text style={styles.placeholderText} numberOfLines={4} adjustsFontSizeToFit minimumFontScale={0.35}>
  {book.title}
  </Text>
  </View>
@@ -15730,8 +15730,10 @@ const getStyles = (
  fontWeight: '600',
  color: t.colors.textMuted,
  textAlign: 'center',
- lineHeight: 13,
- paddingHorizontal: 2,
+ lineHeight: 14,
+ paddingHorizontal: 6,
+ textTransform: 'uppercase',
+ letterSpacing: 0.3,
  },
  bookInfo: {
  width: '100%',

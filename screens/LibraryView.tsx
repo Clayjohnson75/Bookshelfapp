@@ -780,7 +780,7 @@ await deleteBookFromSupabase(user.uid, book);
  />
  ) : (
  <View style={[styles.bookCover, styles.bookCoverInWrap, styles.placeholderCover]}>
- <Text style={styles.placeholderText} numberOfLines={3}>
+ <Text style={styles.placeholderText} numberOfLines={4} adjustsFontSizeToFit minimumFontScale={0.35}>
  {item.title}
  </Text>
  </View>
@@ -2614,8 +2614,7 @@ const getStyles = (
  alignItems: 'center',
  padding: 8,
  backgroundColor: '#f7fafc',
- borderWidth: 1,
- borderColor: '#e2e8f0',
+ borderWidth: 0,
  },
  bookInfo: {
  width: '100%',
@@ -3734,6 +3733,9 @@ const getStyles = (
  color: '#4a5568',
  textAlign: 'center',
  lineHeight: 14,
+ paddingHorizontal: 6,
+ textTransform: 'uppercase',
+ letterSpacing: 0.3,
  },
  emptyState: {
  flex: 1,
