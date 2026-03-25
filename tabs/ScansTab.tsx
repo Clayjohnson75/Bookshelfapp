@@ -898,6 +898,11 @@ React.useEffect(() => {
    triggerDataRefreshRef.current();
  }
  if (status === 'completed') {
+   // Skip if the batch pipeline already handled this job (prevents flash from double-import).
+   if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0) {
+     // Batch still running — it will handle import. Just skip.
+     return;
+   }
    (async () => {
      try {
        const { getScanAuthHeaders } = await import('../lib/authHeaders');
@@ -13226,7 +13231,12 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
                     <Image source={{ uri: coverUri }} style={styles.pendingGridCover} />
                   ) : (
                     <View style={[styles.pendingGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
-                      <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={3}>{book.title}</Text>
+                      <Text
+                        style={[styles.placeholderText, { color: t.colors.textMuted }]}
+                        numberOfLines={3}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.7}
+                      >{book.title}</Text>
                     </View>
                   )}
                   {isSelected && (
@@ -13951,7 +13961,7 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  <Image source={{ uri: getBookCoverUri(book) }} style={styles.scanSheetGridCover} />
  ) : (
  <View style={[styles.scanSheetGridCover, styles.placeholderCover, { backgroundColor: t.colors.surface2 }]}>
- <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={3}>{book.title || 'Untitled'}</Text>
+ <Text style={[styles.placeholderText, { color: t.colors.textMuted }]} numberOfLines={3} adjustsFontSizeToFit minimumFontScale={0.7}>{book.title || 'Untitled'}</Text>
  </View>
  )}
  <Text style={[styles.scanSheetGridAuthorLine, { color: t.colors.textMuted }, !(book.author?.trim()) && (book.id ?? book.dbId) && { fontStyle: 'italic', opacity: 0.85 }]} numberOfLines={2} ellipsizeMode="tail">
@@ -15671,9 +15681,10 @@ const getStyles = (
  placeholderText: {
  fontSize: 11,
  fontWeight: '600',
- color: t.colors.textMuted, // Medium gray
+ color: t.colors.textMuted,
  textAlign: 'center',
- lineHeight: 14,
+ lineHeight: 13,
+ paddingHorizontal: 2,
  },
  bookInfo: {
  width: '100%',
