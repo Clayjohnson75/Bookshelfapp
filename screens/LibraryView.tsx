@@ -780,7 +780,7 @@ await deleteBookFromSupabase(user.uid, book);
  />
  ) : (
  <View style={[styles.bookCover, styles.bookCoverInWrap, styles.placeholderCover]}>
- <Text style={styles.placeholderText} numberOfLines={4} adjustsFontSizeToFit minimumFontScale={0.35}>
+ <Text style={styles.placeholderText} numberOfLines={(item.title?.trim().split(/\s+/).length ?? 1) <= 1 ? 1 : (item.title?.trim().split(/\s+/).length ?? 2) <= 3 ? 3 : 4} adjustsFontSizeToFit minimumFontScale={0.3}>
  {item.title}
  </Text>
  </View>
