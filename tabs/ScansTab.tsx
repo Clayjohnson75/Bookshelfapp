@@ -892,10 +892,9 @@ React.useEffect(() => {
  const scanGraceMs = 5000;
  scanTerminalGraceUntilRef.current = Date.now() + scanGraceMs;
  emitLibraryInvalidate({ reason: 'scan_terminal', jobId: canonicalId });
- // For failed/canceled: no books to write, safe to refresh from server immediately.
- // For completed: defer until after the IIFE writes books to AsyncStorage (see finally below),
- // so loadUserData never reads a stale AsyncStorage that is missing the just-scanned books.
- if (status !== 'completed') {
+ // For failed/canceled: refresh from server — but only when no batch is in-flight.
+ // Otherwise the refresh would overwrite locally-imported pending books from other jobs.
+ if (status !== 'completed' && inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0) {
    triggerDataRefreshRef.current();
  }
  if (status === 'completed') {
@@ -967,8 +966,11 @@ React.useEffect(() => {
        }
      } catch (_) {
      } finally {
-       // Books (if any) are now in AsyncStorage. loadUserData will read a fresh snapshot.
-       triggerDataRefreshRef.current();
+       // Books (if any) are now in AsyncStorage. Only refresh if no other batches are
+       // in-flight — otherwise the merge would wipe their locally-imported pending books.
+       if (inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0) {
+         triggerDataRefreshRef.current();
+       }
      }
      })();
  }
