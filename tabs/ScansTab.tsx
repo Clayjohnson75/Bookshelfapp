@@ -8664,7 +8664,11 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
   pollerAbortControllersRef.current.set(jobId, jobPollController);
   // Chain the batch controller signal: if batch is aborted, also abort this job's poller.
   batchController.signal.addEventListener('abort', () => jobPollController.abort(), { once: true });
-  return pollJobUntilComplete(scanJobId, scanId, batchId, index, total, jobCreatedAt, jobPollController.signal).then(async result => {
+  // Wrap ONLY the poll in a catch — import errors are handled inside .then() with their own try/catch.
+  return pollJobUntilComplete(scanJobId, scanId, batchId, index, total, jobCreatedAt, jobPollController.signal).catch((err) => {
+    logger.error('[JOB_POLL_FAILED]', { scanId, jobId, error: err?.message ?? 'unknown' });
+    return { status: 'failed' as const, books: [] as Book[] };
+  }).then(async result => {
   // Job reached terminal — unregister its poller controller (no longer needed).
   pollerAbortControllersRef.current.delete(jobId);
     const durMs = Date.now() - jobCreatedAt;
@@ -9010,10 +9014,6 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
     }
 
   return { scanId, status: result.status, books: result.books };
-  }).catch((err) => {
-    // Catch individual poll failures so one failed job doesn't kill the entire batch.
-    logger.error('[JOB_POLL_FAILED]', { scanId, jobId, error: err?.message ?? 'unknown' });
-    return { scanId, status: 'failed' as const, books: [] as any[] };
   });
 });
 
