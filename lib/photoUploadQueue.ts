@@ -586,6 +586,7 @@ async function requestScanAndPoll(
           }
         }
       }
+      completedPhotoIds.add(photoId); // Mark permanently done — prevents zombie re-processing.
       onPhotoComplete?.(userId, photoId);
       await removeFromQueue(userId, photoId);
       if (localUri && (localUri.startsWith('file://') || localUri.startsWith('file:'))) {
@@ -620,14 +621,22 @@ async function requestScanAndPoll(
   onPhotoUploadFailed?.(userId, photoId, errMsg);
 }
 
-// Track items currently being processed to prevent concurrent duplicate processing.
+// Track items currently being processed AND permanently completed.
+// inFlightPhotoIds: prevents concurrent processing of the same photo.
+// completedPhotoIds: prevents re-processing of photos that already finished successfully.
 const inFlightPhotoIds = new Set<string>();
+const completedPhotoIds = new Set<string>();
 
 async function processOneItem(item: UploadQueueItem): Promise<void> {
   const { userId, photoId, localUri } = item;
+  // Skip if already completed in this session (zombie prevention).
+  if (completedPhotoIds.has(photoId)) {
+    // Force remove from queue to clean up the zombie entry.
+    removeFromQueue(userId, photoId).catch(() => {});
+    return;
+  }
   // Prevent concurrent processing of the same photo.
   if (inFlightPhotoIds.has(photoId)) {
-    logger.debug('[UPLOAD_QUEUE]', 'skip: already in-flight', { photoId: photoId.slice(0, 8) });
     return;
   }
   inFlightPhotoIds.add(photoId);
