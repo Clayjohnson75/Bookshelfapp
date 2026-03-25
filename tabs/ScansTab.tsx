@@ -13572,20 +13572,8 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
 }
 
 // DEV-only: detect duplicate React keys in pending grid (same formula as render)
- if (__DEV__ && groupedPendingBooks.length > 0) {
- const keys: string[] = [];
- groupedPendingBooks.forEach((group, groupIndex) => {
- group.books.forEach((book, bookIndex) => {
- keys.push(
- book.id
- ?? (book as any).tempId
- ?? `${group.photoId ?? (book as any).source_photo_id ?? 'noPhoto'}:${(book as any).book_key ?? getStableBookKey(book) ?? 'key'}:${groupIndex}:${bookIndex}`
- );
- });
- });
- const dupes = keys.filter((k, i) => keys.indexOf(k) !== i);
-  if (dupes.length) logger.logOnce(`dup_keys:${dupes[0]}`, 'info', '[DUP_KEYS]', 'pendingBooks duplicate keys', { dupes: dupes.slice(0, 10) });
- }
+ // DEV duplicate key check removed — O(n^2) indexOf on every render was causing
+ // multi-second lag on book taps with 29+ books. Keys are already validated by FlatList.
 
  const hasPendingRows = pendingListRows.length > 0;
  const pendingEmpty = pendingBooks.filter(b => b.status === 'pending' || b.status === 'incomplete').length === 0;
