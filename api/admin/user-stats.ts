@@ -75,7 +75,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  let profilesQuery = supabase
    .from('profiles')
    .select('id, username, display_name')
-   .is('deleted_at', null)
    .limit(limit);
  if (q) {
    profilesQuery = profilesQuery.or(`username.ilike.%${q}%,display_name.ilike.%${q}%`);
