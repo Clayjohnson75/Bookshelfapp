@@ -8898,22 +8898,44 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
       // disappears when second scan arrives." The refresh is called once after BATCH_COMPLETE.
       if (LOG_TRACE) logger.debug(`[BATCH] job ${index}/${total} completed, +${uniqueNewPending.length} pending`);
 
-      // Fetch covers for books that arrived without coverUrl (cover worker may still be running).
-      // Delay 3s so the UI is responsive for tapping books right after scan results appear.
+      // Fetch covers: 1st attempt at 3s reads from cache, 2nd attempt at 12s calls resolve API.
       const booksNeedingCovers = uniqueNewPending.filter((b: Book) => !b.coverUrl);
       if (booksNeedingCovers.length > 0) {
+        const applyCoverMap = (coverMap: Map<string, string>) => {
+          if (coverMap.size === 0) return;
+          setPendingBooks(prev => prev.map(b => {
+            const key = (b as any).workKey ?? (b as any).work_key;
+            const url = key ? coverMap.get(key) : undefined;
+            if (url && !b.coverUrl) return { ...b, coverUrl: url };
+            return b;
+          }));
+        };
+        // 1st pass: read from cover_resolutions cache (fast, no API calls)
         setTimeout(() => {
-          loadCoversForBooks(booksNeedingCovers).then((coverMap) => {
-            if (coverMap.size === 0) return;
-            setPendingBooks(prev => prev.map(b => {
-              const key = (b as any).workKey ?? (b as any).work_key;
-              const url = key ? coverMap.get(key) : undefined;
-              if (url && !b.coverUrl) return { ...b, coverUrl: url };
-              return b;
-            }));
-            logger.info('[SCAN_COVERS_BACKFILL]', { jobId, resolved: coverMap.size, needed: booksNeedingCovers.length });
-          }).catch(() => {});
+          loadCoversForBooks(booksNeedingCovers).then(applyCoverMap).catch(() => {});
         }, 3000);
+        // 2nd pass: for any still missing, call resolve-cover API to trigger resolution
+        setTimeout(async () => {
+          try {
+            const base = getApiBaseUrl();
+            if (!base) return;
+            const stillMissing = booksNeedingCovers.filter(b => !b.coverUrl);
+            const resolved = new Map<string, string>();
+            for (const book of stillMissing.slice(0, 10)) {
+              const wk = (book as any).workKey ?? (book as any).work_key;
+              if (!wk) continue;
+              try {
+                const r = await fetch(`${base}/api/resolve-cover?title=${encodeURIComponent(book.title || '')}&author=${encodeURIComponent(book.author || '')}`);
+                if (r.ok) {
+                  const d = await r.json();
+                  if (d.ok && d.coverUrl) resolved.set(wk, d.coverUrl);
+                }
+              } catch {}
+            }
+            applyCoverMap(resolved);
+            if (resolved.size > 0) logger.info('[SCAN_COVERS_RESOLVE]', { resolved: resolved.size, attempted: stillMissing.length });
+          } catch {}
+        }, 12000);
       }
     } catch (importErr: any) {
       // Server job succeeded but local import threw. Mark as import_failed so user can retry

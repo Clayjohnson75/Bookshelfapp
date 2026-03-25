@@ -37,7 +37,7 @@ export async function resizeCoverForStorage(buffer: Buffer): Promise<Buffer> {
 export { buildWorkKey, normalizeAuthor };
 
 const BUCKET = 'book-covers';
-export const MISS_RETRY_HOURS = 24;
+export const MISS_RETRY_HOURS = 4;
 export const PLACEHOLDER_URL = 'https://placehold.co/128x192/e5e7eb/9ca3af?text=No+cover';
 
 export interface BookMetadata {
@@ -326,12 +326,13 @@ function correctTitleAuthorSwap(title: string, author: string): { title: string;
 /** Google Books API: return candidates extraLarge large medium thumbnail smallThumbnail (escalation). */
 async function getGoogleCandidates(title: string, author?: string): Promise<CoverCandidate[]> {
  const apiKey = process.env.GOOGLE_BOOKS_API_KEY;
- const cleanTitle = (title || '').replace(/[^\w\s]/g, ' ').trim();
- const cleanAuthor = (author || '').replace(/[^\w\s\-']/g, ' ').trim();
+ // Preserve apostrophes, hyphens, accents — only strip control chars and quotes.
+ const cleanTitle = (title || '').replace(/["]/g, '').trim();
+ const cleanAuthor = (author || '').replace(/["]/g, '').trim();
  const q = cleanAuthor && cleanAuthor.toLowerCase() !== 'unknown'
  ? `intitle:${cleanTitle} inauthor:${cleanAuthor}`
  : `intitle:${cleanTitle}`;
- const params = new URLSearchParams({ q, maxResults: '3' });
+ const params = new URLSearchParams({ q, maxResults: '5' });
  if (apiKey) params.set('key', apiKey);
  const url = `https://www.googleapis.com/books/v1/volumes?${params.toString()}`;
  try {
@@ -340,10 +341,12 @@ async function getGoogleCandidates(title: string, author?: string): Promise<Cove
  const data = await res.json();
  const items = data?.items;
  if (!Array.isArray(items) || items.length === 0) return [];
- const v = items[0];
+ // Check ALL results (up to 5) for cover images, not just the first one.
+ const allCandidates: CoverCandidate[] = [];
+ for (const v of items) {
  const vi = v?.volumeInfo;
  const links = vi?.imageLinks;
- if (!links) return [];
+ if (!links) continue;
  const urls = [
  links.extraLarge,
  links.large,
@@ -351,7 +354,7 @@ async function getGoogleCandidates(title: string, author?: string): Promise<Cove
  links.thumbnail,
  links.smallThumbnail,
  ].filter(Boolean).map((raw: string) => raw.replace('http:', 'https:'));
- if (urls.length === 0) return [];
+ if (urls.length === 0) continue;
  const metadata: BookMetadata = {
  description: vi?.description || undefined,
  categories: Array.isArray(vi?.categories) ? vi.categories : undefined,
@@ -361,7 +364,9 @@ async function getGoogleCandidates(title: string, author?: string): Promise<Cove
  language: vi?.language || undefined,
  subtitle: vi?.subtitle || undefined,
  };
- return urls.map(u => ({ provider: 'google_books', url: u, metadata, googleVolumeId: v.id || '' }));
+ allCandidates.push(...urls.map(u => ({ provider: 'google_books' as const, url: u, metadata, googleVolumeId: v.id || '' })));
+ }
+ return allCandidates;
  } catch {
  return [];
  }
