@@ -754,7 +754,7 @@ async function workerTick(): Promise<void> {
   // 'scan_requested' or 'processing' state. These are zombies from previous sessions
   // whose scan jobs may have been deleted (profile clear). Without this, they loop
   // indefinitely, blocking new scans.
-  const STALE_MS = 10 * 60 * 1000; // 10 minutes
+  const STALE_MS = 2 * 60 * 1000; // 2 minutes — scan jobs complete in ~30s, anything older is stuck
   const beforePurge = list.length;
   list = list.filter((item) => {
     const age = now - (item.createdAt ?? 0);
