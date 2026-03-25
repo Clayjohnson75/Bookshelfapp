@@ -79,6 +79,11 @@ export const ScanningNotification: React.FC<ScanningNotificationProps> = ({ onCa
  const lastTickLogKeyRef = useRef<string>('');
  /** Keep bar visible at 100% briefly after all jobs complete before hiding. */
  const completionHoldUntilRef = useRef<number>(0);
+ /** Last non-zero progress percent — used to show 100% exit animation. */
+ const lastProgressPercentRef = useRef<number>(0);
+ /** Whether we're in the "show 100%" exit phase. */
+ const [showExitAt100, setShowExitAt100] = useState(false);
+ const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Poll count for SCAN_STATUS_FETCH: log only every N polls or on error. */
   const pollCountRef = useRef(0);
   /** Where the UI last got progress (proves wiring: poll vs realtime). */
@@ -781,25 +786,25 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
  const activeScans = inFlightCount;
  const batchId = (effectiveProgress as any)?.batchId ?? null; // Metadata only, never a condition for showing.
  const showReason = (effectiveProgress as any)?.showReason ?? 'unknown';
- // Show bar when any in-flight queue item exists (jobsInProgress > 0). Candidates may be empty briefly (e.g. camera before jobId returns).
- // Keep bar visible at 100% for 1.5s after completion so user sees it finish.
- const now = Date.now();
- if (inFlightCount > 0 && completionHoldUntilRef.current === 0) {
-   // Jobs still running — no hold needed yet
- } else if (inFlightCount === 0 && completionHoldUntilRef.current === 0 && doneCountDisplay > 0) {
-   // Just finished — start the hold
-   completionHoldUntilRef.current = now + 1500;
- } else if (inFlightCount > 0 && completionHoldUntilRef.current > 0) {
-   // New batch started — reset hold
-   completionHoldUntilRef.current = 0;
+ // Show bar when any in-flight queue item exists (jobsInProgress > 0).
+ // When work finishes (inFlightCount drops to 0 from >0), show 100% for 2s then hide.
+ const wasShowingWork = lastProgressPercentRef.current > 0;
+ if (inFlightCount > 0) {
+   // Active work — cancel any exit timer
+   if (exitTimerRef.current) { clearTimeout(exitTimerRef.current); exitTimerRef.current = null; }
+   if (showExitAt100) setShowExitAt100(false);
+ } else if (inFlightCount === 0 && wasShowingWork && !showExitAt100 && !exitTimerRef.current) {
+   // Just finished — enter exit phase (show 100% briefly)
+   setShowExitAt100(true);
+   exitTimerRef.current = setTimeout(() => {
+     setShowExitAt100(false);
+     lastProgressPercentRef.current = 0;
+     exitTimerRef.current = null;
+   }, 2000);
  }
- const inCompletionHold = completionHoldUntilRef.current > 0 && now < completionHoldUntilRef.current;
- if (inCompletionHold && completionHoldUntilRef.current <= now) {
-   completionHoldUntilRef.current = 0; // expired
- }
- const shouldShow = inFlightCount > 0 || inCompletionHold;
+ const shouldShow = inFlightCount > 0 || showExitAt100;
  if (!shouldShow) {
-   completionHoldUntilRef.current = 0;
+   lastProgressPercentRef.current = 0;
  if (lastBarVariantRef.current !== 'hidden') {
  sendTelemetry('SCAN_BAR_VARIANT', { variant: 'hidden', reason: 'no_work' });
  lastBarVariantRef.current = 'hidden';
@@ -875,7 +880,10 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
  const normalizedProgress = total > 0 ? overall * 100 : rawProgress;
  const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
  const clampedProgress = clamp(Number(normalizedProgress ?? 0), 0, 100);
- const progressPercent = Math.round(clampedProgress);
+ // During exit phase, force 100%. Otherwise use calculated progress.
+ const progressPercent = showExitAt100 ? 100 : Math.round(clampedProgress);
+ // Track last non-zero progress for exit detection.
+ if (progressPercent > 0 && !showExitAt100) lastProgressPercentRef.current = progressPercent;
  // Diagnostic: ensure bar fill uses same value we log (0–100, not fraction).
  if (__DEV__ && shouldShow && (progressPercent > 0 || rawProgress > 0)) {
    logger.trace('[SCAN_BAR_PROGRESS_WIRE]', {

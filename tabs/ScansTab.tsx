@@ -1232,19 +1232,9 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
       });
     }
   }
-  // Delay clearing so the progress bar has time to show 100% before disappearing.
-  // On cancel, clear immediately (user expects instant feedback).
-  if (justCanceled) {
-    if (scanProgress !== null) setScanProgress(null);
-    if (activeBatch !== null) clearActiveBatch(undefined, 'cancel');
-  } else {
-    // Show 100% briefly, then clear after 1.5s
-    const clearTimer = setTimeout(() => {
-      setScanProgress(null);
-      if (activeBatchRef.current !== null) clearActiveBatch(undefined, 'import_complete');
-    }, 1500);
-    return () => clearTimeout(clearTimer);
-  }
+  // ScanningNotification handles its own 100% exit animation, so we can clear immediately.
+  if (scanProgress !== null) setScanProgress(null);
+  if (activeBatch !== null) clearActiveBatch(undefined, justCanceled ? 'cancel' : 'import_complete');
   }, [jobsInProgress, scanProgress, activeBatch, lastServerActiveJobIds, scanQueue, setScanProgress, clearActiveBatch]);
 
  // ── Stuck-queue watchdog ─────────────────────────────────────────────────────
@@ -13497,9 +13487,10 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  data={pendingListRows}
  renderItem={renderPendingRow}
  keyExtractor={keyExtractorPendingRow}
- initialNumToRender={12}
- maxToRenderPerBatch={10}
- windowSize={7}
+ initialNumToRender={6}
+ maxToRenderPerBatch={4}
+ windowSize={5}
+ updateCellsBatchingPeriod={100}
  removeClippedSubviews={true}
  extraData={selectedBooks.size + excludedIds.size + (selectAllMode ? 1 : 0)}
  contentContainerStyle={[
