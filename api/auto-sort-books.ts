@@ -137,15 +137,23 @@ Return JSON: [{"folderName": "Genre Name", "bookIds": ["id1", "id2"]}, ...]`,
  }
  }
 
- // Any unassigned books get classified by simple heuristic
+ // Any unassigned books: add to the largest existing genre group.
+ // This avoids wrongly putting a non-fiction book into "Fiction".
  const unassigned = bookList.filter((b: any) => !usedBookIds.has(b.id));
- if (unassigned.length > 0) {
+ if (unassigned.length > 0 && validGroups.length > 0) {
+ // Sort groups by size descending — largest genre is the safest catch-all
+ const sorted = [...validGroups].sort((a, b) => b.bookIds.length - a.bookIds.length);
  for (const book of unassigned) {
    if (book.title === 'Unknown Title' && book.author === 'Unknown Author') continue;
-   const fallbackGenre = 'Fiction';
-   const existing = validGroups.find(g => g.folderName === fallbackGenre);
-   if (existing) { existing.bookIds.push(book.id); }
-   else { validGroups.push({ folderName: fallbackGenre, bookIds: [book.id] }); }
+   sorted[0].bookIds.push(book.id);
+ }
+ } else if (unassigned.length > 0) {
+ // No groups at all (model returned nothing) — create "General"
+ const remaining = unassigned
+   .filter((b: any) => !(b.title === 'Unknown Title' && b.author === 'Unknown Author'))
+   .map((b: any) => b.id);
+ if (remaining.length > 0) {
+   validGroups.push({ folderName: 'General', bookIds: remaining });
  }
  }
 
