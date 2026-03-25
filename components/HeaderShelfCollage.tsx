@@ -277,12 +277,6 @@ const styles = StyleSheet.create({
  position: 'absolute',
  overflow: 'hidden',
  borderRadius: COVER_RADIUS,
- borderWidth: 0.6,
- borderColor: 'rgba(0,0,0,0.14)',
- shadowColor: '#000',
- shadowOffset: { width: 0, height: 1 },
- shadowOpacity: 0.12,
- shadowRadius: 2.5,
- elevation: 2,
+ backgroundColor: 'transparent',
  },
 });
