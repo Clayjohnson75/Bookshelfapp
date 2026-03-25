@@ -490,6 +490,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       await resetSafetyBaselines(user.uid);
 
       await refreshProfileStats([]);
+      // Clear cached stats so stale counts don't flash on next app load.
+      await AsyncStorage.removeItem(`profile_stats_cache_${user.uid}`);
+      // Clear cached author count key if it exists.
+      await AsyncStorage.removeItem(`cached_author_count_${user.uid}`);
       const stateCommittedAt = Date.now();
       perfLog('clear_library', 'state_committed', { stateCommittedAt, booksUpdated, photosUpdated });
       if (onDataCleared) onDataCleared();

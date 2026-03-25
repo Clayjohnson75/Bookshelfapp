@@ -11509,11 +11509,15 @@ const closeScanModal = () => {
 
  setPhotos(dedupBy(updatedPhotos, photoStableKey));
 
- // Don't await - run in background
- saveUserData([], approvedBooks, rejectedBooks, updatedPhotos).catch(error => {
- logger.error('Error saving user data:', error);
- });
- }, [approvedBooks, rejectedBooks, photos, clearSelection, user]);
+ // Await saveUserData to ensure AsyncStorage is written before any navigation.
+ try {
+   await saveUserData([], approvedBooks, rejectedBooks, updatedPhotos);
+ } catch (error) {
+   logger.error('Error saving user data:', error);
+ }
+ // Update profile stats cache to reflect cleared pending.
+ refreshProfileStats();
+ }, [approvedBooks, rejectedBooks, photos, clearSelection, user, refreshProfileStats]);
 
  const clearSelectedBooks = async () => {
  const removedBooks = pendingBooks.filter(book => isBookSelected(pendingBookStableKey(book)));
@@ -11522,16 +11526,17 @@ const closeScanModal = () => {
  clearSelection();
 
  // Remove photos whose pending books were ALL cleared and have no approved books.
- const removedPhotoIds = new Set(removedBooks.map(b => b.source_photo_id).filter(Boolean));
- const remainingPhotoIds = new Set(remainingBooks.map(b => b.source_photo_id).filter(Boolean));
- const approvedPhotoIds = new Set(approvedBooks.map(b => b.source_photo_id).filter(Boolean));
- const photosToRemove = [...removedPhotoIds].filter(id => !remainingPhotoIds.has(id) && !approvedPhotoIds.has(id));
- const updatedPhotos = photosToRemove.length > 0
-   ? photos.filter(p => !photosToRemove.includes(p.id ?? ''))
+ const getPhotoId = (b: any) => b.source_photo_id ?? b.sourcePhotoId ?? b.photoId;
+ const removedPhotoIds = new Set(removedBooks.map(getPhotoId).filter(Boolean));
+ const remainingPhotoIds = new Set(remainingBooks.map(getPhotoId).filter(Boolean));
+ const approvedPhotoIds = new Set(approvedBooks.map(getPhotoId).filter(Boolean));
+ const photosToRemove = new Set([...removedPhotoIds].filter(id => !remainingPhotoIds.has(id) && !approvedPhotoIds.has(id)));
+ const updatedPhotos = photosToRemove.size > 0
+   ? photos.filter(p => !photosToRemove.has(p.id ?? '') && !photosToRemove.has((p as any).localId ?? ''))
    : photos;
 
  // Clean upload queue for removed photos.
- if (user && photosToRemove.length > 0) {
+ if (user && photosToRemove.size > 0) {
    import('../lib/photoUploadQueue').then(({ removeFromQueue }) => {
      for (const id of photosToRemove) {
        if (id) removeFromQueue(user.uid, id).catch(() => {});
