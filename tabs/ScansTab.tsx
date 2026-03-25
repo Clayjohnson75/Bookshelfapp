@@ -2995,6 +2995,15 @@ if (savedApproved) {
    });
    return;
  }
+ // APPROVAL GUARD: Don't run loadUserData within 10s of approval.
+ // The server may not have processed the approve yet, so the merge would
+ // overwrite the optimistic approved books with stale server data (0 approved).
+ if (approvalGraceUntilRef.current > 0 && Date.now() < approvalGraceUntilRef.current) {
+   logger.debug('[LOAD_USER_DATA] skip: approval grace window', {
+     graceRemaining: approvalGraceUntilRef.current - Date.now(),
+   });
+   return;
+ }
  // A) Don't run any pending fetch until auth is ready and we have a session (or guest). If !userId, return don't set pending, don't replace, don't merge.
  if (!authReady) {
  logger.debug(' Auth not ready yet, delaying data load');
@@ -11677,7 +11686,7 @@ const approveSelectedBooks = useCallback(async () => {
   }
   const applyOptimistic = () => {
     const now = Date.now();
-    const APPROVAL_GRACE_MS = 5000;
+    const APPROVAL_GRACE_MS = 15000;
     lastApprovedAtRef.current = now;
     approvalGraceUntilRef.current = now + APPROVAL_GRACE_MS;
     setLastApprovedAt(now);

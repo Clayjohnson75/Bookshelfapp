@@ -700,13 +700,14 @@ setFolders([]);
  return;
  }
 
- // Approval grace window: don't overwrite optimistic approved with stale server 0 when user just approved and navigated to Profile.
+ // Approval grace window: don't overwrite optimistic approved with stale server data
+ // when user just approved and navigated to Profile. Server may not have the new books yet.
  const APPROVE_GRACE_MS = 15_000;
  const hasApprovalGraceWindow = lastApprovedAt > 0 && (Date.now() - lastApprovedAt < APPROVE_GRACE_MS);
  const serverApprovedCount = supabaseBooks?.approved?.length ?? 0;
- if (hasApprovalGraceWindow && serverApprovedCount === 0 && localBooksFiltered.length > 0) {
+ if (hasApprovalGraceWindow && localBooksFiltered.length > 0 && serverApprovedCount < localBooksFiltered.length) {
    mergedBooks = localBooksFiltered;
-   if (__DEV__) logger.debug('[MYLIB_GRACE_WINDOW]', 'keeping local approved — server snapshot stale after approve', { localApproved: localBooksFiltered.length });
+   if (__DEV__) logger.debug('[MYLIB_GRACE_WINDOW]', 'keeping local approved — server snapshot stale after approve', { localApproved: localBooksFiltered.length, serverApproved: serverApprovedCount });
    // Skip the full server merge below; fall through to final setBooks with mergedBooks = local.
  } else if (!recentlyCleared && supabaseBooks && (supabaseBooks.approved?.length ?? 0) > 0) {
 
