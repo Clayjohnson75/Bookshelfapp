@@ -3668,26 +3668,10 @@ const localRejected: Book[] = resolveBookPhotoIdsCb(savedRejected ? (() => { try
     finalApproved = approvedOnly;
     finalPending = removeTombstoned(mergeList(finalPending, strayToPending));
   }
-  // Repair pass: re-approve server-pending books that have an unconfirmed local approve (self-healing sync).
-  const repairBookIds = serverPending
-    .filter((b: Book) => b.id && unconfirmedApproveBookIds.has(b.id))
-    .map((b: Book) => b.id as string);
-  if (repairBookIds.length > 0 && session?.access_token) {
-    try {
-      const approveQueue = await import('../lib/approveQueue');
-      const ok = await approveQueue.callBooksApproveByIds(session.access_token, repairBookIds);
-      if (ok) {
-        finalPending = finalPending.filter((b) => !repairBookIds.includes(b.id ?? ''));
-        const repairBooks = serverPending
-          .filter((b: Book) => b.id && repairBookIds.includes(b.id))
-          .map((b: Book) => ({ ...b, status: 'approved' as const }));
-        finalApproved = [...finalApproved, ...repairBooks];
-        logger.info('[REHYDRATE_REPAIR]', 're-approved server-pending books that had unconfirmed local approve', { count: repairBookIds.length });
-      }
-    } catch (e) {
-      logger.warn('[REHYDRATE_REPAIR]', 'repair approve failed', { count: repairBookIds.length, error: String(e) });
-    }
-  }
+  // DISABLED: Auto-repair was silently approving books the user never approved.
+  // The approve mutations outbox had stale entries, causing server-pending books
+  // to become approved during rehydration. Books must ONLY be approved by explicit
+  // user action (tap "Add to Library").
  // Backfill dbId/id on pending books from server rows so they are never id-less after a
  // sync. Local pending books start life with no DB id (book not yet written) or a stale
  // client-composite id. Once the server has a real UUID for the same book_key we must

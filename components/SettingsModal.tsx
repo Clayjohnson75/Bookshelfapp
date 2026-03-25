@@ -484,6 +484,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
       await AsyncStorage.removeItem(`photo_id_aliases_${user.uid}`);
       await clearDeletedPendingStableKeys(user.uid);
       await AsyncStorage.removeItem(PENDING_APPROVE_ACTION_KEY);
+      // Clear approve mutations outbox so stale entries don't auto-approve on next load.
+      await AsyncStorage.removeItem(`approve_mutations_${user.uid}`);
       await AsyncStorage.setItem(`library_cleared_at_${user.uid}`, String(Date.now()));
       await resetSafetyBaselines(user.uid);
 
