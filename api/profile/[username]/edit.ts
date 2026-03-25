@@ -104,7 +104,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error('[API] Error saving profile settings:', updateError);
         return res.status(500).json({
           error: 'Failed to save settings',
-          message: updateError.message || 'Database update failed. Ensure profile_settings column exists (run add-profile-settings.sql).'
+          message: 'Database update failed'
         });
       }
 

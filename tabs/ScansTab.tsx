@@ -1095,6 +1095,9 @@ const serialScanQueueRef = useRef<Array<{ uri: string; scanId: string }>>([]);
 /** True while draining serial queue into a new batch. Guards against loadUserData firing
  *  in the window between inFlightBatchIds becoming empty and the new batch registering. */
 const batchDrainingRef = useRef(false);
+/** Cumulative progress across all batches in a scanning session (reset when all scanning stops). */
+const cumulativeScanTotalRef = useRef(0);
+const cumulativeScanDoneRef = useRef(0);
 /**
  * Callback ref: set by enqueueBatch to drain serialScanQueueRef once the batch it
  * started reaches terminal (completed / failed / all-canceled). Cleared after drain.
@@ -1309,21 +1312,29 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
  }
  return;
  }
- const { completed, total, fraction } = batchProgress(activeBatch);
+ const { completed, total: batchTotal, fraction } = batchProgress(activeBatch);
  const failed = activeBatch.jobIds.filter((jid) => activeBatch.resultsByJobId[jid]?.status === 'failed').length;
  const canceled = activeBatch.jobIds.filter((jid) => activeBatch.resultsByJobId[jid]?.status === 'canceled').length;
  const completedScans = activeBatch.jobIds.filter((jid) => activeBatch.resultsByJobId[jid]?.status === 'completed').length;
- totalScansRef.current = total;
+ // Update cumulative done count: previous batches' completions + this batch's completions.
+ const prevBatchesDone = cumulativeScanDoneRef.current;
+ const batchDone = completedScans + failed + canceled;
+ // Use cumulative totals for the progress bar so it reflects ALL photos in the session.
+ const cumulativeTotal = Math.max(cumulativeScanTotalRef.current, batchTotal);
+ const cumulativeCompleted = prevBatchesDone + completedScans;
+ const cumulativeFailed = failed;
+ const cumulativeCanceled = canceled;
+ totalScansRef.current = cumulativeTotal;
  const reason = scanShowReasonRef.current ?? undefined;
  if (scanShowReasonRef.current) scanShowReasonRef.current = null;
  const nextProgress = {
  currentScanId: null,
  currentStep: Math.round(fraction * 10),
  totalSteps: 10,
- totalScans: total,
- completedScans,
- failedScans: failed,
- canceledScans: canceled,
+ totalScans: cumulativeTotal,
+ completedScans: cumulativeCompleted,
+ failedScans: cumulativeFailed,
+ canceledScans: cumulativeCanceled,
  startTimestamp: activeBatch.createdAt,
  batchId: activeBatch.batchId,
  jobIds: (activeBatch.jobIds ?? []).filter((id): id is string => typeof id === 'string' && id.trim().length >= 8),
@@ -1341,7 +1352,7 @@ const onBatchTerminalRef = useRef<(() => void) | null>(null);
  prev.currentStep === nextProgress.currentStep;
  if (!same) setScanProgress(nextProgress);
  const status = deriveBatchStatus(activeBatch);
- if (total > 0 && isTerminalBatchStatus(status)) {
+ if (batchTotal > 0 && isTerminalBatchStatus(status)) {
  const age = Date.now() - activeBatch.createdAt;
  if (age >= BATCH_TTL_MS) {
  clearActiveBatch(activeBatch.batchId, 'cleanup');
@@ -8227,6 +8238,8 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
     const newItems = items.filter((i) => !alreadyBufferedUris.has(i.uri));
     if (newItems.length > 0) {
       serialScanQueueRef.current.push(...newItems);
+      // Update cumulative total to include newly queued items.
+      cumulativeScanTotalRef.current += newItems.length;
     }
     logger.info('[BATCH_SERIAL_QUEUED]', {
       bufferedCount,
@@ -8248,6 +8261,11 @@ const enqueueBatch = async (items: Array<{uri: string, scanId: string}>): Promis
   // inFlightBatchIdsRef is empty between the serial drain and batch registration.
   inFlightBatchIdsRef.current.add(batchId);
   batchDrainingRef.current = false; // Safe to clear now — inFlightBatchIds has the new batch.
+  // If this is the first batch (no serial queue items were added yet), initialize cumulative total.
+  // Serial drain batches don't re-initialize — their items were already counted when queued.
+  if (cumulativeScanDoneRef.current === 0 && cumulativeScanTotalRef.current === 0) {
+    cumulativeScanTotalRef.current = items.length;
+  }
   setTraceId(makeBatchTraceId());
   const total = items.length;
  logger.trace('[BATCH_ENQUEUE_START]', 'enqueue', { batchId, count: items.length });
@@ -9080,6 +9098,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
     counts: { detected: totalBooks, imported: importedCount, saved: totalBooks, failed: jobFailedCount, importFailed: importFailedCount, jobsCompleted: serverCompletedCount, jobsCanceled: jobCanceledCount },
   });
 
+  // Update cumulative done count: this batch's completed jobs carry forward to the next batch.
+  cumulativeScanDoneRef.current += serverCompletedCount + jobFailedCount + jobCanceledCount;
+
   // ─── SERIAL DRAIN ────────────────────────────────────────────────────────────
   // If images arrived while this batch was running they were buffered in serialScanQueueRef.
   // Now that we're terminal, kick them as a fresh batch (only if not canceled).
@@ -9118,6 +9139,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
   // batch completes — otherwise loadUserData's server merge overwrites the
   // new batch's locally-imported pending books (the "scan 1 disappears" bug).
   if (serialItems.length === 0 && inFlightBatchIdsRef.current.size === 0 && !batchDrainingRef.current) {
+    // Reset cumulative progress — all scanning in this session is done.
+    cumulativeScanTotalRef.current = 0;
+    cumulativeScanDoneRef.current = 0;
     triggerDataRefreshRef.current();
   }
 
