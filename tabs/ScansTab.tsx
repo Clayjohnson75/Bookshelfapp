@@ -8736,19 +8736,26 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
  const finalCaption = scanCaptionsRef.current.get(scanId) || undefined;
  scanCaptionsRef.current.delete(scanId);
  scanIdToPhotoIdRef.current.set(scanId, canonicalPhotoId);
+ // Preserve storage_path and status from the existing Step A photo if it was already
+ // uploaded by the durable queue. Without this, the scan import creates a fresh 'draft'
+ // photo that overwrites the uploaded one, making the spinner show forever.
+ const existingStepA = prevPhotos.find(p => p.id === canonicalPhotoId || (p.localId && p.localId === canonicalPhotoId));
+ const preservedStoragePath = existingStepA?.storage_path ?? undefined;
+ const preservedStatus = preservedStoragePath ? 'complete' as const : 'draft' as const;
  const newPhoto: Photo = {
  id: canonicalPhotoId,
- uri,
+ uri: existingStepA?.uri ?? uri,
  books: photoBooks,
- timestamp: Date.now(),
+ timestamp: existingStepA?.timestamp ?? Date.now(),
  caption: finalCaption,
  jobId,
- status: 'draft',
- // Don't set approved_count: 0 — undefined = unknown so UI can treat "not ready" vs "computed zero".
+ status: preservedStatus,
+ storage_path: preservedStoragePath,
+ localId: existingStepA?.localId,
  ...(imageHash && { photoFingerprint: imageHash }),
- bytes: newPhotoBytes,
- width: newPhotoWidth,
- height: newPhotoHeight,
+ bytes: newPhotoBytes ?? existingStepA?.bytes,
+ width: newPhotoWidth ?? existingStepA?.width,
+ height: newPhotoHeight ?? existingStepA?.height,
  };
  logger.debug('[PHOTO_CREATE]', { traceId: itemTraceId, photoId: canonicalPhotoId, jobId, photoHash: imageHash ? imageHash.slice(0, 16) + '' : null, bytes: newPhotoBytes ?? null });
  logger.debug('[PHOTO_ATTACH_BOOKS]', { traceId: itemTraceId, photoId: canonicalPhotoId, jobId, booksCount: photoBooks.length });
