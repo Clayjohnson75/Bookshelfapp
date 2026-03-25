@@ -5,9 +5,10 @@
  */
 
 export type LibraryInvalidatePayload = {
-  reason: 'scan_terminal';
+  reason: 'scan_terminal' | 'approve';
   jobId?: string;
   photoId?: string;
+  bookCount?: number;
 };
 
 type Subscriber = (payload: LibraryInvalidatePayload) => void;

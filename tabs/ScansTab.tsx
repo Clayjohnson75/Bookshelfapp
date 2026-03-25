@@ -3419,7 +3419,20 @@ supabasePhotos = null;
  // Rule A/B: books with unconfirmed approve stay approved; don't resurrect to pending from server.
  const { getBookIdsWithUnconfirmedApprove } = await import('../lib/approveMutationsOutbox');
  const unconfirmedApproveBookIds = await getBookIdsWithUnconfirmedApprove(user.uid);
- const serverPendingForMerge = serverPending.filter((b: Book) => !(b.id && unconfirmedApproveBookIds.has(b.id)));
+ // Also build title+author keys from current approved books so server pending books
+ // that match an approved book (by content, not just ID) don't leak back into pending.
+ // This handles the case where the approve mutation hasn't propagated to the server yet.
+ const approvedTitleAuthorKeys = new Set(
+   approvedBooksRef.current.map((b: any) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`)
+ );
+ const serverPendingForMerge = serverPending.filter((b: Book) => {
+   // Filter by ID (outbox tracking)
+   if (b.id && unconfirmedApproveBookIds.has(b.id)) return false;
+   // Filter by title+author match against current approved books
+   const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+   if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
+   return true;
+ });
 
  const MERGE_WINDOW_MS = 60 * 1000;
  const hasRecentMutation = Date.now() - lastLocalMutationAtRef.current < MERGE_WINDOW_MS;
@@ -11880,7 +11893,10 @@ const approveSelectedBooks = useCallback(async () => {
       AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedApproved)),
       AsyncStorage.setItem(userPendingKey, JSON.stringify(remainingBooks)),
       AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedBooks)),
-    ]).catch(() => {});
+    ]).then(() => {
+      // Notify MyLibraryTab to reload so books appear immediately when user navigates there.
+      emitLibraryInvalidate({ reason: 'approve', bookCount: updatedApproved.length });
+    }).catch(() => {});
 
     const approvedCountsByPhotoIdSample: Record<string, number> = {};
     updatedApproved.forEach((b) => {
