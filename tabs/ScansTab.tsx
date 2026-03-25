@@ -966,11 +966,11 @@ React.useEffect(() => {
        }
      } catch (_) {
      } finally {
-       // Books (if any) are now in AsyncStorage. Only refresh if no other batches are
-       // in-flight — otherwise the merge would wipe their locally-imported pending books.
-       if (inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0 && !batchDrainingRef.current) {
-         triggerDataRefreshRef.current();
-       }
+       // Books are already imported and saved to AsyncStorage by the code above.
+       // Do NOT trigger loadUserData here — it would fetch from the server which
+       // may still have these books as "pending" (approve mutation hasn't propagated).
+       // If the user approves right after scan, loadUserData would re-add the server's
+       // pending books to local state, causing ghost books to appear in pending.
      }
      })();
  }
