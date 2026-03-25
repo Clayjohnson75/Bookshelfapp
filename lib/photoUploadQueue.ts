@@ -565,7 +565,16 @@ async function requestScanAndPoll(
     } catch {
       continue;
     }
-    if (!pollResp.ok) continue;
+    if (!pollResp.ok) {
+      // 404/410: job was deleted (profile cleared) — remove zombie item and stop polling.
+      if (pollResp.status === 404 || pollResp.status === 410) {
+        logger.info('[UPLOAD_QUEUE]', 'poll job gone (404/410) — removing zombie', { photoId: photoId.slice(0, 8), jobId: String(jobId).slice(0, 8), status: pollResp.status });
+        completedPhotoIds.add(photoId);
+        await removeFromQueue(userId, photoId);
+        return;
+      }
+      continue;
+    }
     let pollData: { status?: string };
     try {
       pollData = JSON.parse(pollText) as { status?: string };
@@ -617,6 +626,8 @@ async function requestScanAndPoll(
   }
 
   const errMsg = 'Poll timeout';
+  // Mark as completed to prevent infinite re-processing on next tick.
+  completedPhotoIds.add(photoId);
   await updateItem(userId, photoId, { state: 'failed', errorMessage: errMsg });
   onPhotoUploadFailed?.(userId, photoId, errMsg);
 }
