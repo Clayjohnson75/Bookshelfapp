@@ -13741,11 +13741,11 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  presentationStyle="fullScreen"
  onRequestClose={() => setShowAllScansModal(false)}
  >
- <SafeAreaView style={[styles.allScansModalContainer, { backgroundColor: t.colors.bg }]}>
+ <SafeAreaView style={[styles.allScansModalContainer, { backgroundColor: t.colors.bg }]} edges={['top', 'left', 'right']}>
  <View style={[styles.allScansModalHeader, { borderBottomColor: t.colors.separator }]}>
  <TouchableOpacity
  onPress={() => setShowAllScansModal(false)}
- hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+ hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
  style={styles.allScansModalDoneButton}
  >
  <ChevronBackIcon size={20} color={t.colors.primary} style={{ marginRight: 4 }} />
@@ -13759,10 +13759,13 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
  >
  {photos.length === 0 ? null : (() => {
- // Same rule as the scan strip: include draft photos with approved books.
+ // Only show photos with approved books in the library (same rule as footer strip).
  const completePhotos = photos.filter((photo) => {
  if (photo.status === 'discarded' || (photo as any).deleted_at) return false;
- return (typeof photo.approved_count === 'number' && photo.approved_count > 0) || (photo.books?.length ?? 0) > 0;
+ const hasApprovedBooks = photo.id ? approvedPhotoIds.has(photo.id) : false;
+ const hasApprovedCount = typeof photo.approved_count === 'number' && photo.approved_count > 0;
+ const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
+ return hasApprovedBooks || hasApprovedCount || hasApprovedInSnapshot;
  });
  const recentCanonical = dedupBy(completePhotos, canonicalPhotoListKey);
  // Normalize thumbnailUri once so list render never throws; PhotoTile uses fallback chain.
