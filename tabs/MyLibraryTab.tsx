@@ -366,9 +366,14 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  }, [authorsSortedForView, authorsSearchQuery]);
 
  const uniqueAuthorsCount = authorsWithBooks.length;
- // Keep last-known-good during merge/load so author count doesn't flash to "--".
- if (!mergeInProgress && !isLoadingData) lastStableUniqueAuthorsCountRef.current = uniqueAuthorsCount;
- const displayAuthorsCount = (mergeInProgress || isLoadingData) ? (lastStableUniqueAuthorsCountRef.current ?? '—') : uniqueAuthorsCount;
+ // Keep last-known-good during merge/load so author count doesn't flash to 0.
+ if (!mergeInProgress && !isLoadingData && uniqueAuthorsCount > 0) {
+   lastStableUniqueAuthorsCountRef.current = uniqueAuthorsCount;
+   if (user) AsyncStorage.setItem(`cached_author_count_${user.uid}`, String(uniqueAuthorsCount)).catch(() => {});
+ }
+ const displayAuthorsCount = (mergeInProgress || isLoadingData)
+   ? (lastStableUniqueAuthorsCountRef.current ?? uniqueAuthorsCount)
+   : uniqueAuthorsCount;
 
  // Sort by author's last name (fallback to title when author missing)
  const sortedDisplayedBooks = useMemo(() => {
@@ -466,32 +471,43 @@ const photoDeleteIntentRef = React.useRef<ReturnType<typeof createDeleteIntent> 
  };
  }, [librarySearch, booksSectionY, isSelectionMode, selectedBooks.size]);
 
- // Initialize userProfile immediately when user is available
+ // Initialize userProfile immediately: try cached profile + author count first (instant).
  useEffect(() => {
  if (user) {
- // Initialize profile immediately with user data
+ // Load cached author count for instant display (no "0 authors" flash).
+ AsyncStorage.getItem(`cached_author_count_${user.uid}`).then((val) => {
+   if (val != null) {
+     const n = parseInt(val, 10);
+     if (!isNaN(n) && lastStableUniqueAuthorsCountRef.current == null) {
+       lastStableUniqueAuthorsCountRef.current = n;
+     }
+   }
+ }).catch(() => {});
+
+ const cacheKey = `cached_profile_${user.uid}`;
+ // Load cached profile for instant display (no "User" flash).
+ AsyncStorage.getItem(cacheKey).then((raw) => {
+   if (!raw) return;
+   try {
+     const cached = JSON.parse(raw);
+     setUserProfile(prev => {
+       // Only use cache if we haven't loaded real data yet
+       if (prev && prev.displayName !== 'User') return prev;
+       return { ...cached, lastLogin: new Date() };
+     });
+   } catch {}
+ }).catch(() => {});
+
+ // Set from user object (may still be 'User' if auth hasn't loaded profile)
  setUserProfile(prev => {
+ const displayName = user.displayName || user.username || (prev?.displayName !== 'User' ? prev?.displayName : null) || 'User';
  if (prev) {
- // Update existing profile with new user data
- return {
- ...prev,
- displayName: user.displayName || user.username || 'User',
- email: user.email || prev.email || '',
- };
+ return { ...prev, displayName, email: user.email || prev.email || '' };
  } else {
- // Create new profile from user data
- return {
- displayName: user.displayName || user.username || 'User',
- email: user.email || '',
- createdAt: new Date(),
- lastLogin: new Date(),
- totalBooks: 0,
- totalPhotos: 0,
- };
+ return { displayName, email: user.email || '', createdAt: new Date(), lastLogin: new Date(), totalBooks: 0, totalPhotos: 0 };
  }
  });
  } else {
- // Clear profile when user signs out
  setUserProfile(null);
  }
  }, [user]);
@@ -1029,6 +1045,8 @@ setFolders(supabaseFolders.length > 0 ? supabaseFolders : loadedFolders);
  totalBooks: mergedBooks.length,
  totalPhotos: scansWithApprovedBooks,
  };
+ // Cache for instant load on next mount (prevents "User" and "0 authors" flash).
+ AsyncStorage.setItem(`cached_profile_${user.uid}`, JSON.stringify(profile)).catch(() => {});
  return profile;
  });
  }
