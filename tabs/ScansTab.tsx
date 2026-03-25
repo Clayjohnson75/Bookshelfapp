@@ -894,12 +894,12 @@ React.useEffect(() => {
  emitLibraryInvalidate({ reason: 'scan_terminal', jobId: canonicalId });
  // For failed/canceled: refresh from server — but only when no batch is in-flight.
  // Otherwise the refresh would overwrite locally-imported pending books from other jobs.
- if (status !== 'completed' && inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0) {
+ if (status !== 'completed' && inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0 && !batchDrainingRef.current) {
    triggerDataRefreshRef.current();
  }
  if (status === 'completed') {
-   // Skip if the batch pipeline already handled this job (prevents flash from double-import).
-   if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0) {
+   // Skip if the batch pipeline is active (prevents flash from double-import).
+   if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0 || batchDrainingRef.current) {
      // Batch still running — it will handle import. Just skip.
      return;
    }
@@ -973,7 +973,7 @@ React.useEffect(() => {
      } finally {
        // Books (if any) are now in AsyncStorage. Only refresh if no other batches are
        // in-flight — otherwise the merge would wipe their locally-imported pending books.
-       if (inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0) {
+       if (inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0 && !batchDrainingRef.current) {
          triggerDataRefreshRef.current();
        }
      }
@@ -1092,6 +1092,9 @@ const importedBookCountByJobIdRef = useRef<Record<string, number>>({});
  * batch's queue records (if it hasn't uploaded yet) or land here to start next.
  */
 const serialScanQueueRef = useRef<Array<{ uri: string; scanId: string }>>([]);
+/** True while draining serial queue into a new batch. Guards against loadUserData firing
+ *  in the window between inFlightBatchIds becoming empty and the new batch registering. */
+const batchDrainingRef = useRef(false);
 /**
  * Callback ref: set by enqueueBatch to drain serialScanQueueRef once the batch it
  * started reaches terminal (completed / failed / all-canceled). Cleared after drain.
@@ -2994,10 +2997,7 @@ if (savedApproved) {
 
  const loadUserData = async () => {
  // CRITICAL GUARD: Never run loadUserData while scanning is in progress.
- // The server merge in loadUserData replaces pendingBooks with server data,
- // wiping locally-imported books from scans that haven't synced yet.
- // The data will refresh naturally when all scanning completes.
- if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0) {
+ if (inFlightBatchIdsRef.current.size > 0 || serialScanQueueRef.current.length > 0 || batchDrainingRef.current) {
    logger.debug('[LOAD_USER_DATA] skip: scanning in progress', {
      inFlightBatches: inFlightBatchIdsRef.current.size,
      serialQueue: serialScanQueueRef.current.length,
@@ -9029,26 +9029,29 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
   // If images arrived while this batch was running they were buffered in serialScanQueueRef.
   // Now that we're terminal, kick them as a fresh batch (only if not canceled).
   // On cancel we discard the buffer so users don't get surprise scans after pressing X.
-  const serialItems = serialScanQueueRef.current.splice(0); // atomically take all buffered items
+  //
+  // CRITICAL: Set batchDrainingRef BEFORE splicing the queue. Between splice(0) and
+  // enqueueBatch registering the new batch in inFlightBatchIdsRef, both refs are empty.
+  // Without this flag, handleJobTerminalStatus would fire loadUserData in that window
+  // and the server merge would wipe locally-imported books from the just-completed batch.
+  const serialItems = serialScanQueueRef.current.splice(0);
   if (serialItems.length > 0) {
     if (jobCanceledCount > 0 && serverCompletedCount === 0) {
-      // Pure cancel: discard buffered items (user pressed X; they don't want more scans).
       logger.info('[BATCH_SERIAL_DISCARDED]', {
         reason: 'batch_was_canceled',
         discarded: serialItems.length,
       });
     } else {
-      // Natural terminal (complete/fail): start the buffered items as a new batch.
+      batchDrainingRef.current = true;
       logger.info('[BATCH_SERIAL_DRAIN]', {
         bufferedItems: serialItems.length,
         prevBatchId: batchId,
         prevOutcome: outcome,
       });
-      // Start the next batch immediately instead of with a 300ms delay.
-      // The delay was causing a window where activeBatch became null, making
-      // the previous batch's results flicker (disappear then reappear).
       enqueueBatch(serialItems).catch((err) => {
         logger.error('[BATCH_SERIAL_DRAIN] failed to start next batch', err);
+      }).finally(() => {
+        batchDrainingRef.current = false;
       });
     }
   }
@@ -9058,7 +9061,7 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
   // If a serial drain just started a new batch, defer the refresh until that
   // batch completes — otherwise loadUserData's server merge overwrites the
   // new batch's locally-imported pending books (the "scan 1 disappears" bug).
-  if (serialItems.length === 0 && inFlightBatchIdsRef.current.size === 0) {
+  if (serialItems.length === 0 && inFlightBatchIdsRef.current.size === 0 && !batchDrainingRef.current) {
     triggerDataRefreshRef.current();
   }
 
