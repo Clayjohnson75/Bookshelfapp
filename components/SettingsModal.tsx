@@ -517,43 +517,29 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose, onDataC
  <AppHeader title="Settings" onBack={onClose} />
 
  <ScrollView style={[styles.content, { backgroundColor: t.colors.bg }]}>
- {/* Theme: Auto (time-based) / Light / Dark. Auto is the default — switches at 7am and 8pm. */}
- <View style={[styles.section, { backgroundColor: t.colors.surface }]}>
- <Text style={[styles.sectionTitle, { color: t.colors.textPrimary ?? t.colors.text, fontFamily: headingFont }]}>Theme</Text>
- <View style={styles.themeRow}>
+ {/* Theme selector — segmented control style */}
+ <View style={styles.section}>
+ <Text style={[styles.sectionTitle, { color: t.colors.textSecondary ?? t.colors.textMuted }]}>APPEARANCE</Text>
+ <View style={[styles.themeSegment, { backgroundColor: t.colors.inputBg ?? t.colors.surface2 }]}>
  {(['system', 'light', 'dark'] as const).map((pref) => {
    const isActive = preference === pref;
    const label = pref === 'system' ? 'Auto' : pref === 'light' ? 'Light' : 'Dark';
-   const icon = pref === 'system' ? 'time-outline' : pref === 'light' ? 'sunny-outline' : 'moon-outline';
-   const subtitle = pref === 'system' ? '7am – 8pm' : pref === 'light' ? 'Always light' : 'Always dark';
    return (
  <TouchableOpacity
    key={pref}
    style={[
-     styles.themeOption,
-     {
-       backgroundColor: t.colors.surface,
-       borderColor: t.colors.themeOptionBorder ?? t.colors.border,
-     },
-     isActive && { borderColor: t.colors.primary, borderWidth: 2, backgroundColor: (t.colors.primaryMuted ?? t.colors.accent + '18') },
+     styles.themeSegmentItem,
+     isActive && [styles.themeSegmentItemActive, { backgroundColor: t.colors.surface }],
    ]}
    onPress={() => setPreference(pref)}
-   activeOpacity={0.8}
+   activeOpacity={0.7}
  >
-   <Ionicons
-     name={icon as any}
-     size={20}
-     color={isActive ? (t.colors.primary) : (t.colors.textSecondary ?? t.colors.text)}
-     style={{ marginBottom: 4 }}
-   />
    <Text style={[
-     styles.themeOptionText,
-     { color: isActive ? (t.colors.textPrimary ?? t.colors.text) : (t.colors.textSecondary ?? t.colors.text) },
+     styles.themeSegmentText,
+     { color: isActive ? (t.colors.textPrimary ?? t.colors.text) : (t.colors.textSecondary ?? t.colors.textMuted) },
+     isActive && styles.themeSegmentTextActive,
    ]}>
      {label}
-   </Text>
-   <Text style={[styles.themeOptionSubtitle, { color: t.colors.textSecondary ?? t.colors.textMuted ?? t.colors.text }]}>
-     {subtitle}
    </Text>
  </TouchableOpacity>
    );
@@ -911,10 +897,26 @@ function getStyles(t: ThemeTokens) {
  paddingHorizontal: 20,
  },
  sectionTitle: { fontSize: 13, fontWeight: '600', color: c.textSecondary ?? c.textMuted, marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.8 },
- themeRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
- themeOption: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, minWidth: 90, flex: 1, alignItems: 'center' },
- themeOptionText: { fontSize: 14, fontWeight: '600' },
- themeOptionSubtitle: { fontSize: 11, fontWeight: '400', marginTop: 2, textAlign: 'center' },
+ themeSegment: {
+ flexDirection: 'row',
+ borderRadius: 10,
+ padding: 3,
+ },
+ themeSegmentItem: {
+ flex: 1,
+ paddingVertical: 8,
+ alignItems: 'center',
+ borderRadius: 8,
+ },
+ themeSegmentItemActive: {
+ shadowColor: '#000',
+ shadowOffset: { width: 0, height: 1 },
+ shadowOpacity: 0.08,
+ shadowRadius: 2,
+ elevation: 1,
+ },
+ themeSegmentText: { fontSize: 14, fontWeight: '500' },
+ themeSegmentTextActive: { fontWeight: '600' },
  infoRow: { paddingVertical: 14 },
  infoContent: { flexDirection: 'column' },
  infoLabel: { fontSize: 14, color: c.textSecondary ?? c.textMuted, fontWeight: '500', marginBottom: 4 },
