@@ -955,6 +955,57 @@ React.useEffect(() => {
  /** Watchdog uses this only — refresh scan-job list (sync-scans?active=1), never profile/books/photos. */
  const refreshScanJobsOnlyRef = React.useRef<() => Promise<void>>(async () => {});
  const enqueueBookEnrichmentRef = React.useRef<(bookIds: string[]) => void | Promise<void>>(() => {});
+
+ /**
+  * Backfill missing covers for pending books by calling /api/resolve-covers.
+  * The cover_resolutions cache on the server may already have covers that weren't
+  * attached to books during scan import (cover worker runs async after scan completes).
+  */
+ const backfillMissingCovers = React.useCallback(async (books: Book[]) => {
+   const booksWithoutCover = books.filter(b => !b.coverUrl && b.title);
+   if (booksWithoutCover.length === 0) return;
+   try {
+     const base = getApiBaseUrl();
+     if (!base) return;
+     const { getScanAuthHeaders } = await import('../lib/authHeaders');
+     const headers = await getScanAuthHeaders();
+     const payload = booksWithoutCover.slice(0, 50).map(b => ({
+       id: b.id ?? (b as any).book_key ?? `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`,
+       title: b.title || '',
+       author: b.author || '',
+       isbn: (b as any).isbn13 || (b as any).isbn10 || undefined,
+     }));
+     const res = await fetch(`${base}/api/resolve-covers`, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json', ...headers },
+       body: JSON.stringify({ books: payload }),
+     });
+     if (!res.ok) return;
+     const data = await res.json() as { ok: boolean; results: Record<string, { coverUrl?: string } | null> };
+     if (!data.ok || !data.results) return;
+     // Apply resolved covers to pending books
+     let updated = 0;
+     setPendingBooks(prev => {
+       const next = prev.map(b => {
+         if (b.coverUrl) return b; // already has cover
+         const key = b.id ?? (b as any).book_key ?? `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+         const resolved = data.results[key];
+         if (resolved && 'coverUrl' in resolved && resolved.coverUrl) {
+           updated++;
+           return { ...b, coverUrl: resolved.coverUrl };
+         }
+         return b;
+       });
+       if (updated > 0) {
+         // Persist to AsyncStorage so covers survive rehydrate
+         const userKey = `pending_books_${user?.uid}`;
+         if (user?.uid) AsyncStorage.setItem(userKey, JSON.stringify(next)).catch(() => {});
+       }
+       return updated > 0 ? next : prev;
+     });
+     if (updated > 0) logger.info('[COVER_BACKFILL]', `Resolved ${updated} missing covers from cache`);
+   } catch { /* fire-and-forget */ }
+ }, [user?.uid]);
  // Track which jobs have already been fully handled to prevent duplicate imports.
  // The upload queue can fire onJobTerminalStatus multiple times for the same job.
  const handledTerminalJobsRef = React.useRef(new Set<string>());
@@ -1108,6 +1159,9 @@ React.useEffect(() => {
        // may still have these books as "pending" (approve mutation hasn't propagated).
        // If the user approves right after scan, loadUserData would re-add the server's
        // pending books to local state, causing ghost books to appear in pending.
+
+       // Backfill missing covers after a short delay (cover worker may still be running).
+       setTimeout(() => backfillMissingCovers(pendingBooksRef.current), 5000);
      }
      })();
  }
