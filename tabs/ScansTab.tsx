@@ -13780,7 +13780,15 @@ const recentScansFooter = useMemo(() => {
     const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
     return hasApprovedBooks || hasApprovedCount || hasApprovedInSnapshot;
   });
-  const recentCanonical = completePhotos.length === 0 ? [] : dedupBy(completePhotos, canonicalPhotoListKey);
+  // Dedup by canonical key first, then by storage_path to catch local/server ID mismatches.
+  const recentCanonicalStep1 = completePhotos.length === 0 ? [] : dedupBy(completePhotos, canonicalPhotoListKey);
+  const seenPaths = new Set<string>();
+  const recentCanonical = recentCanonicalStep1.filter(p => {
+    const sp = (p as any).storage_path;
+    if (sp && seenPaths.has(sp)) return false;
+    if (sp) seenPaths.add(sp);
+    return true;
+  });
   const recentListFull = recentCanonical.slice().reverse().map((p) => ({
     photo: p,
     thumbnailUri: p.thumbnail_uri ?? p.uri ?? null,
@@ -14249,7 +14257,15 @@ if (scanBarVisibilityLogKeyRef.current !== scanBarVisibilityKey) {
  const hasApprovedInSnapshot = (photo.books ?? []).some(b => b.status === 'approved');
  return hasApprovedBooks || hasApprovedCount || hasApprovedInSnapshot;
  });
- const recentCanonical = dedupBy(completePhotos, canonicalPhotoListKey);
+ // Dedup by canonical key + storage_path to match overview count.
+ const recentCanonicalStep1 = dedupBy(completePhotos, canonicalPhotoListKey);
+ const seenPaths = new Set<string>();
+ const recentCanonical = recentCanonicalStep1.filter(p => {
+   const sp = (p as any).storage_path;
+   if (sp && seenPaths.has(sp)) return false;
+   if (sp) seenPaths.add(sp);
+   return true;
+ });
  // Normalize thumbnailUri once so list render never throws; PhotoTile uses fallback chain.
  const recentListFull = recentCanonical.slice().reverse().map((p) => ({
  photo: p,
