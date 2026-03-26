@@ -3531,16 +3531,24 @@ supabasePhotos = null;
  // Rule A/B: books with unconfirmed approve stay approved; don't resurrect to pending from server.
  const { getBookIdsWithUnconfirmedApprove } = await import('../lib/approveMutationsOutbox');
  const unconfirmedApproveBookIds = await getBookIdsWithUnconfirmedApprove(user.uid);
- // Also build title+author keys from current approved books so server pending books
- // that match an approved book (by content, not just ID) don't leak back into pending.
- // This handles the case where the approve mutation hasn't propagated to the server yet.
- const approvedTitleAuthorKeys = new Set(
-   approvedBooksRef.current.map((b: any) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`)
- );
+ // Build title+author keys from BOTH local approved books AND server-approved books.
+ // Local covers the case where approve mutation hasn't propagated to server yet.
+ // Server covers the case where app restarted and local state is empty/stale.
+ const approvedTitleAuthorKeys = new Set<string>();
+ const addApprovedKey = (b: any) => {
+   const k = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+   if (k !== '|') approvedTitleAuthorKeys.add(k);
+ };
+ approvedBooksRef.current.forEach(addApprovedKey);
+ serverApproved.forEach(addApprovedKey);
+
+ // Also build a set of approved book IDs from the server for direct ID matching
+ const serverApprovedIds = new Set(serverApproved.map((b: any) => b.id).filter(Boolean));
+
  const serverPendingForMerge = serverPending.filter((b: Book) => {
-   // Filter by ID (outbox tracking)
-   if (b.id && unconfirmedApproveBookIds.has(b.id)) return false;
-   // Filter by title+author match against current approved books
+   // Filter by ID: outbox tracking OR server already marked as approved
+   if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedIds.has(b.id))) return false;
+   // Filter by title+author match against all known approved books (local + server)
    const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
    if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
    return true;
@@ -9051,6 +9059,8 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
           : dedupBy([...withoutStalePending, newPhoto], photoStableKey);
         setPendingBooks(prevPending => {
           const existingKeys = new Set(prevPending.map(b => existingKey(b)));
+          // Also check approved books to prevent re-adding books that were already approved
+          const approvedKeys = new Set(approvedBooksRef.current.map(b => existingKey(b)));
           // Resolve source_photo_id through alias map immediately at import time.
           // If this same image was scanned before and deduped to a canonical ID in a prior
           // session, the alias map already knows the mapping. Resolving here means books
@@ -9059,8 +9069,9 @@ const pollPromises = enqueuedJobs.map(({ jobId, scanJobId, scanId, photoId: jobP
           const rewroteCount = resolvedNewPending.filter((b, i) => (b as any).source_photo_id !== (uniqueNewPending[i] as any).source_photo_id).length;
           if (rewroteCount > 0) logger.info('[SCAN_IMPORT_PHOTO_ID_RESOLVED]', { jobId, rewroteCount, sample: resolvedNewPending.slice(0, 1).map((b) => ({ pid: (b as any).source_photo_id?.slice(0, 8) })) });
           const deduped = resolvedNewPending.filter((book: Book) => {
-            if (existingKeys.has(existingKey(book))) return false;
-            existingKeys.add(existingKey(book));
+            const k = existingKey(book);
+            if (existingKeys.has(k) || approvedKeys.has(k)) return false;
+            existingKeys.add(k);
             return true;
           });
           // [SCAN_IMPORT_AUDIT]: one line per job that proves how many books survived into
