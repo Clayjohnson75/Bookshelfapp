@@ -4742,13 +4742,9 @@ const approvedPostSyncCollapsed = [..._postSyncServerByKey.values(), ..._postSyn
  // Reject photos where deleted_at is set (server may have soft-deleted after query)
  const deletedAt = (photo as any).deleted_at ?? null;
  if (deletedAt) {
-   if (_hasBooks) {
-     logger.warn(`[PHOTO_FILTER_BOOKS_OVERRIDE] photo ${photo.id}: deleted_at set but has books — keeping`, {
-       photo_id: photo.id, deleted_at: deletedAt,
-     });
-     return true;
-   }
- logger.warn(`Skipping photo ${photo.id}: deleted_at=${deletedAt} purging locally`);
+ // Always filter out deleted photos — books keep their data but the photo tile is gone.
+ // Previously this kept deleted photos if they had books, causing stale photos to reappear.
+ logger.info(`[PHOTO_DELETED_PRUNED] photo ${photo.id}: deleted_at=${deletedAt}, hasBooks=${_hasBooks} — filtering out`);
  if (photo.id) corruptServerPhotoIds.push(photo.id);
  return false;
  }

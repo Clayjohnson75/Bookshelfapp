@@ -44,7 +44,7 @@ import BookDetailModal from '../components/BookDetailModal';
 import { AuthGateModal } from '../components/AuthGateModal';
 import { LoginScreen } from '../auth/AuthScreens';
 import { LibraryView } from '../screens/LibraryView';
-import { loadBooksFromSupabase, loadFoldersFromSupabase, saveFoldersToSupabase, deleteLibraryPhotoAndBooks, getDeletedBookIds, addDeletedBookIdsTombstone, fetchAllApprovedBooks, fetchAllPhotos } from '../services/supabaseSync';
+import { loadBooksFromSupabase, loadFoldersFromSupabase, saveFoldersToSupabase, deleteLibraryPhotoAndBooks, getDeletedBookIds, addDeletedBookIdsTombstone, fetchAllApprovedBooks, fetchAllPhotos, fetchValidPhotoIds } from '../services/supabaseSync';
 import { useResponsive } from '../lib/useResponsive';
 import { getBookSourcePhotoId } from '../lib/bookKey';
 import { createDeleteIntent, assertDeleteAllowed, logDeleteAudit, getLastDestructiveAction } from '../lib/deleteGuard';
@@ -887,7 +887,14 @@ setFolders([]);
    logger.info('[MYLIB_MERGE_SAFETY]', `Restored ${missingLocal.length} local-only books`);
  }
  }
- 
+
+  // Clean orphaned source_photo_id: strip references to photos that no longer exist on server.
+  // This prevents stale photo IDs from inflating the profile photo count.
+  let serverValidPhotoIds: Set<string> = new Set();
+  try {
+    serverValidPhotoIds = await fetchValidPhotoIds(user!.uid);
+  } catch { /* graceful degradation — skip cleanup if fetch fails */ }
+
   // Use merged result (local already excluded deleted tombstone; server excludes deleted_at rows).
   // Enforce that file:// photos with no remote storage cannot be marked 'complete'.
   const loadedPhotosGuarded = loadedPhotos.map(enforcePhotoStorageStatus);
@@ -906,6 +913,26 @@ setFolders([]);
   Object.entries(photoIdAliasRef.current).forEach(([local, canonical]) => {
     if (photoIds.has(canonical)) photoIds.add(local);
   });
+
+  // Strip source_photo_id from books whose photo was deleted on the server.
+  // Only run if the server fetch succeeded (non-empty set). Protect just-created
+  // photos (in local photoIds set) that may not have synced to server yet.
+  if (serverValidPhotoIds.size > 0) {
+    let orphanedCount = 0;
+    for (const book of mergedBooks) {
+      const pid = getBookSourcePhotoId(book);
+      if (!pid) continue;
+      // Keep if photo exists on server OR is in local cache (just-created/uploading)
+      if (serverValidPhotoIds.has(pid) || photoIds.has(pid)) continue;
+      // Orphaned: photo was deleted on server and not in local cache
+      (book as any).source_photo_id = null;
+      (book as any).sourcePhotoId = null;
+      orphanedCount++;
+    }
+    if (orphanedCount > 0) {
+      logger.info('[ORPHANED_PHOTO_ID_CLEANUP]', `Nulled source_photo_id on ${orphanedCount} books (photo deleted on server)`);
+    }
+  }
 
   // Integrity check: log only (action:'log_only') — no state mutation until canonical photo
   // insertion is stable. Pass books through unchanged; only warn if a photo is truly missing
@@ -985,6 +1012,8 @@ if (LOG_TRACE) logger.debug('[MYLIB_LOAD_USER_DATA] skip final apply: stale requ
  };
  const photosWithApproved = loadedPhotos.filter(photo => {
  if (photo.finalizedAt == null) return true; // Keep non-finalized don't prune during sync
+ // If server fetch succeeded, also require the photo exists on server (not soft-deleted)
+ if (serverValidPhotoIds.size > 0 && photo.id && !serverValidPhotoIds.has(photo.id)) return false;
  return photoHasApprovedBook(photo, finalBooks);
  });
  if (photosWithApproved.length < loadedPhotos.length) {

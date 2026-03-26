@@ -3431,6 +3431,30 @@ export async function fetchAllPhotos(userId: string, signal?: AbortSignal): Prom
 }
 
 /**
+ * Fetch the set of non-deleted photo IDs for a user. Lightweight query (id column only).
+ * Used to validate source_photo_id references on books during rehydration.
+ * Returns empty Set on error (graceful degradation — stale count persists but nothing breaks).
+ */
+export async function fetchValidPhotoIds(userId: string): Promise<Set<string>> {
+  if (!supabase) return new Set();
+  try {
+    const { data, error } = await supabase
+      .from('photos')
+      .select('id')
+      .eq('user_id', userId)
+      .is('deleted_at', null);
+    if (error || !data) {
+      logger.warn('[FETCH_VALID_PHOTO_IDS]', 'query failed', { error: error?.message });
+      return new Set();
+    }
+    return new Set(data.map((row: any) => row.id as string));
+  } catch (err: any) {
+    logger.warn('[FETCH_VALID_PHOTO_IDS]', 'unexpected error', { error: err?.message });
+    return new Set();
+  }
+}
+
+/**
  * Load all books from Supabase for a user, grouped by status.
  * Pass options.milestone to log [DESC_CLIENT_FETCH] at key moments (boot, approve, sync); otherwise logs only when total/withDesc change.
  * Pass options.signal (e.g. libraryAbortControllerRef) to cancel when user switches — do NOT pass scan abort signal.
