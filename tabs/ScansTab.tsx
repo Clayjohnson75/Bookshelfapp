@@ -1160,8 +1160,8 @@ React.useEffect(() => {
        // If the user approves right after scan, loadUserData would re-add the server's
        // pending books to local state, causing ghost books to appear in pending.
 
-       // Backfill missing covers after a short delay (cover worker may still be running).
-       setTimeout(() => backfillMissingCovers(pendingBooksRef.current), 5000);
+       // Backfill missing covers after a delay (cover worker takes 5-10s after scan completes).
+       setTimeout(() => backfillMissingCovers(pendingBooksRef.current), 10000);
      }
      })();
  }
@@ -5608,6 +5608,12 @@ logger.error('Error parsing rejected books:', e);
  const userId = user?.uid ?? null;
  if (!userId) return;
  if (!hasSession && !isGuestUser(user)) return;
+
+ // Backfill covers for any pending books missing coverUrl (fire-and-forget).
+ // Catches books that lost covers during rehydrate or where the post-import backfill was too early.
+ if (pendingBooksRef.current.some(b => !b.coverUrl && b.title)) {
+   setTimeout(() => backfillMissingCovers(pendingBooksRef.current), 2000);
+ }
 
  // Scan bar server-truth: fetch active jobs on focus; if none, clear scan UI only (queue, progress, batch). Never touch library.
  const baseUrl = getApiBaseUrl();
