@@ -1100,7 +1100,8 @@ setFolders(supabaseFolders.length > 0 ? supabaseFolders : loadedFolders);
    });
  }
  setIsLoadingData(false);
- refreshProfileStats();
+ // Pass finalBooks directly so profile stats don't read stale AsyncStorage
+ refreshProfileStats(finalBooks);
  }
  } catch (error) {
  logger.error('Error loading user data:', error);
@@ -2881,7 +2882,7 @@ onPress={() => {
                 const userPhotosKey = `photos_${user.uid}`;
                 await AsyncStorage.setItem(userApprovedKey, JSON.stringify(updatedBooks));
                 await AsyncStorage.setItem(userPhotosKey, JSON.stringify(updatedPhotos));
-                refreshProfileStats();
+                refreshProfileStats(updatedBooks);
                 if (__DEV__) {
                   logger.debug('[DELETE_PHOTO] success', { photoId, cascadeBooks, booksDeleted: result.booksDeleted, booksDetached: result.booksDetached, photoDeleted: result.photoDeleted });
                 }
