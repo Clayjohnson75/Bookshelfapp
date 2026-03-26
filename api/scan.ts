@@ -1235,7 +1235,8 @@ async function scanWithGeminiDirect(
  text: `Scan book spines in this image. Extract all visible books and return a JSON array of objects.
 
 CRITICAL RULES:
-- Do not translate any text. Output the title and author exactly as seen on the spine.
+- Do not translate any text. Output the title exactly as seen on the spine.
+- AUTHOR: Use the author's FULL NAME (first and last). If the spine only shows a last name (e.g. "BALZAC"), use your knowledge to provide the full name (e.g. "Honoré de Balzac"). Always prefer the complete, commonly known form of the author's name.
 - TITLE is the book name (usually larger text on spine). AUTHOR is the person's name (usually smaller text). Do NOT swap them.
 - If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE.
 - Number books left-to-right: spine_index 0, 1, 2, etc.
@@ -2447,7 +2448,8 @@ async function scanWithOpenAI(
  text: `Scan this image and return ALL visible book spines as a strict JSON array.
 
 CRITICAL RULES:
-- Do not translate any text. Output the title and author exactly as seen on the spine.
+- Do not translate any text. Output the title exactly as seen on the spine.
+- AUTHOR: Use the author's FULL NAME (first and last). If the spine only shows a last name (e.g. "BALZAC"), use your knowledge to provide the full name (e.g. "Honoré de Balzac"). Always prefer the complete, commonly known form of the author's name.
 - TITLE is the book name (usually larger text, on the spine). AUTHOR is the person's name (usually smaller text). Do NOT swap them.
 - If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE.
 - Number books left-to-right: spine_index 0, 1, 2, etc.
@@ -2662,7 +2664,8 @@ async function scanWithGemini(
  text: `Scan book spines in this image and return ONLY a strict JSON array.
 
 CRITICAL RULES:
-- Do not translate any text. Output the title and author exactly as seen on the spine.
+- Do not translate any text. Output the title exactly as seen on the spine.
+- AUTHOR: Use the author's FULL NAME (first and last). If the spine only shows a last name (e.g. "BALZAC"), use your knowledge to provide the full name (e.g. "Honoré de Balzac"). Always prefer the complete, commonly known form of the author's name.
 - TITLE is the book name (usually larger text on spine). AUTHOR is the person's name (usually smaller text). DO NOT swap them.
 - If you see "John Smith" and "The Great Novel", "John Smith" is AUTHOR, "The Great Novel" is TITLE.
 - Number books left-to-right: spine_index 0, 1, 2, etc.
