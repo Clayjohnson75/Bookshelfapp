@@ -2966,6 +2966,8 @@ async function earlyLookup(book: any): Promise<any> {
 /**
  * Batch validation: validate multiple books in one LLM call
  */
+const VALIDATION_BATCH_SIZE = 20;
+
 async function batchValidateBooks(books: any[]): Promise<any[]> {
  if (books.length === 0) return books;
 
@@ -2974,10 +2976,9 @@ async function batchValidateBooks(books: any[]): Promise<any[]> {
  const geminiKey = process.env.GEMINI_API_KEY;
  if (geminiKey) {
  console.log(`[API] Batch validating ${books.length} books with Gemini (primary)...`);
- const BATCH_SIZE = 20;
  const results: any[] = [];
- for (let i = 0; i < books.length; i += BATCH_SIZE) {
-   const batch = books.slice(i, i + BATCH_SIZE);
+ for (let i = 0; i < books.length; i += VALIDATION_BATCH_SIZE) {
+   const batch = books.slice(i, i + VALIDATION_BATCH_SIZE);
    const geminiResults = await batchValidateBooksWithGemini(batch);
    results.push(...geminiResults);
  }
@@ -2988,14 +2989,13 @@ async function batchValidateBooks(books: any[]): Promise<any[]> {
  const key = process.env.OPENAI_API_KEY;
  if (!key) return books;
  
- // Chunk into batches of 20 to avoid token limits
- const BATCH_SIZE = 20;
+ // Chunk into batches to avoid token limits
  const results: any[] = [];
  
- for (let i = 0; i < books.length; i += BATCH_SIZE) {
- const batch = books.slice(i, i + BATCH_SIZE);
- const batchNum = Math.floor(i / BATCH_SIZE) + 1;
- const totalBatches = Math.ceil(books.length / BATCH_SIZE);
+ for (let i = 0; i < books.length; i += VALIDATION_BATCH_SIZE) {
+ const batch = books.slice(i, i + VALIDATION_BATCH_SIZE);
+ const batchNum = Math.floor(i / VALIDATION_BATCH_SIZE) + 1;
+ const totalBatches = Math.ceil(books.length / VALIDATION_BATCH_SIZE);
  
  console.log(`[API] Batch validating ${batchNum}/${totalBatches} (${batch.length} books)...`);
  
@@ -3199,18 +3199,15 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  }
  // Build map keyed by canonical_key from Gemini response
  const validatedMap = new Map(validated.map((v: any) => [v.canonical_key, v]));
- // Also build a positional fallback: if Gemini returns keys that don't match
- // (common when Gemini normalizes differently), fall back to index-based matching
- const validatedByIndex = new Map(validated.map((v: any, i: number) => [i, v]));
  const results: any[] = [];
  let matchedByKey = 0, matchedByIndex = 0, unmatched = 0;
  for (let i = 0; i < batch.length; i++) {
  const book = batch[i];
  const canonicalKey = buildCanonicalKey(book);
  let validation = validatedMap.get(canonicalKey);
- if (!validation && validatedByIndex.has(i)) {
+ if (!validation && i < validated.length) {
    // Fallback: match by position when canonical keys diverge
-   validation = validatedByIndex.get(i);
+   validation = validated[i];
    if (validation) matchedByIndex++;
  } else if (validation) {
    matchedByKey++;

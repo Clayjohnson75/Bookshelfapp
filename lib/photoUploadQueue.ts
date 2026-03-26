@@ -594,16 +594,10 @@ async function requestScanAndPoll(
     let pollResp: Response;
     let pollText: string;
     try {
-      // Cache-buster + explicit no-cache headers to prevent iOS/CDN from returning stale responses
+      // Cache-buster query param prevents iOS/CDN from returning stale responses
       const pollUrl = `${pollUrlBase}?t=${Date.now()}`;
       pollResp = await fetch(pollUrl, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          'Cache-Control': 'no-store, no-cache, must-revalidate',
-          Pragma: 'no-cache',
-          ...headers,
-        },
+        headers: { Accept: 'application/json', ...headers },
         cache: 'no-store' as RequestCache,
       });
       pollText = await pollResp.text();
@@ -857,22 +851,24 @@ async function workerTick(): Promise<void> {
     }
     if (mutated) await persistQueue(userId, list);
 
-    // Filter out completed and in-flight items BEFORE returning toProcess.
-    // This prevents zombie re-processing when removeFromQueue hasn't persisted yet.
-    const runnable = list.filter(
-      (i) =>
-        !completedPhotoIds.has(i.photoId) &&
-        !inFlightPhotoIds.has(i.photoId) &&
-        (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
-         (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
-        i.state !== 'canceled'
-    );
-
-    // Also eagerly remove completed items from the persisted queue while we hold the lock
-    const completedInQueue = list.filter((i) => completedPhotoIds.has(i.photoId));
-    if (completedInQueue.length > 0) {
-      const cleaned = list.filter((i) => !completedPhotoIds.has(i.photoId));
-      await persistQueue(userId, cleaned);
+    // Single pass: partition list into runnable vs completed-zombies.
+    // Eagerly remove completed items from persisted queue while we hold the lock.
+    const runnable: UploadQueueItem[] = [];
+    let hasCompletedZombies = false;
+    for (const i of list) {
+      if (completedPhotoIds.has(i.photoId)) {
+        hasCompletedZombies = true;
+        continue; // skip completed — will be removed from persisted queue below
+      }
+      if (inFlightPhotoIds.has(i.photoId)) continue;
+      if (i.state === 'canceled') continue;
+      if (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
+          (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) {
+        runnable.push(i);
+      }
+    }
+    if (hasCompletedZombies) {
+      await persistQueue(userId, list.filter((i) => !completedPhotoIds.has(i.photoId)));
     }
 
     return runnable.slice(0, MAX_CONCURRENT);

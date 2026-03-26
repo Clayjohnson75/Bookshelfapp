@@ -4185,44 +4185,24 @@ export async function runApproveWrites(
 export async function cleanupOrphanedPhotos(userId: string): Promise<{ removed: number; error?: string }> {
   if (!supabase) return { removed: 0, error: 'supabase not available' };
   try {
-    // 1. Get all active photos for the user
-    const { data: photos, error: photosErr } = await supabase
-      .from('photos')
-      .select('id, created_at, status')
-      .eq('user_id', userId)
-      .is('deleted_at', null);
+    // Fetch all three data sources in parallel (no dependencies between them)
+    const [photosResult, bookRefsResult, jobRefsResult] = await Promise.all([
+      supabase.from('photos').select('id, created_at, status').eq('user_id', userId).is('deleted_at', null),
+      supabase.from('books').select('source_photo_id').eq('user_id', userId).is('deleted_at', null).not('source_photo_id', 'is', null),
+      supabase.from('scan_jobs').select('photo_id').eq('user_id', userId).is('deleted_at', null).in('status', ['pending', 'processing']).not('photo_id', 'is', null),
+    ]);
 
+    const { data: photos, error: photosErr } = photosResult;
     if (photosErr || !photos || photos.length === 0) {
       return { removed: 0, error: photosErr?.message };
     }
 
-    // 2. Get all photo IDs referenced by non-deleted books
-    const { data: bookRefs, error: bookErr } = await supabase
-      .from('books')
-      .select('source_photo_id')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .not('source_photo_id', 'is', null);
-
-    if (bookErr) {
-      return { removed: 0, error: bookErr.message };
-    }
-
+    const { data: bookRefs, error: bookErr } = bookRefsResult;
+    if (bookErr) return { removed: 0, error: bookErr.message };
     const referencedPhotoIds = new Set((bookRefs ?? []).map((b: any) => b.source_photo_id));
 
-    // 3. Get all photo IDs referenced by active scan_jobs (pending/processing)
-    const { data: jobRefs, error: jobErr } = await supabase
-      .from('scan_jobs')
-      .select('photo_id')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .in('status', ['pending', 'processing'])
-      .not('photo_id', 'is', null);
-
-    if (jobErr) {
-      return { removed: 0, error: jobErr.message };
-    }
-
+    const { data: jobRefs, error: jobErr } = jobRefsResult;
+    if (jobErr) return { removed: 0, error: jobErr.message };
     const activeJobPhotoIds = new Set((jobRefs ?? []).map((j: any) => j.photo_id));
 
     // 4. Find orphaned photos: not referenced by any book or active job,
