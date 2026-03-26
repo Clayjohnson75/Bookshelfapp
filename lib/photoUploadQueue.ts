@@ -857,12 +857,24 @@ async function workerTick(): Promise<void> {
     }
     if (mutated) await persistQueue(userId, list);
 
+    // Filter out completed and in-flight items BEFORE returning toProcess.
+    // This prevents zombie re-processing when removeFromQueue hasn't persisted yet.
     const runnable = list.filter(
       (i) =>
+        !completedPhotoIds.has(i.photoId) &&
+        !inFlightPhotoIds.has(i.photoId) &&
         (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
          (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
         i.state !== 'canceled'
     );
+
+    // Also eagerly remove completed items from the persisted queue while we hold the lock
+    const completedInQueue = list.filter((i) => completedPhotoIds.has(i.photoId));
+    if (completedInQueue.length > 0) {
+      const cleaned = list.filter((i) => !completedPhotoIds.has(i.photoId));
+      await persistQueue(userId, cleaned);
+    }
+
     return runnable.slice(0, MAX_CONCURRENT);
   });
 

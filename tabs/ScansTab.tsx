@@ -3608,7 +3608,18 @@ supabasePhotos = null;
  }
  const byKey = new Map<string, Book>();
  merged.forEach((b) => byKey.set(key(b), b));
- return [...byKey.values()];
+ // Secondary dedup by title/author: old server books from previous scans
+ // have different DB UUIDs than new local books, so key(b) doesn't catch them.
+ // makeKey normalizes title+author, catching true duplicates across scans.
+ const byTitleAuthor = new Map<string, Book>();
+ for (const b of byKey.values()) {
+   const titleAuthorKey = makeKey(b);
+   if (titleAuthorKey && !byTitleAuthor.has(titleAuthorKey)) {
+     byTitleAuthor.set(titleAuthorKey, b);
+   }
+   // If duplicate by title/author, keep the one that's already in the map (local wins since it was first)
+ }
+ return [...byTitleAuthor.values()];
  };
 
 // Re-read pending from AsyncStorage: the Supabase fetch above can take 1-3s.
