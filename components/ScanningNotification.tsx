@@ -876,20 +876,20 @@ if (isCompletedFromEffective || isPureCanceledFromEffective) {
    lastBarInputsRef.current = barInputs;
    logger.trace('[SCAN_BAR_INPUTS]', 'inputs changed', { activeJobId: barInputs.activeJobId, p_progressByJob: barInputs.p_progressByJob, p_serverProgress: barInputs.p_serverProgress, doneCount: barInputs.doneCount, total: barInputs.total, source: serverHasSentProgress ? 'server' : 'ramp' });
  }
- // Overall progress: server jobs run IN PARALLEL, so all jobs progress at roughly the
- // same rate. The tracked job's rawProgress is the best proxy for ALL jobs since they
- // started together and the server processes them concurrently.
- // When a job completes (progressByJobId[id] >= 100), bump up proportionally.
+ // Overall progress: each job gets a 1/N slice of the bar. Completed jobs fill their
+ // slice (100/N each). The currently tracked job fills its slice proportionally to
+ // rawProgress. This gives monotonically increasing progress: when job 1 completes
+ // at 33% and we switch to job 2 starting at 0%, progress stays at 33% (not dropping).
  const allJobsDone = total > 0 && doneCountForPercent >= total;
  let normalizedProgress: number;
  if (allJobsDone) {
    normalizedProgress = 100;
  } else if (total > 0) {
-   // Since jobs run in parallel, assume all untracked jobs are at roughly rawProgress too.
-   // Completed jobs (100%) pull the average up. This gives smooth 0→100% progression.
    const completedFromProgress = Object.values(progressByJobId).filter((p) => typeof p === 'number' && p >= 100).length;
    const inProgressCount = total - completedFromProgress;
-   // Completed jobs contribute 100 each, in-progress jobs contribute rawProgress each.
+   // Jobs run in parallel — assume untracked jobs are at roughly the same progress
+   // as the tracked one. Completed jobs contribute 100 each, in-progress jobs
+   // contribute rawProgress each. This gives smooth 0→100% progression.
    const totalProgress = (completedFromProgress * 100) + (inProgressCount * rawProgress);
    normalizedProgress = Math.min(99, totalProgress / total);
  } else {
