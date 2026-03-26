@@ -4,15 +4,14 @@
  * before sign-in (guest scan / sign-in flows unchanged).
  * Stores themePreference: 'system' | 'light' | 'dark'. Resolves: dark → scriptoriumDark.
  *
- * Auto ('system') mode: switches on the hour, not via OS appearance setting.
- *   Light: 7:00 AM – 8:00 PM
- *   Dark:  8:00 PM – 7:00 AM
- * A per-minute interval keeps the resolved theme in sync.
+ * Auto ('system') mode: follows the OS appearance setting via useColorScheme().
+ * Changes automatically when the user toggles system dark mode or it switches
+ * at sunset/sunrise (if the OS has scheduled dark mode).
  *
  * useTheme() → { t, setPreference, preference, headingFont }
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Platform } from 'react-native';
+import { Platform, useColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getTheme, type ThemeTokens } from './tokens';
 
@@ -23,20 +22,11 @@ const THEME_PREFERENCE_KEY = 'theme_preference';
 /** System serif fallback for headings when custom font not yet loaded (iOS: Georgia). */
 const HEADING_FALLBACK = Platform.select({ ios: 'Georgia', default: 'serif' });
 
-/**
- * Returns 'dark' if the current local hour is in the night/evening window.
- * Light: 07:00–20:00  |  Dark: 20:00–07:00
- */
-function timeBasedScheme(): 'light' | 'dark' {
-  const hour = new Date().getHours(); // 0–23 local time
-  return hour >= 7 && hour < 20 ? 'light' : 'dark';
-}
-
-function resolveTheme(preference: ThemePreference, autoScheme: 'light' | 'dark'): ThemeTokens {
+function resolveTheme(preference: ThemePreference, osScheme: 'light' | 'dark'): ThemeTokens {
   if (preference === 'light') return getTheme('light');
   if (preference === 'dark') return getTheme('scriptoriumDark');
-  // Auto: time-of-day based, not OS appearance setting.
-  return autoScheme === 'dark' ? getTheme('scriptoriumDark') : getTheme('light');
+  // Auto: follow OS appearance setting (respects system dark mode schedule).
+  return osScheme === 'dark' ? getTheme('scriptoriumDark') : getTheme('light');
 }
 
 export interface ThemeContextValue {
@@ -51,8 +41,10 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
-  // Time-based auto scheme; re-evaluated every minute so transitions are seamless.
-  const [autoScheme, setAutoScheme] = useState<'light' | 'dark'>(() => timeBasedScheme());
+
+  // Track OS appearance — updates automatically when system dark mode toggles.
+  const osColorScheme = useColorScheme(); // 'light' | 'dark' | null
+  const osScheme: 'light' | 'dark' = osColorScheme === 'dark' ? 'dark' : 'light';
 
   // Use system serif (Georgia on iOS) for headings. Custom font loading removed
   // as useFonts caused production crashes with the new architecture.
@@ -67,17 +59,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
   }, []);
 
-  // Re-evaluate the time-based scheme every minute so the theme transitions automatically.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setAutoScheme(timeBasedScheme());
-    }, 60_000);
-    return () => clearInterval(interval);
-  }, []);
-
   const t = useMemo(
-    () => resolveTheme(preference, autoScheme),
-    [preference, autoScheme]
+    () => resolveTheme(preference, osScheme),
+    [preference, osScheme]
   );
 
   const setPreference = useCallback(async (pref: ThemePreference) => {
