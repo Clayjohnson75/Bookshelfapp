@@ -64,6 +64,10 @@ export function createSupabaseServerClient(
  return Object.entries(parsed).map(([name, value]) => ({ name, value }));
  },
  setAll(cookiesToSet: { name: string; value: string; options: Record<string, unknown> }[]) {
+ // Guard: Supabase auth client can call setAll after the response is already sent
+ // (e.g. during token refresh triggered by _removeSession). Skip silently.
+ if (res.headersSent) return;
+
  const serialized = cookiesToSet.map(({ name, value, options }) => {
  const merged = { ...options, ...COOKIE_BASE_OPTIONS } as Parameters<typeof serialize>[2];
  return serialize(name, value, merged);
