@@ -66,7 +66,7 @@ module.exports = {
  },
  android: {
  package: "com.clayjohnson75.bookshelfscanner",
-      versionCode: 6,
+      versionCode: 7,
  adaptiveIcon: {
  foregroundImage: "./assets/adaptive-icon.png",
  backgroundColor: "#ffffff"
