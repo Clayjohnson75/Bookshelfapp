@@ -36,17 +36,25 @@ function topN<T>(items: T[], keyFn: (item: T) => string | null, n: number): { ke
     .map(([key, count]) => ({ key, count }));
 }
 
+function formatNumber(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 10000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 // ── Bar Chart Component ─────────────────────────────────────────────────────
 
-function HorizontalBar({ label, count, maxCount, color, textColor, mutedColor }: {
-  label: string; count: number; maxCount: number; color: string; textColor: string; mutedColor: string;
+function HorizontalBar({ label, count, maxCount, color, textColor, mutedColor, rank }: {
+  label: string; count: number; maxCount: number; color: string; textColor: string; mutedColor: string; rank: number;
 }) {
-  const pct = maxCount > 0 ? Math.max(8, (count / maxCount) * 100) : 0;
+  const pct = maxCount > 0 ? Math.max(10, (count / maxCount) * 100) : 0;
+  // Fade opacity for lower-ranked items
+  const opacity = Math.max(0.35, 1 - (rank * 0.08));
   return (
     <View style={barStyles.row}>
       <Text style={[barStyles.label, { color: textColor }]} numberOfLines={1}>{label}</Text>
       <View style={barStyles.barTrack}>
-        <View style={[barStyles.barFill, { width: `${pct}%`, backgroundColor: color }]} />
+        <View style={[barStyles.barFill, { width: `${pct}%`, backgroundColor: color, opacity }]} />
       </View>
       <Text style={[barStyles.count, { color: mutedColor }]}>{count}</Text>
     </View>
@@ -54,11 +62,11 @@ function HorizontalBar({ label, count, maxCount, color, textColor, mutedColor }:
 }
 
 const barStyles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 10 },
-  label: { width: 100, fontSize: 13, fontWeight: '500' },
-  barTrack: { flex: 1, height: 22, borderRadius: 6, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.04)' },
-  barFill: { height: '100%', borderRadius: 6 },
-  count: { width: 30, fontSize: 13, fontWeight: '600', textAlign: 'right' },
+  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 10 },
+  label: { width: 110, fontSize: 13, fontWeight: '500' },
+  barTrack: { flex: 1, height: 24, borderRadius: 8, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.04)' },
+  barFill: { height: '100%', borderRadius: 8 },
+  count: { width: 30, fontSize: 13, fontWeight: '700', textAlign: 'right' },
 });
 
 // ── Main Component ──────────────────────────────────────────────────────────
@@ -118,16 +126,16 @@ export function StatsView({ books }: StatsViewProps) {
 
   const handleShare = async () => {
     const lines = [
-      `📚 My Bookshelf — ${stats.totalBooks} Books`,
+      `My Bookshelf — ${stats.totalBooks} Books`,
       '',
-      `📖 ${stats.totalPages.toLocaleString()} total pages${stats.avgPages ? ` (avg ${stats.avgPages})` : ''}`,
-      stats.avgRating ? `⭐ ${stats.avgRating} average rating` : null,
-      `✍️ ${stats.distinctAuthors} authors · 📷 ${stats.distinctPhotos} scans`,
+      `${stats.totalPages.toLocaleString()} total pages${stats.avgPages ? ` (avg ${stats.avgPages})` : ''}`,
+      stats.avgRating ? `${stats.avgRating} average rating` : null,
+      `${stats.distinctAuthors} authors`,
       '',
-      stats.topAuthors.length > 0 ? '🏆 Top Authors:' : null,
+      stats.topAuthors.length > 0 ? 'Top Authors:' : null,
       ...stats.topAuthors.slice(0, 5).map((a, i) => `  ${i + 1}. ${a.key} (${a.count})`),
-      stats.topCategories.length > 0 ? '\n📂 Top Categories:' : null,
-      ...stats.topCategories.slice(0, 5).map(c => `  • ${c.key} (${c.count})`),
+      stats.topCategories.length > 0 ? '\nTop Categories:' : null,
+      ...stats.topCategories.slice(0, 5).map(c => `  ${c.key} (${c.count})`),
       '',
       '— Bookshelf Scanner',
     ].filter(Boolean).join('\n');
@@ -157,37 +165,47 @@ export function StatsView({ books }: StatsViewProps) {
       contentContainerStyle={s.container}
       showsVerticalScrollIndicator={false}
     >
-      {/* Hero stats row */}
-      <View style={s.heroRow}>
-        <View style={[s.heroCard, { backgroundColor: c.surface }]}>
-          <Text style={[s.heroNumber, { color: c.text }]}>{stats.totalBooks}</Text>
-          <Text style={[s.heroLabel, { color: c.textMuted }]}>Books</Text>
+      {/* Hero stat — Books count prominently */}
+      <View style={[s.heroSection, { backgroundColor: c.surface }]}>
+        <Text style={[s.heroNumber, { color: c.text }]}>{stats.totalBooks}</Text>
+        <Text style={[s.heroLabel, { color: c.textMuted }]}>Books in Your Library</Text>
+      </View>
+
+      {/* Key metrics row */}
+      <View style={s.metricsRow}>
+        <View style={[s.metricCard, { backgroundColor: c.surface }]}>
+          <Text style={[s.metricValue, { color: c.text }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+            {formatNumber(stats.totalPages)}
+          </Text>
+          <View style={[s.metricPill, { backgroundColor: accent + '18' }]}>
+            <Text style={[s.metricPillText, { color: accent }]}>Pages</Text>
+          </View>
         </View>
-        <View style={[s.heroCard, { backgroundColor: c.surface }]}>
-          <Text style={[s.heroNumber, { color: c.text }]}>{stats.totalPages.toLocaleString()}</Text>
-          <Text style={[s.heroLabel, { color: c.textMuted }]}>Pages</Text>
+        <View style={[s.metricCard, { backgroundColor: c.surface }]}>
+          <Text style={[s.metricValue, { color: c.text }]}>{stats.distinctAuthors}</Text>
+          <View style={[s.metricPill, { backgroundColor: accent + '18' }]}>
+            <Text style={[s.metricPillText, { color: accent }]}>Authors</Text>
+          </View>
         </View>
-        <View style={[s.heroCard, { backgroundColor: c.surface }]}>
-          <Text style={[s.heroNumber, { color: c.text }]}>{stats.distinctAuthors}</Text>
-          <Text style={[s.heroLabel, { color: c.textMuted }]}>Authors</Text>
+        <View style={[s.metricCard, { backgroundColor: c.surface }]}>
+          <Text style={[s.metricValue, { color: c.text }]}>{stats.distinctPhotos}</Text>
+          <View style={[s.metricPill, { backgroundColor: accent + '18' }]}>
+            <Text style={[s.metricPillText, { color: accent }]}>Scans</Text>
+          </View>
         </View>
       </View>
 
-      {/* Secondary stats */}
-      <View style={s.secondaryRow}>
+      {/* Secondary metrics */}
+      <View style={s.metricsRow}>
         {stats.avgRating && (
-          <View style={[s.secondaryCard, { backgroundColor: c.surface }]}>
-            <Text style={[s.secondaryNumber, { color: c.text }]}>{'⭐'} {stats.avgRating}</Text>
-            <Text style={[s.secondaryLabel, { color: c.textMuted }]}>Avg Rating</Text>
+          <View style={[s.miniCard, { backgroundColor: c.surface }]}>
+            <Text style={[s.miniValue, { color: c.text }]}>{stats.avgRating}</Text>
+            <Text style={[s.miniLabel, { color: c.textMuted }]}>Avg Rating</Text>
           </View>
         )}
-        <View style={[s.secondaryCard, { backgroundColor: c.surface }]}>
-          <Text style={[s.secondaryNumber, { color: c.text }]}>{stats.avgPages || '—'}</Text>
-          <Text style={[s.secondaryLabel, { color: c.textMuted }]}>Avg Pages</Text>
-        </View>
-        <View style={[s.secondaryCard, { backgroundColor: c.surface }]}>
-          <Text style={[s.secondaryNumber, { color: c.text }]}>{stats.distinctPhotos}</Text>
-          <Text style={[s.secondaryLabel, { color: c.textMuted }]}>Scans</Text>
+        <View style={[s.miniCard, { backgroundColor: c.surface }]}>
+          <Text style={[s.miniValue, { color: c.text }]}>{stats.avgPages || '—'}</Text>
+          <Text style={[s.miniLabel, { color: c.textMuted }]}>Avg Pages</Text>
         </View>
       </View>
 
@@ -195,7 +213,7 @@ export function StatsView({ books }: StatsViewProps) {
       {stats.topAuthors.length > 0 && (
         <View style={[s.section, { backgroundColor: c.surface }]}>
           <Text style={[s.sectionTitle, { color: c.text }]}>Top Authors</Text>
-          {stats.topAuthors.map(a => (
+          {stats.topAuthors.map((a, i) => (
             <HorizontalBar
               key={a.key}
               label={a.key}
@@ -204,6 +222,7 @@ export function StatsView({ books }: StatsViewProps) {
               color={accent}
               textColor={c.text ?? '#1B1B1B'}
               mutedColor={c.textMuted ?? '#9A9A9A'}
+              rank={i}
             />
           ))}
         </View>
@@ -213,7 +232,7 @@ export function StatsView({ books }: StatsViewProps) {
       {stats.topCategories.length > 0 && (
         <View style={[s.section, { backgroundColor: c.surface }]}>
           <Text style={[s.sectionTitle, { color: c.text }]}>Categories</Text>
-          {stats.topCategories.map(cat => (
+          {stats.topCategories.map((cat, i) => (
             <HorizontalBar
               key={cat.key}
               label={cat.key}
@@ -222,6 +241,7 @@ export function StatsView({ books }: StatsViewProps) {
               color={accent}
               textColor={c.text ?? '#1B1B1B'}
               mutedColor={c.textMuted ?? '#9A9A9A'}
+              rank={i}
             />
           ))}
         </View>
@@ -231,7 +251,7 @@ export function StatsView({ books }: StatsViewProps) {
       {stats.decades.length > 0 && (
         <View style={[s.section, { backgroundColor: c.surface }]}>
           <Text style={[s.sectionTitle, { color: c.text }]}>By Decade Published</Text>
-          {stats.decades.map(d => (
+          {stats.decades.map((d, i) => (
             <HorizontalBar
               key={d.key}
               label={d.key}
@@ -240,12 +260,13 @@ export function StatsView({ books }: StatsViewProps) {
               color={accent}
               textColor={c.text ?? '#1B1B1B'}
               mutedColor={c.textMuted ?? '#9A9A9A'}
+              rank={i}
             />
           ))}
         </View>
       )}
 
-      {/* Languages & Publishers */}
+      {/* Languages & Publishers side by side */}
       <View style={s.splitRow}>
         {stats.languages.length > 0 && (
           <View style={[s.splitCard, { backgroundColor: c.surface }]}>
@@ -253,18 +274,22 @@ export function StatsView({ books }: StatsViewProps) {
             {stats.languages.map(l => (
               <View key={l.key} style={s.chipRow}>
                 <Text style={[s.chipLabel, { color: c.text }]}>{l.key}</Text>
-                <Text style={[s.chipCount, { color: c.textMuted }]}>{l.count}</Text>
+                <View style={[s.chipBadge, { backgroundColor: accent + '20' }]}>
+                  <Text style={[s.chipBadgeText, { color: accent }]}>{l.count}</Text>
+                </View>
               </View>
             ))}
           </View>
         )}
         {stats.topPublishers.length > 0 && (
           <View style={[s.splitCard, { backgroundColor: c.surface }]}>
-            <Text style={[s.sectionTitle, { color: c.text }]}>Top Publishers</Text>
+            <Text style={[s.sectionTitle, { color: c.text }]}>Publishers</Text>
             {stats.topPublishers.slice(0, 4).map(p => (
               <View key={p.key} style={s.chipRow}>
                 <Text style={[s.chipLabel, { color: c.text }]} numberOfLines={1}>{p.key}</Text>
-                <Text style={[s.chipCount, { color: c.textMuted }]}>{p.count}</Text>
+                <View style={[s.chipBadge, { backgroundColor: accent + '20' }]}>
+                  <Text style={[s.chipBadgeText, { color: accent }]}>{p.count}</Text>
+                </View>
               </View>
             ))}
           </View>
@@ -290,7 +315,7 @@ export function StatsView({ books }: StatsViewProps) {
 const s = StyleSheet.create({
   container: {
     padding: 16,
-    gap: 14,
+    gap: 12,
   },
   emptyContainer: {
     flex: 1,
@@ -308,46 +333,67 @@ const s = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 22,
   },
-  heroRow: {
+  heroSection: {
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 4,
+  },
+  heroNumber: {
+    fontSize: 56,
+    fontWeight: '800',
+    letterSpacing: -2,
+  },
+  heroLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  metricsRow: {
     flexDirection: 'row',
     gap: 10,
   },
-  heroCard: {
+  metricCard: {
     flex: 1,
     borderRadius: 16,
-    padding: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    gap: 8,
   },
-  heroNumber: {
-    fontSize: 28,
+  metricValue: {
+    fontSize: 26,
     fontWeight: '800',
     letterSpacing: -0.5,
   },
-  heroLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 2,
+  metricPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  metricPillText: {
+    fontSize: 10,
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
-  secondaryRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  secondaryCard: {
+  miniCard: {
     flex: 1,
     borderRadius: 14,
-    padding: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     alignItems: 'center',
+    gap: 2,
   },
-  secondaryNumber: {
-    fontSize: 20,
+  miniValue: {
+    fontSize: 22,
     fontWeight: '700',
+    letterSpacing: -0.3,
   },
-  secondaryLabel: {
+  miniLabel: {
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 2,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
@@ -356,9 +402,10 @@ const s = StyleSheet.create({
     padding: 18,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     marginBottom: 14,
+    letterSpacing: 0.2,
   },
   splitRow: {
     flexDirection: 'row',
@@ -373,17 +420,22 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 5,
   },
   chipLabel: {
     fontSize: 13,
     fontWeight: '500',
     flex: 1,
   },
-  chipCount: {
-    fontSize: 13,
-    fontWeight: '600',
+  chipBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
     marginLeft: 8,
+  },
+  chipBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   shareButton: {
     height: 52,
