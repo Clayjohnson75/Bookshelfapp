@@ -4345,10 +4345,23 @@ if (approvedNormalized.length === 0 && localApproved.length > 0 && !isRecentAuth
   const localOnlyPending = currentPending.filter(b =>
     (b.status === 'pending' || b.status === 'incomplete') && !serverPendingKeys.has(pendingKey(b))
   );
-  const mergedPending = [...pendingNormalized, ...localOnlyPending];
+  // Merge server pending with local-only pending, preserving coverUrl from local books.
+  // For server books that match a local book by title/author, prefer local's coverUrl.
+  const localCoverByKey = new Map<string, string>();
+  currentPending.forEach(b => {
+    if (b.coverUrl) localCoverByKey.set(pendingKey(b), b.coverUrl);
+  });
+  const pendingWithCovers = pendingNormalized.map(b => {
+    if (!b.coverUrl) {
+      const localCover = localCoverByKey.get(pendingKey(b));
+      if (localCover) return { ...b, coverUrl: localCover };
+    }
+    return b;
+  });
+  const mergedPending = [...pendingWithCovers, ...localOnlyPending];
   setBooksFromBuckets(localCanonical, mergedPending, rejectedNormalized);
   await Promise.all([
-    AsyncStorage.setItem(userPendingKey, JSON.stringify(pendingNormalized)),
+    AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedPending)),
     AsyncStorage.setItem(userApprovedKey, JSON.stringify(localCanonical)),
     AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedNormalized)),
   ]);
@@ -4410,8 +4423,9 @@ if (totalMerged > 50) {
  pendingSelector: 'books-status (pendingBooks.status===pending|incomplete, independent of photos)',
  });
  // Persist merged result so we never overwrite storage with server-only (avoids dropping just-accepted when remote lags).
+ // Use mergedP (not pendingNormalized) to preserve local-only books and their coverUrls.
  await Promise.all([
- AsyncStorage.setItem(userPendingKey, JSON.stringify(pendingNormalized)),
+ AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedP)),
  AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedNormalized)),
  AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedNormalized)),
  ]);
