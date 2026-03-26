@@ -6,6 +6,19 @@ import { enableScreens } from 'react-native-screens';
 // In DEV it was previously disabled for Expo Go compat, but Expo Go now supports it.
 try { enableScreens(true); } catch (_) {}
 
+// Global unhandled promise rejection handler — prevents silent crashes.
+// Logs the error so it shows up in crash reporting / device logs.
+if (typeof globalThis !== 'undefined' && !((globalThis as any).__unhandledRejectionSetup)) {
+  (globalThis as any).__unhandledRejectionSetup = true;
+  const handler = (event: any) => {
+    const reason = event?.reason ?? event;
+    console.error('[UNHANDLED_REJECTION]', reason?.message ?? reason);
+  };
+  if (typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('unhandledrejection', handler);
+  }
+}
+
 class RootErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { error: Error | null }

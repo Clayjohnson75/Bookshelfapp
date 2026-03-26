@@ -5003,12 +5003,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
    return res.status(202).json({ jobId: dbJobId, photoId: validPhotoId, status: 'pending' });
    }
    console.error(`[API] [SCAN] QStash publish failed (metadata-only)`, { photoId: validPhotoId, jobId: dbJobId, status: pubResp?.status, body: (await pubResp.text().catch(() => '')).slice(0, 200) });
+   // Mark job as failed so client doesn't poll forever
+   await supabase.from('scan_jobs').update({ status: 'failed', error: JSON.stringify({ code: 'qstash_publish_failed', message: `QStash publish returned ${pubResp?.status}` }), updated_at: new Date().toISOString() }).eq('id', dbJobId);
+   return res.status(500).json({ error: 'qstash_publish_failed', jobId: dbJobId, status: 'failed' });
  } catch (err: any) {
-   console.error(`[API] [SCAN] QStash publish error (metadata-only)`, { photoId: validPhotoId, jobId: dbJobId, error: err?.message, isTimeout: err?.name === 'AbortError' });
+   const isTimeout = err?.name === 'AbortError';
+   console.error(`[API] [SCAN] QStash publish error (metadata-only)`, { photoId: validPhotoId, jobId: dbJobId, error: err?.message, isTimeout });
+   // Mark job as failed so client doesn't poll forever
+   await supabase.from('scan_jobs').update({ status: 'failed', error: JSON.stringify({ code: isTimeout ? 'qstash_publish_timeout' : 'qstash_publish_error', message: err?.message }), updated_at: new Date().toISOString() }).eq('id', dbJobId);
+   return res.status(500).json({ error: isTimeout ? 'qstash_publish_timeout' : 'qstash_publish_error', jobId: dbJobId, status: 'failed' });
  }
  }
- // Return 202 even on publish failure — client will poll and retry via upload queue
- if (dbJobId) return res.status(202).json({ jobId: dbJobId, photoId: validPhotoId, status: 'pending' });
+ // No QStash configured — mark job as failed
+ if (dbJobId) {
+   await supabase.from('scan_jobs').update({ status: 'failed', error: JSON.stringify({ code: 'qstash_not_configured', message: 'Worker service not available' }), updated_at: new Date().toISOString() }).eq('id', dbJobId);
+   return res.status(500).json({ error: 'qstash_not_configured', jobId: dbJobId, status: 'failed' });
+ }
  }
  }
 

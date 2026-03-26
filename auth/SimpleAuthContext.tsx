@@ -168,9 +168,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
  const [user, setUser] = useState<User | null>(null);
  const [loading, setLoading] = useState(true);
  const [biometricCapabilities, setBiometricCapabilities] = useState<BiometricAuth.BiometricCapabilities | null>(null);
- const DEMO_USERNAME = 'test12';
- const DEMO_PASSWORD = 'admin12345';
- const DEMO_EMAIL = 'appstore.review+test12@bookshelfscanner.app';
+ // Demo credentials loaded from env — never hardcoded in client bundle.
+ // In production builds without these env vars, demo login is disabled.
+ const DEMO_USERNAME = process.env.EXPO_PUBLIC_DEMO_USERNAME ?? '';
+ const DEMO_PASSWORD = process.env.EXPO_PUBLIC_DEMO_PASSWORD ?? '';
+ const DEMO_EMAIL = process.env.EXPO_PUBLIC_DEMO_EMAIL ?? '';
  const DEMO_UID = 'demo-user-test12';
  const DEMO_SEEDED_KEY = `demo_seeded_${DEMO_UID}`;
  
@@ -810,7 +812,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
  const signIn = async (emailOrUsername: string, password: string): Promise<boolean> => {
  const normalizedInput = emailOrUsername.trim().toLowerCase();
  const cleanedPassword = password.trim();
- const isDemoIdentifier = normalizedInput === DEMO_USERNAME || normalizedInput === DEMO_EMAIL.toLowerCase();
+ const demoEnabled = !!(DEMO_USERNAME && DEMO_PASSWORD && DEMO_EMAIL);
+ const isDemoIdentifier = demoEnabled && (normalizedInput === DEMO_USERNAME || normalizedInput === DEMO_EMAIL.toLowerCase());
  const isDemoLogin = isDemoIdentifier && cleanedPassword === DEMO_PASSWORD;
 
  if (isDemoLogin) {
@@ -1982,11 +1985,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
  enableBiometric,
  disableBiometric,
  hardResetAuthStorageDev,
- demoCredentials: {
+ demoCredentials: DEMO_USERNAME && DEMO_PASSWORD ? {
  username: DEMO_USERNAME,
  email: DEMO_EMAIL,
  password: DEMO_PASSWORD,
- },
+ } : undefined,
  };
 
  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -3,7 +3,7 @@
   "crons": [{"path": "/api/scan-job", "schedule": "* * * * *"}, {"path": "/api/scan-reaper", "schedule": "*/10 * * * *"}],
   "redirects": [{"source": "/((?!api/debug/).*)", "has": [{"type": "header", "key": "host", "value": "bookshelfscan.app"}], "destination": "https://www.bookshelfscan.app/$1", "permanent": true}],
   "rewrites": [{"source": "/", "destination": "/index.html"}, {"source": "/admin", "destination": "/admin.html"}, {"source": "/search", "destination": "/api/search"}, {"source": "/profile", "destination": "/api/profile"}, {"source": "/signin", "destination": "/api/signin"}, {"source": "/:username/edit", "destination": "/api/profile/:username/edit"}, {"source": "/:username", "destination": "/api/profile/:username"}],
-  "headers": [{"source": "/favicon.ico", "headers": [{"key": "Cache-Control", "value": "public, max-age=31536000, immutable"}]}, {"source": "/favicon.png", "headers": [{"key": "Cache-Control", "value": "public, max-age=31536000, immutable"}]}],
+  "headers": [{"source": "/api/(.*)", "headers": [{"key": "X-Content-Type-Options", "value": "nosniff"}, {"key": "X-Frame-Options", "value": "DENY"}, {"key": "Referrer-Policy", "value": "strict-origin-when-cross-origin"}]}, {"source": "/favicon.ico", "headers": [{"key": "Cache-Control", "value": "public, max-age=31536000, immutable"}]}, {"source": "/favicon.png", "headers": [{"key": "Cache-Control", "value": "public, max-age=31536000, immutable"}]}],
   "functions": {
     "api/scan.ts": {
       "maxDuration": 60
