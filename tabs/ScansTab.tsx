@@ -3595,9 +3595,8 @@ supabasePhotos = null;
  // Rule A/B: books with unconfirmed approve stay approved; don't resurrect to pending from server.
  const { getBookIdsWithUnconfirmedApprove } = await import('../lib/approveMutationsOutbox');
  const unconfirmedApproveBookIds = await getBookIdsWithUnconfirmedApprove(user.uid);
- // Build title+author keys from BOTH local approved books AND server-approved books.
- // Local covers the case where approve mutation hasn't propagated to server yet.
- // Server covers the case where app restarted and local state is empty/stale.
+ // Build title+author keys for approved books. Populated incrementally —
+ // approvedBooksRef + serverApproved now, localApproved added later (after AsyncStorage load).
  const approvedTitleAuthorKeys = new Set<string>();
  const addApprovedKey = (b: any) => {
    const k = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
@@ -3609,18 +3608,9 @@ supabasePhotos = null;
  // Also build a set of approved book IDs from the server for direct ID matching
  const serverApprovedBookIds = new Set(serverApproved.map((b: any) => b.id).filter(Boolean));
 
- const serverPendingForMerge = serverPending.filter((b: Book) => {
-   // Filter by ID: outbox tracking OR server already marked as approved
-   if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedBookIds.has(b.id))) return false;
-   // Filter by scan job ID: if the entire scan was approved, block ALL its pending books.
-   // This catches late-arriving books from the server that were inserted after the user approved.
-   const bookJobId = (b as any).source_scan_job_id;
-   if (bookJobId && approvedScanJobIdsRef.current.has(bookJobId)) return false;
-   // Filter by title+author match against all known approved books (local + server)
-   const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
-   if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
-   return true;
- });
+ // NOTE: serverPendingForMerge is computed LATER (after localApproved is loaded from
+ // AsyncStorage) so that title+author keys include all approved books from ALL sources.
+ // This prevents ghost pending books on cold start when approvedBooksRef is still empty.
 
  const MERGE_WINDOW_MS = 60 * 1000;
  const hasRecentMutation = Date.now() - lastLocalMutationAtRef.current < MERGE_WINDOW_MS;
@@ -3724,6 +3714,21 @@ const localApproved: Book[] = resolveBookPhotoIdsCb(
   'rehydrate'
 );
 const localRejected: Book[] = resolveBookPhotoIdsCb(savedRejected ? (() => { try { return JSON.parse(savedRejected); } catch { return []; } })() : [], 'rehydrate');
+
+// NOW build serverPendingForMerge — after localApproved is loaded from AsyncStorage.
+// Add localApproved keys so cold-start (when approvedBooksRef is empty) still filters correctly.
+localApproved.forEach(addApprovedKey);
+const serverPendingForMerge = serverPending.filter((b: Book) => {
+  // Filter by ID: outbox tracking OR server already marked as approved
+  if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedBookIds.has(b.id))) return false;
+  // Filter by scan job ID: if the entire scan was approved, block ALL its pending books.
+  const bookJobId = (b as any).source_scan_job_id;
+  if (bookJobId && approvedScanJobIdsRef.current.has(bookJobId)) return false;
+  // Filter by title+author match against all known approved books (local + server + AsyncStorage)
+  const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+  if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
+  return true;
+});
 
  // Apply photo dedupe adoptions BEFORE merge so we publish once (no PHOTO_DEDUPE_LOCAL_REWRITE after STATE_PUBLISHED).
  const photosWithJobEarly = localDeduped.filter((p: Photo) => p.jobId);
