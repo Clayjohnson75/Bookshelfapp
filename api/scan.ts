@@ -2967,8 +2967,26 @@ async function earlyLookup(book: any): Promise<any> {
  * Batch validation: validate multiple books in one LLM call
  */
 async function batchValidateBooks(books: any[]): Promise<any[]> {
+ if (books.length === 0) return books;
+
+ // Use Gemini as primary validator (faster, no rate-limit issues)
+ // OpenAI gpt-4o-mini hits 429 RPM limits on Tier 1 accounts
+ const geminiKey = process.env.GEMINI_API_KEY;
+ if (geminiKey) {
+ console.log(`[API] Batch validating ${books.length} books with Gemini (primary)...`);
+ const BATCH_SIZE = 20;
+ const results: any[] = [];
+ for (let i = 0; i < books.length; i += BATCH_SIZE) {
+   const batch = books.slice(i, i + BATCH_SIZE);
+   const geminiResults = await batchValidateBooksWithGemini(batch);
+   results.push(...geminiResults);
+ }
+ return results;
+ }
+
+ // Fallback to OpenAI only if Gemini key is not configured
  const key = process.env.OPENAI_API_KEY;
- if (!key || books.length === 0) return books;
+ if (!key) return books;
  
  // Chunk into batches of 20 to avoid token limits
  const BATCH_SIZE = 20;
