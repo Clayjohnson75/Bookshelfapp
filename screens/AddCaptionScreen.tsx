@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useRoute, useNavigation, StackActions } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ChevronBackIcon, ArrowBackIcon, ArrowForwardIcon, FolderIcon } from '../components/Icons';
+import { ChevronBackIcon, ArrowBackIcon, ArrowForwardIcon, FolderIcon, TrashIcon } from '../components/Icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useResponsive } from '../lib/useResponsive';
 import { clearAddCaptionCallbacks, getAddCaptionCallbacks } from '../lib/addCaptionCallbacks';
@@ -34,8 +34,10 @@ export function AddCaptionScreen() {
 
  const [currentIndex, setCurrentIndex] = useState(params.initialIndex);
  const [captionText, setCaptionText] = useState(params.initialCaption);
+ const [deletedScanIds, setDeletedScanIds] = useState<Set<string>>(new Set());
 
- const pendingImages = params.pendingImages;
+ // Filter out deleted photos — params are immutable in React Navigation
+ const pendingImages = params.pendingImages.filter(img => !deletedScanIds.has(img.scanId));
  const currentImage = pendingImages[currentIndex];
  const isLast = currentIndex >= pendingImages.length - 1;
 
@@ -78,6 +80,30 @@ export function AddCaptionScreen() {
  Keyboard.dismiss();
  await callbacks?.onAddToFolder();
  }, [callbacks]);
+
+ const handleDelete = useCallback(async () => {
+ if (!currentImage) return;
+ Keyboard.dismiss();
+ const scanId = currentImage.scanId;
+ // Call parent to remove from batch state
+ try { await callbacks?.onDelete?.(scanId); } catch {}
+ // Track locally so the photo disappears from our filtered list
+ setDeletedScanIds(prev => new Set(prev).add(scanId));
+ // If this was the last remaining photo, go back
+ const remainingAfterDelete = params.pendingImages.filter(
+   img => !deletedScanIds.has(img.scanId) && img.scanId !== scanId
+ );
+ if (remainingAfterDelete.length === 0) {
+   clearAddCaptionCallbacks(params.callbackId);
+   navigation.dispatch(StackActions.popToTop());
+   return;
+ }
+ // If we're past the end after deletion, step back
+ if (currentIndex >= remainingAfterDelete.length) {
+   setCurrentIndex(remainingAfterDelete.length - 1);
+ }
+ setCaptionText('');
+ }, [currentImage, callbacks, params.pendingImages, params.callbackId, deletedScanIds, currentIndex, navigation]);
 
  useEffect(() => {
  return () => {
@@ -174,8 +200,18 @@ export function AddCaptionScreen() {
  </View>
  )}
 
- {/* Action row: Add to Collection + Next/Done */}
+ {/* Action row: Delete + Add to Collection + Next/Done */}
  <View style={styles.actionRow}>
+ {pendingImages.length > 0 && (
+ <TouchableOpacity
+   style={[styles.deleteButton, { borderColor: '#D94040' }]}
+   onPress={handleDelete}
+   activeOpacity={0.7}
+   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+ >
+   <TrashIcon size={20} color="#D94040" />
+ </TouchableOpacity>
+ )}
  <TouchableOpacity
  style={[styles.folderButton, { borderColor: t.colors.primary }]}
  onPress={handleAddToFolder}
@@ -281,11 +317,19 @@ function getStyles(t: import('../theme/tokens').ThemeTokens, screenWidth: number
  fontSize: 12,
  fontWeight: '500',
  },
- /** Action row: Add to Collection (flex 1) + Next/Done (fixed width). */
+ /** Action row: Delete (circle) + Add to Collection (flex 1) + Next/Done (fixed width). */
  actionRow: {
  flexDirection: 'row',
  alignItems: 'center',
- gap: 12,
+ gap: 10,
+ },
+ deleteButton: {
+ width: 52,
+ height: 52,
+ borderRadius: 14,
+ borderWidth: 2,
+ alignItems: 'center',
+ justifyContent: 'center',
  },
  folderButton: {
  flex: 1,

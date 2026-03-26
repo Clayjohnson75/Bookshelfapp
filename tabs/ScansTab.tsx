@@ -13083,10 +13083,25 @@ logger.info('[PENDING_DELETE_RESULT]', {
       });
       (navigation as any).navigate('SelectCollection', { callbackId: selectCallbackId });
     };
+ const onDelete = (scanId: string) => {
+   // Remove the deleted photo from the pending upload batch
+   if (pendingUploadBatchRef.current) {
+     pendingUploadBatchRef.current = pendingUploadBatchRef.current.filter(
+       img => img.scanId !== scanId
+     );
+   }
+   // Also remove from pendingImages state
+   setPendingImages(prev => prev.filter(img => img.scanId !== scanId));
+   // Clean up any associated refs
+   scanIdToPhotoIdRef.current.delete(scanId);
+   logger.info('[CAPTION_DELETE]', 'removed photo from batch', { scanId: scanId.slice(0, 8) });
+ };
+
  const callbackId = registerAddCaptionCallbacks({
  onSubmit,
  onSkip,
  onAddToFolder,
+ onDelete,
  });
 
  // Use requestAnimationFrame to let the current frame finish before navigating,

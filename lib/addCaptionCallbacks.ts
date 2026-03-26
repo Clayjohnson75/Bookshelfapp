@@ -2,6 +2,7 @@ type AddCaptionCallbackSet = {
   onSubmit: (scanId: string, caption: string, isLast: boolean) => void | Promise<void>;
   onSkip: () => void | Promise<void>;
   onAddToFolder: () => void | Promise<void>;
+  onDelete?: (scanId: string) => void | Promise<void>;
 };
 
 const callbackRegistry = new Map<string, AddCaptionCallbackSet>();
