@@ -3182,7 +3182,7 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  generationConfig: {
  responseMimeType: 'application/json',
  temperature: 0.1,
- maxOutputTokens: 2000,
+ maxOutputTokens: 8000, // 20 books × ~150 tokens/result = ~3000 tokens needed
  },
  }),
  });
@@ -3197,8 +3197,12 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  try {
  validated = JSON.parse(content);
  } catch {
+ console.warn(`[API] Gemini batch validation JSON parse failed, attempting repair`, { contentLength: content.length, contentPreview: content.slice(0, 200) });
  const repaired = await repairJSON(content, 'array of validation results');
  validated = repaired || [];
+ }
+ if (!Array.isArray(validated) || validated.length === 0) {
+ console.warn(`[API] Gemini batch validation returned empty/invalid result`, { batchSize: batch.length, validatedLength: Array.isArray(validated) ? validated.length : 'not-array', contentLength: content.length, finishReason: data.candidates?.[0]?.finishReason });
  }
  // Build map keyed by canonical_key from Gemini response
  const validatedMap = new Map(validated.map((v: any) => [v.canonical_key, v]));
