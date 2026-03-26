@@ -192,21 +192,47 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  // the correct cached values before loadUserData completes the merge.
  // loadUserData calls refreshProfileStats after the full merge, so counts will
  // eventually update to authoritative values.
+ // On cold start, compute counts from the approved_books array (source of truth)
+ // rather than a separate stale stats cache. This prevents showing an old count
+ // (e.g. 81) that flashes before the real count loads from Supabase.
  useEffect(() => {
  if (!user || user.uid === GUEST_USER_ID) return;
- const cacheKey = `profile_stats_cache_${user.uid}`;
- AsyncStorage.getItem(cacheKey).then(raw => {
+ // Read the actual approved books list — it's always up-to-date from the last session.
+ AsyncStorage.getItem(approvedKey(user.uid)).then(raw => {
    if (raw) {
      try {
-       const { books, photos, authors } = JSON.parse(raw);
-       if (typeof books === 'number') { setCanonicalBookCount(books); setLastStableBookCount(books); }
-       if (typeof photos === 'number') { setPhotoCount(photos); setLastStablePhotoCount(photos); }
-       if (typeof authors === 'number') setCachedAuthorCount(authors);
-     } catch {}
-     // Cache exists — don't call refreshProfileStats now. loadUserData will call it
-     // after the full merge with correct data. This prevents the 39→3→39 flash.
+       const list = JSON.parse(raw);
+       const arr = Array.isArray(list) ? list : [];
+       const active = arr.filter((b: any) => b?.status === 'approved' && b?.deleted_at == null);
+       const count = getApprovedUniqueCount(active);
+       setCanonicalBookCount(count);
+       setLastStableBookCount(count);
+       // Count photos from the same data
+       const photoIds = new Set<string>();
+       active.forEach((b: any) => {
+         const pid = getBookSourcePhotoId(b);
+         if (pid) photoIds.add(pid.trim().toLowerCase());
+       });
+       if (photoIds.size > 0) { setPhotoCount(photoIds.size); setLastStablePhotoCount(photoIds.size); }
+       // Count authors
+       const authors = new Set(active.map((b: any) => (b?.author ?? '').trim().toLowerCase()).filter(Boolean));
+       if (authors.size > 0) setCachedAuthorCount(authors.size);
+     } catch {
+       refreshProfileStats();
+     }
    } else {
-     // No cache — fall back to reading approved_books (may be partial, but better than nothing).
+     // No approved books cached — try stats cache as fallback, then refresh.
+     const cacheKey = `profile_stats_cache_${user.uid}`;
+     AsyncStorage.getItem(cacheKey).then(cacheRaw => {
+       if (cacheRaw) {
+         try {
+           const { books, photos, authors } = JSON.parse(cacheRaw);
+           if (typeof books === 'number') { setCanonicalBookCount(books); setLastStableBookCount(books); }
+           if (typeof photos === 'number') { setPhotoCount(photos); setLastStablePhotoCount(photos); }
+           if (typeof authors === 'number') setCachedAuthorCount(authors);
+         } catch {}
+       }
+     }).catch(() => {});
      refreshProfileStats();
    }
  }).catch(() => {
