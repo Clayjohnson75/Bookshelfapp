@@ -146,7 +146,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  if ((req.method === 'PUT' || req.method === 'GET') && isCronRequest) {
  const qstashToken = process.env.QSTASH_TOKEN;
  if (qstashToken) {
- console.log('[API] [SWEEPER] Disabled: QStash is configured. All jobs are processed via QStash webhook (/api/scan-worker) with idempotency.');
+ // Silenced: this fires every 60s via cron and always says the same thing
  return res.status(200).json({ 
  message: 'Sweeper disabled - QStash is handling job processing',
  disabled: true,

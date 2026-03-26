@@ -14,8 +14,5 @@
  * Always: <userId>/<photoId>.jpg
  */
 export function getCanonicalPhotoStoragePath(userId: string, photoId: string): string {
-  const storagePath = `${userId}/${photoId}.jpg`;
-  // eslint-disable-next-line no-console
-  console.log('[STORAGE_PATH]', JSON.stringify({ photoId, storagePath }));
-  return storagePath;
+  return `${userId}/${photoId}.jpg`;
 }

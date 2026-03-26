@@ -118,8 +118,10 @@ async function updateScanJobAndLog(
  }
  const { data, error } = await q.select('id');
  const count = data?.length ?? 0;
- if (patch.progress != null || patch.stage != null) {
- console.log('[SCAN_PROGRESS_WRITE]', { jobId, pct: patch.progress ?? null, stage: patch.stage ?? null, count, error: error?.message });
+ // Only log progress at key milestones (not every 2% increment)
+ const pct = patch.progress ?? 0;
+ if (pct === 0 || pct >= 40 || pct >= 85 || pct >= 100 || patch.stage === 'completed' || patch.stage === 'failed' || error) {
+ console.log('[SCAN_PROGRESS]', { jobId: jobId.slice(0, 8), pct, stage: patch.stage ?? null, ...(error ? { error: error.message } : {}) });
  }
  console.log('[SCAN_JOB_UPDATE]', {
  jobId,

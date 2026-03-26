@@ -5534,8 +5534,8 @@ logger.error('Error parsing rejected books:', e);
  return;
  }
  if (now - lastWatchdogRefreshAtRef.current < WATCHDOG_THROTTLE_MS) return;
- if (now - lastWatchdogLogRef.current > 5000) {
- logger.warn('[SCAN_WATCHDOG]', 'list unchanged for 2s with active jobs/queue — refreshing scan-job list only');
+ if (now - lastWatchdogLogRef.current > 30000) { // Log at most every 30s (was 5s)
+ logger.debug('[SCAN_WATCHDOG]', 'list unchanged — refreshing scan-job list only');
  lastWatchdogLogRef.current = now;
  }
  lastListChangeAtRef.current = now;

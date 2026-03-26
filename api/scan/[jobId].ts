@@ -43,7 +43,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  const stripped = rawJobId.startsWith('job_') ? rawJobId.slice(4) : rawJobId;
  const jobId = UUID_RE.test(stripped) ? stripped : rawJobId;
 
- console.log('[PENDING] requested jobId:', rawJobId, 'dbJobId:', jobId);
+ // Silenced: this fires every 2s per active job during polling. Only log if needed for debugging.
+ // console.log('[PENDING] requested jobId:', rawJobId, 'dbJobId:', jobId);
 
  // CRITICAL: Read from durable storage (Supabase), not in-memory state.
  // Pending = scan_jobs.books for this exact jobId only. Do NOT use "latest scan job" or .order().limit(1).

@@ -64,7 +64,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  .is('deleted_at', null)
  .single();
 
- console.log('[SCAN_STATUS_ROW]', { jobId, status: row?.status, stage: row?.stage, progress: row?.progress ?? 'null', updated_at: row?.updated_at });
+ // Only log terminal states — intermediate polling is too noisy (fires every 2s per job)
+ if (row?.status === 'completed' || row?.status === 'failed' || row?.status === 'canceled') {
+   console.log('[SCAN_STATUS_ROW]', { jobId, status: row.status, stage: row.stage, progress: row.progress });
+ }
 
  if (error || !row) {
  console.log(`[API] [SCAN-STATUS] [JOB ${jobId}] Job not found:`, error?.message || 'No data');
