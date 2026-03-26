@@ -4520,9 +4520,16 @@ if (totalMerged > 50) {
      approvedToWrite = existing; // keep the larger list
    }
  } catch {}
- // Use mergedP (not pendingNormalized) to preserve local-only books and their coverUrls.
+ // Use merged pending (not pendingNormalized) to preserve local-only books and their coverUrls.
+ // Recompute here since mergedP is scoped inside applyRehydrateMerge.
+ const _pKey = (b: Book) => `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
+ const _serverPKeys = new Set(pendingNormalized.map(b => _pKey(b)));
+ const _localOnlyP = pendingBooksRef.current.filter(b =>
+   (b.status === 'pending' || b.status === 'incomplete') && !_serverPKeys.has(_pKey(b))
+ );
+ const _mergedPendingForPersist = [...pendingNormalized, ..._localOnlyP];
  await Promise.all([
- AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedP)),
+ AsyncStorage.setItem(userPendingKey, JSON.stringify(_mergedPendingForPersist)),
  AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedToWrite)),
  AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedNormalized)),
  ]);
