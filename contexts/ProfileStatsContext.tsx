@@ -134,12 +134,22 @@ export function ProfileStatsProvider({ children }: { children: React.ReactNode }
  });
  setCachedAuthorCount(authorSet.size);
  // Persist counts to lightweight cache for instant display on next app open.
+ // Never write a LOWER book count unless this is a direct/force update (e.g., after clear).
+ // This prevents stale rehydrate snapshots from poisoning the cache.
  if (user?.uid) {
-   AsyncStorage.setItem(`profile_stats_cache_${user.uid}`, JSON.stringify({
-     books: profileBookCount,
-     photos: distinctPhotos.size,
-     authors: authorSet.size,
-   })).catch(() => {});
+   const cacheKey = `profile_stats_cache_${user.uid}`;
+   const newCache = { books: profileBookCount, photos: distinctPhotos.size, authors: authorSet.size };
+   if (forceUpdate) {
+     AsyncStorage.setItem(cacheKey, JSON.stringify(newCache)).catch(() => {});
+   } else {
+     AsyncStorage.getItem(cacheKey).then(raw => {
+       const prev = raw ? (() => { try { return JSON.parse(raw); } catch { return {}; } })() : {};
+       if (typeof prev.books === 'number' && newCache.books < prev.books) return; // never decrease
+       AsyncStorage.setItem(cacheKey, JSON.stringify(newCache)).catch(() => {});
+     }).catch(() => {
+       AsyncStorage.setItem(cacheKey, JSON.stringify(newCache)).catch(() => {});
+     });
+   }
  }
  } catch {
  if (!mergeInProgressRef.current) {
