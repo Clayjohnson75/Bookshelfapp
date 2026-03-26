@@ -3926,6 +3926,14 @@ const localRejected: Book[] = resolveBookPhotoIdsCb(savedRejected ? (() => { try
     });
     finalPending = removeTombstoned(mergeList(localPending, serverPendingForMerge));
   }
+  // Filter approved books through deletedBookIds tombstone — prevents deleted books
+  // from resurrecting via merge when local cache has stale entries.
+  const beforeTombstone = finalApproved.length;
+  finalApproved = finalApproved.filter((b) => !b.id || !deletedBookIds.has(b.id));
+  if (finalApproved.length < beforeTombstone) {
+    logger.info('[APPROVED_TOMBSTONE_FILTER]', `Removed ${beforeTombstone - finalApproved.length} deleted books from approved merge`);
+  }
+
   // Approved bucket must only contain status === 'approved'. Move any non-approved out so profile/counts never show pending as approved.
   // Side effect: strays are merged INTO pending (mergeList), not replacing — pending has its own pipeline; UI reads pendingBooks from books by status.
   const approvedOnly = finalApproved.filter((b) => (b as any).status === 'approved');

@@ -4346,9 +4346,41 @@ export async function deleteLibraryPhotoAndBooks(
   const booksDetached = typeof d.booksDetached === 'number' ? d.booksDetached : undefined;
   const photoDeleted  = typeof d.photoDeleted  === 'number' ? d.photoDeleted  : undefined;
   const deletedStorageObjects = typeof d.deletedStorageObjects === 'number' ? d.deletedStorageObjects : (photoDeleted ? 1 : 0);
-  logger.info('[PHOTO_DELETE_RESULT_DB]', { photoId, deletedPhotoRow: photoDeleted ?? 0, deletedBooks: booksDeleted ?? 0, booksDetached: booksDetached ?? 0, cascadeBooks });
-  logger.info('[PHOTO_DELETE_RESULT_STORAGE]', { photoId, deletedStorageObjects });
-  logger.info('[DELETE_PHOTO_RESULT]', { photoId, deletedBooks: booksDeleted ?? 0, booksDetached: booksDetached ?? 0, deletedPhotoRow: photoDeleted ?? 0, deletedStorageObjects });
+  logger.info('[PHOTO_DELETE_RESULT]', { photoId, deletedBooks: booksDeleted ?? 0, booksDetached: booksDetached ?? 0, deletedPhotoRow: photoDeleted ?? 0, deletedStorageObjects });
+
+  // Tombstone: add deleted book IDs so rehydrate won't resurrect them.
+  // Also record destructive action so DATA_SAFETY_DROP guard knows it was intentional.
+  if (cascadeBooks && (booksDeleted ?? 0) > 0) {
+    try {
+      // Find book IDs that were associated with this photo
+      const approvedRaw = await AsyncStorage.getItem(`approved_books_${userId}`);
+      const approvedBooks = approvedRaw ? JSON.parse(approvedRaw) : [];
+      const deletedIds = (Array.isArray(approvedBooks) ? approvedBooks : [])
+        .filter((b: any) => b.source_photo_id === photoId || (b as any).sourcePhotoId === photoId)
+        .map((b: any) => b.id)
+        .filter(Boolean) as string[];
+      if (deletedIds.length > 0) {
+        await addDeletedBookIdsTombstone(userId, deletedIds);
+        logger.info('[PHOTO_DELETE_TOMBSTONE]', { photoId, bookIdsTombstoned: deletedIds.length });
+      }
+      // Remove deleted books from AsyncStorage immediately
+      const remaining = (Array.isArray(approvedBooks) ? approvedBooks : [])
+        .filter((b: any) => b.source_photo_id !== photoId && (b as any).sourcePhotoId !== photoId);
+      await AsyncStorage.setItem(`approved_books_${userId}`, JSON.stringify(remaining));
+    } catch (e) {
+      logger.warn('[PHOTO_DELETE_TOMBSTONE]', 'failed to create tombstone', { error: (e as Error)?.message });
+    }
+  }
+  // Remove photo from local cache
+  try {
+    const photosRaw = await AsyncStorage.getItem(`photos_${userId}`);
+    const photos = photosRaw ? JSON.parse(photosRaw) : [];
+    const remainingPhotos = (Array.isArray(photos) ? photos : []).filter((p: any) => p.id !== photoId);
+    if (remainingPhotos.length < (Array.isArray(photos) ? photos : []).length) {
+      await AsyncStorage.setItem(`photos_${userId}`, JSON.stringify(remainingPhotos));
+    }
+  } catch {}
+
   return { ok: true, booksDeleted, booksDetached, photoDeleted };
  } catch (error) {
  const message = error instanceof Error ? error.message : String(error);
@@ -4437,6 +4469,9 @@ export async function deleteBookFromSupabase(
  if (__DEV__) logger.debug('deleteBookFromSupabase: book not in DB (already deleted or never existed)', { title: book.title, id: book.id });
  return true;
  }
+
+ // Tombstone BEFORE server call so rehydrate won't resurrect if app closes mid-delete.
+ await addDeletedBookIdsTombstone(userId, [bookId]);
 
  // Call RPC function for safe deletion (soft-delete + audit log)
  const { data, error } = await supabase.rpc('delete_library_book', {
