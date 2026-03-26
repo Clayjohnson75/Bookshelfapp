@@ -1772,6 +1772,16 @@ React.useEffect(() => {
   * data from a fetch that started before the approve landed).
   */
  const postApproveLockUntilRef = React.useRef<number>(0);
+ /** Scan job IDs that have been fully approved. Persisted to AsyncStorage so
+  * late-arriving pending books from approved scans are filtered across sessions. */
+ const approvedScanJobIdsRef = React.useRef<Set<string>>(new Set());
+ // Load persisted approved job IDs on mount
+ React.useEffect(() => {
+   if (!user?.uid) return;
+   AsyncStorage.getItem(`approved_job_ids_${user.uid}`).then(raw => {
+     if (raw) try { const arr = JSON.parse(raw); if (Array.isArray(arr)) arr.forEach((id: string) => approvedScanJobIdsRef.current.add(id)); } catch {}
+   }).catch(() => {});
+ }, [user?.uid]);
 /** The highest serverApprovedCount we have ever seen from a trusted snapshot. Prevents
  * a subsequent 0-row snapshot from wiping the approved list.
  * Primed at boot from AsyncStorage via loadHighWaterMark() so cold restarts retain memory. */
@@ -3602,6 +3612,10 @@ supabasePhotos = null;
  const serverPendingForMerge = serverPending.filter((b: Book) => {
    // Filter by ID: outbox tracking OR server already marked as approved
    if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedBookIds.has(b.id))) return false;
+   // Filter by scan job ID: if the entire scan was approved, block ALL its pending books.
+   // This catches late-arriving books from the server that were inserted after the user approved.
+   const bookJobId = (b as any).source_scan_job_id;
+   if (bookJobId && approvedScanJobIdsRef.current.has(bookJobId)) return false;
    // Filter by title+author match against all known approved books (local + server)
    const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
    if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
@@ -12031,10 +12045,16 @@ const approveSelectedBooks = useCallback(async () => {
     if (full) _approveJobIds.add(full);
     else _approveJobIds.add(id);
   });
+  // Track approved scan job IDs so rehydrate can filter out late-arriving pending books
+  _approveJobIds.forEach(id => approvedScanJobIdsRef.current.add(id));
+  // Persist so filter works across app restarts
+  if (user?.uid) AsyncStorage.setItem(`approved_job_ids_${user.uid}`, JSON.stringify([...approvedScanJobIdsRef.current])).catch(() => {});
+
   logger.info('[APPROVE_PHASE0]', 'starting flush in background (scoped to payload jobs)', {
     approveJobIdsCount: _approveJobIds.size,
     approveJobIdsSample: [..._approveJobIds].slice(0, 3).map(id => id.slice(0, 8)),
     selectedBooksCount: selectedBookObjs.length,
+    totalApprovedJobIds: approvedScanJobIdsRef.current.size,
   });
 
   // ── PHASE 1: Build approve payload ────────────────────────────────────────
