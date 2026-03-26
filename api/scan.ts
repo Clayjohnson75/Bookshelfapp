@@ -277,16 +277,26 @@ for (let i = 0; i < dbRows.length; i++) {
       const { data: existing } = await q.limit(1).maybeSingle();
       if (existing?.id) {
         resolvedUpserted.push({ id: existing.id, book_key: (existing as any).book_key ?? row.book_key ?? '' });
-        // CRITICAL: Reset status to 'pending' and update source fields so previously
-        // approved+deleted books don't auto-appear in the library after a re-scan.
-        // The user must explicitly approve from pending again.
-        await supabase.from('books').update({
-          status: 'pending',
-          deleted_at: null,
-          source_scan_job_id: rawJobId,
-          source_photo_id: photoId,
-          updated_at: nowIso,
-        }).eq('id', existing.id);
+        // Only reset to 'pending' if the book was DELETED (soft-deleted).
+        // Never reset a currently-approved book back to pending — that causes
+        // approved books to reappear in the pending tab after re-scanning.
+        if (existing.deleted_at != null) {
+          await supabase.from('books').update({
+            status: 'pending',
+            deleted_at: null,
+            source_scan_job_id: rawJobId,
+            source_photo_id: photoId,
+            updated_at: nowIso,
+          }).eq('id', existing.id);
+        } else if (existing.status !== 'approved') {
+          // Update source fields for non-approved books (e.g. pending from a previous scan)
+          await supabase.from('books').update({
+            source_scan_job_id: rawJobId,
+            source_photo_id: photoId,
+            updated_at: nowIso,
+          }).eq('id', existing.id);
+        }
+        // If status is 'approved': leave it alone — book is already in user's library
       }
       continue;
     }
