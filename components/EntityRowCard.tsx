@@ -19,7 +19,7 @@ export interface EntityRowCardProps {
   testID?: string;
 }
 
-export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID }: EntityRowCardProps) {
+export const EntityRowCard = React.memo(function EntityRowCard({ title, subtext, coverUris = [], onPress, testID }: EntityRowCardProps) {
   const { t } = useTheme();
   const { typeScale } = useResponsive();
   const c = t.colors;
@@ -75,7 +75,7 @@ export function EntityRowCard({ title, subtext, coverUris = [], onPress, testID 
       <ChevronForwardIcon size={18} color={c.textMuted} style={styles.chevron} />
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

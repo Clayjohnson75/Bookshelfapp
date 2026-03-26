@@ -3510,8 +3510,18 @@ onPress={() => {
  </TouchableOpacity>
  )}
  </View>
- <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
- {topAuthorsByCount.length > 0 && authorsFilteredForView.length > 0 && authorsSearchQuery.trim() === '' && (
+ <FlatList
+ data={authorsFilteredForView}
+ keyExtractor={(item) => item.name}
+ renderItem={({ item: { name, books: authorBooks, count } }) => (
+   <EntityRowCard
+     title={name}
+     subtext={`${count} ${count === 1 ? 'book' : 'books'}`}
+     coverUris={authorBooks.slice(0, 3).map(b => getBookCoverUri(b))}
+     onPress={() => setSelectedAuthor({ name, books: authorBooks })}
+   />
+ )}
+ ListHeaderComponent={topAuthorsByCount.length > 0 && authorsFilteredForView.length > 0 && authorsSearchQuery.trim() === '' ? (
  <View style={{ marginBottom: 16 }}>
  <Text style={[styles.topAuthorsSectionTitle, { color: t.colors.textSecondary ?? t.colors.textMuted }]}>Top authors</Text>
  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topAuthorsChipsRow}>
@@ -3528,18 +3538,8 @@ onPress={() => {
  ))}
  </ScrollView>
  </View>
- )}
- {authorsFilteredForView.length > 0 ? (
- authorsFilteredForView.map(({ name, books: authorBooks, count }) => (
- <EntityRowCard
- key={name}
- title={name}
- subtext={`${count} ${count === 1 ? 'book' : 'books'}`}
- coverUris={authorBooks.slice(0, 3).map(b => getBookCoverUri(b))}
- onPress={() => setSelectedAuthor({ name, books: authorBooks })}
- />
- ))
- ) : (
+ ) : null}
+ ListEmptyComponent={
  <View style={styles.authorsEmptyState}>
  <Text style={[styles.authorsEmptyTitle, { color: t.colors.textPrimary ?? t.colors.text }]}>
  {authorsSortedForView.length === 0 ? 'No authors yet' : 'No authors found'}
@@ -3548,8 +3548,14 @@ onPress={() => {
  {authorsSortedForView.length === 0 ? 'Authors appear when you add books to your library.' : 'Try a different search.'}
  </Text>
  </View>
- )}
- </ScrollView>
+ }
+ contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 }}
+ showsVerticalScrollIndicator={false}
+ initialNumToRender={15}
+ maxToRenderPerBatch={20}
+ windowSize={5}
+ removeClippedSubviews
+ />
  </>
  )}
  {/* Book detail inside Authors modal so it opens on top when tapping a book */}
