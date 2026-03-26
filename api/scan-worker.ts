@@ -431,7 +431,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  // - This prevents race conditions where two workers try to claim the same job
  // 1) Atomic claim: pending -> processing
  const claimStart = Date.now();
- const claimRes = await supabase
+ let claimRes = await supabase
  .from("scan_jobs")
  .update({ status: "processing", updated_at: new Date().toISOString() })
  .eq("id", jobId)
@@ -474,11 +474,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  readErr: readErr?.message || null,
  });
 
- // If it's truly already processing/completed, idempotent return is fine:
- if (current?.status && current.status !== "pending") {
+ // If it's completed or already processing, idempotent return is fine:
+ if (current?.status && (current.status === "processing" || current.status === "completed")) {
  return res.status(200).json({ ok: true, reason: `already_${current.status}` });
  }
 
+ // If status is 'failed', try to reclaim — the failure may have been from a race condition
+ // (e.g. metadata-only QStash publish timed out and marked the job failed before we arrived).
+ if (current?.status === "failed") {
+ console.log("[WORKER] job is failed, attempting reclaim", { jobId });
+ const reclaim = await supabase
+   .from("scan_jobs")
+   .update({ status: "processing", error: null, updated_at: new Date().toISOString() })
+   .eq("id", jobId)
+   .eq("status", "failed")
+   .select("id,status,updated_at")
+   .maybeSingle();
+ if (reclaim.data) {
+   console.log("[WORKER] reclaimed failed job — proceeding to process", { jobId, status: reclaim.data.status });
+   claimRes = { data: reclaim.data, error: null, count: 1, status: 200, statusText: 'OK' } as any;
+   // Break out of the !claimRes.data block — we now have a valid claim
+ } else {
+   console.warn("[WORKER] failed to reclaim", { jobId, error: reclaim.error?.message });
+   return res.status(200).json({ ok: true, reason: "already_failed_cannot_reclaim" });
+ }
+ }
+
+ // If reclaim succeeded above, skip the retry loop and proceed to processing
+ if (claimRes.data) {
+   // reclaimed — fall through to processing below
+ } else if (current?.status === "pending") {
  // If it's STILL pending, that means claim didn't work (RLS, schema cache, etc). RETRY claim a few times:
  for (let i = 1; i <= 5; i++) {
  await new Promise(r => setTimeout(r, 200));
@@ -512,7 +537,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  }
 
  return res.status(200).json({ ok: true, reason: `claim_missed_status=${after?.status}` });
- }
+ } // end else if (pending retry loop)
+ } // end if (!claimRes.data)
 
  // If we got here, we successfully claimed (status is now processing).
  console.log("[WORKER] claimed job", { jobId, status: claimRes.data.status });

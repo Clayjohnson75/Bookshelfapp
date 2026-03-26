@@ -4958,22 +4958,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  }
  }
  if (dbJobId && scanIdForPublish) {
+ // If the existing job is in a terminal state (failed/completed), reset to pending
+ // so the worker can re-claim it. This handles retries after previous failures.
+ if (existingJob && (existingJob.status === 'failed' || existingJob.status === 'completed')) {
+ console.log(`[API] [SCAN] Resetting ${existingJob.status} job to pending for retry`, { jobId: dbJobId, photoId: validPhotoId });
+ await supabase.from('scan_jobs').update({ status: 'pending', error: null, updated_at: new Date().toISOString() }).eq('id', dbJobId);
+ }
+
  const qstashToken = process.env.QSTASH_TOKEN;
  const qstashBase = process.env.QSTASH_URL?.replace(/\/+$/, '');
  if (qstashToken && qstashBase) {
  const workerUrl = 'https://www.bookshelfscan.app/api/scan-worker';
  const publishUrl = `${qstashBase}/v2/publish/${workerUrl}`;
  const payload = { jobId: dbJobId, scanId: scanIdForPublish, userId };
- const pubResp = await fetch(publishUrl, {
- method: 'POST',
- headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${qstashToken}` },
- body: JSON.stringify(payload),
- });
- if (pubResp.ok) {
- return res.status(202).json({ jobId: dbJobId, photoId: validPhotoId, status: 'pending' });
+ try {
+   const controller = new AbortController();
+   const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+   const pubResp = await fetch(publishUrl, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${qstashToken}` },
+   body: JSON.stringify(payload),
+   signal: controller.signal,
+   });
+   clearTimeout(timeout);
+   if (pubResp.ok) {
+   console.log(`[API] [SCAN] QStash publish ok (metadata-only)`, { jobId: dbJobId, photoId: validPhotoId });
+   return res.status(202).json({ jobId: dbJobId, photoId: validPhotoId, status: 'pending' });
+   }
+   console.error(`[API] [SCAN] QStash publish failed (metadata-only)`, { photoId: validPhotoId, jobId: dbJobId, status: pubResp?.status, body: (await pubResp.text().catch(() => '')).slice(0, 200) });
+ } catch (err: any) {
+   console.error(`[API] [SCAN] QStash publish error (metadata-only)`, { photoId: validPhotoId, jobId: dbJobId, error: err?.message, isTimeout: err?.name === 'AbortError' });
  }
- console.warn(`[API] [SCAN] QStash publish failed`, { photoId: validPhotoId, jobId: dbJobId, status: pubResp?.status });
  }
+ // Return 202 even on publish failure — client will poll and retry via upload queue
  if (dbJobId) return res.status(202).json({ jobId: dbJobId, photoId: validPhotoId, status: 'pending' });
  }
  }
