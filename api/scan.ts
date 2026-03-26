@@ -2369,7 +2369,7 @@ async function repairJSON(invalidJSON: string, schema: string): Promise<any> {
  Authorization: `Bearer ${key}`,
  },
  body: JSON.stringify({
- model: 'gpt-4o-mini',
+ model: 'gpt-4.1-mini',
  messages: [{
  role: 'user',
  content: `Fix this into valid JSON that matches this schema. Output only JSON.
@@ -2438,7 +2438,7 @@ async function scanWithOpenAI(
  },
  signal: controller.signal,
  body: JSON.stringify({
- model: 'gpt-4o', // Using gpt-4o instead of gpt-5 - faster and more reliable for vision tasks
+ model: 'gpt-4.1', // Using gpt-4.1 for vision OCR (replaces deprecated gpt-4o)
  messages: [
  {
  role: 'user',
@@ -2975,7 +2975,7 @@ async function batchValidateBooks(books: any[]): Promise<any[]> {
  if (books.length === 0) return books;
 
  // Use Gemini as primary validator (faster, no rate-limit issues)
- // OpenAI gpt-4o-mini hits 429 RPM limits on Tier 1 accounts
+ // OpenAI used as fallback when Gemini key is not configured
  const geminiKey = process.env.GEMINI_API_KEY;
  if (geminiKey) {
  console.log(`[API] Batch validating ${books.length} books with Gemini (primary)...`);
@@ -3023,7 +3023,7 @@ async function batchValidateBooks(books: any[]): Promise<any[]> {
  },
  signal: controller.signal,
  body: JSON.stringify({
- model: 'gpt-4o-mini',
+ model: 'gpt-4.1-mini',
  messages: [{
  role: 'user',
  content: `You are a book expert validating detected books from a bookshelf scan.
@@ -3388,7 +3388,7 @@ async function validateBookWithChatGPT(book: any): Promise<any> {
  },
  signal: controller.signal,
  body: JSON.stringify({
- model: 'gpt-4o-mini', // Faster model for validation
+ model: 'gpt-4.1-mini', // Faster model for validation
  messages: [
  {
  role: 'user',
