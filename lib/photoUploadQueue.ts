@@ -88,6 +88,31 @@ function queueKey(userId: string): string {
   return `${UPLOAD_QUEUE_PREFIX}${userId}`;
 }
 
+/**
+ * Async mutex per userId to serialize all queue read-modify-write operations.
+ * Without this, concurrent processOneItem calls (MAX_CONCURRENT=2) can do
+ * overlapping read→modify→write on the same AsyncStorage key, causing one
+ * write to overwrite another's state changes and resetting items back to
+ * earlier states (e.g. 'queued'), which triggers infinite re-upload loops.
+ */
+const queueMutexes = new Map<string, Promise<void>>();
+async function withQueueLock<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const key = queueKey(userId);
+  // Chain onto the existing lock (or a resolved promise if none)
+  const prev = queueMutexes.get(key) ?? Promise.resolve();
+  let resolve: () => void;
+  const next = new Promise<void>((r) => { resolve = r; });
+  queueMutexes.set(key, next);
+  try {
+    await prev; // wait for previous operation to finish
+    return await fn();
+  } finally {
+    resolve!();
+    // Clean up if no one else is waiting
+    if (queueMutexes.get(key) === next) queueMutexes.delete(key);
+  }
+}
+
 export async function getQueue(userId: string): Promise<UploadQueueItem[]> {
   const key = queueKey(userId);
   const raw = await AsyncStorage.getItem(key);
@@ -109,7 +134,6 @@ export async function persistQueue(userId: string, items: UploadQueueItem[]): Pr
 export async function addToQueue(
   item: Omit<UploadQueueItem, 'retries' | 'state'> & { sourceUri?: string }
 ): Promise<boolean> {
-  const list = await getQueue(item.userId);
   let stagingUri: string;
   if (item.sourceUri) {
     const result = await copyToDurableStaging(item.sourceUri, item.photoId);
@@ -133,11 +157,14 @@ export async function addToQueue(
     retries: 0,
     state: 'queued',
   };
-  if (list.some((i) => i.photoId === item.photoId)) return true;
-  list.push(newItem);
-  await persistQueue(item.userId, list);
-  logger.info('[UPLOAD_QUEUE]', 'added', { photoId: item.photoId.slice(0, 8), userId: item.userId?.slice(0, 8), stagingUri: stagingUri.slice(0, 50) });
-  return true;
+  return withQueueLock(item.userId, async () => {
+    const list = await getQueue(item.userId);
+    if (list.some((i) => i.photoId === item.photoId)) return true;
+    list.push(newItem);
+    await persistQueue(item.userId, list);
+    logger.info('[UPLOAD_QUEUE]', 'added', { photoId: item.photoId.slice(0, 8), userId: item.userId?.slice(0, 8), stagingUri: stagingUri.slice(0, 50) });
+    return true;
+  });
 }
 
 export async function updateItem(
@@ -145,47 +172,53 @@ export async function updateItem(
   photoId: string,
   update: Partial<UploadQueueItem>
 ): Promise<void> {
-  const list = await getQueue(userId);
-  const idx = list.findIndex((i) => i.photoId === photoId);
-  if (idx < 0) return;
-  list[idx] = { ...list[idx], ...update };
-  await persistQueue(userId, list);
+  await withQueueLock(userId, async () => {
+    const list = await getQueue(userId);
+    const idx = list.findIndex((i) => i.photoId === photoId);
+    if (idx < 0) return;
+    list[idx] = { ...list[idx], ...update };
+    await persistQueue(userId, list);
+  });
 }
 
 /** Reset a failed item to queued so the worker picks it up again. Returns true if item was found and reset. */
 export async function retryQueueItem(userId: string, photoId: string): Promise<boolean> {
-  const list = await getQueue(userId);
-  const idx = list.findIndex((i) => i.photoId === photoId);
-  if (idx < 0) return false;
-  const item = list[idx];
-  if (item.state !== 'failed') return false;
-  list[idx] = {
-    ...item,
-    state: 'queued',
-    retries: 0,
-    retryAfter: undefined,
-    errorMessage: undefined,
-  };
-  await persistQueue(userId, list);
-  logger.info('[UPLOAD_QUEUE]', 'retry', { photoId: photoId.slice(0, 8) });
-  return true;
+  return withQueueLock(userId, async () => {
+    const list = await getQueue(userId);
+    const idx = list.findIndex((i) => i.photoId === photoId);
+    if (idx < 0) return false;
+    const item = list[idx];
+    if (item.state !== 'failed') return false;
+    list[idx] = {
+      ...item,
+      state: 'queued',
+      retries: 0,
+      retryAfter: undefined,
+      errorMessage: undefined,
+    };
+    await persistQueue(userId, list);
+    logger.info('[UPLOAD_QUEUE]', 'retry', { photoId: photoId.slice(0, 8) });
+    return true;
+  });
 }
 
 /** Mark all queued/uploading items for this user as canceled. Do NOT clear the queue. */
 export async function cancelAllForUser(userId: string): Promise<number> {
-  const list = await getQueue(userId);
-  let count = 0;
-  for (let i = 0; i < list.length; i++) {
-    if (list[i].state === 'queued' || list[i].state === 'uploading') {
-      list[i] = { ...list[i], state: 'canceled' as const };
-      count++;
+  return withQueueLock(userId, async () => {
+    const list = await getQueue(userId);
+    let count = 0;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].state === 'queued' || list[i].state === 'uploading') {
+        list[i] = { ...list[i], state: 'canceled' as const };
+        count++;
+      }
     }
-  }
-  if (count > 0) {
-    await persistQueue(userId, list);
-    logger.info('[UPLOAD_QUEUE]', 'cancelAllForUser', { userId: userId?.slice(0, 8), count });
-  }
-  return count;
+    if (count > 0) {
+      await persistQueue(userId, list);
+      logger.info('[UPLOAD_QUEUE]', 'cancelAllForUser', { userId: userId?.slice(0, 8), count });
+    }
+    return count;
+  });
 }
 
 /** Clear queue for user (e.g. on sign-out). */
@@ -195,13 +228,15 @@ export async function clearQueueForUser(userId: string): Promise<void> {
 
 /** Remove a single item from the queue (e.g. when scan is complete so we don't re-process or re-upload). */
 export async function removeFromQueue(userId: string, photoId: string): Promise<boolean> {
-  const list = await getQueue(userId);
-  const idx = list.findIndex((i) => i.photoId === photoId);
-  if (idx < 0) return false;
-  list.splice(idx, 1);
-  await persistQueue(userId, list);
-  logger.info('[UPLOAD_QUEUE]', 'removed (done)', { photoId: photoId.slice(0, 8) });
-  return true;
+  return withQueueLock(userId, async () => {
+    const list = await getQueue(userId);
+    const idx = list.findIndex((i) => i.photoId === photoId);
+    if (idx < 0) return false;
+    list.splice(idx, 1);
+    await persistQueue(userId, list);
+    logger.info('[UPLOAD_QUEUE]', 'removed (done)', { photoId: photoId.slice(0, 8) });
+    return true;
+  });
 }
 
 function backoffMs(retries: number): number {
@@ -552,14 +587,24 @@ async function requestScanAndPoll(
 
   const jobId = jobIdFromCreate!;
   await updateItem(userId, photoId, { state: 'processing' });
-  const pollUrl = `${baseUrl}/api/scan/${jobId}`;
+  logger.info('[UPLOAD_QUEUE_POLL]', 'entering poll loop', { photoId: photoId.slice(0, 8), jobId: String(jobId).slice(0, 8), maxAttempts: POLL_MAX_ATTEMPTS });
+  const pollUrlBase = `${baseUrl}/api/scan/${jobId}`;
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     let pollResp: Response;
     let pollText: string;
     try {
+      // Cache-buster + explicit no-cache headers to prevent iOS/CDN from returning stale responses
+      const pollUrl = `${pollUrlBase}?t=${Date.now()}`;
       pollResp = await fetch(pollUrl, {
-        headers: { Accept: 'application/json', ...headers },
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          Pragma: 'no-cache',
+          ...headers,
+        },
+        cache: 'no-store' as RequestCache,
       });
       pollText = await pollResp.text();
     } catch {
@@ -575,13 +620,25 @@ async function requestScanAndPoll(
       }
       continue;
     }
-    let pollData: { status?: string };
+    let pollData: { status?: string; error?: any; stage?: string; progress?: number };
     try {
-      pollData = JSON.parse(pollText) as { status?: string };
+      pollData = JSON.parse(pollText) as { status?: string; error?: any; stage?: string; progress?: number };
     } catch {
       continue;
     }
     const status = pollData.status;
+    // Log every 5th poll attempt + any terminal status so we can diagnose stuck polls
+    if (attempt % 5 === 0 || status === 'completed' || status === 'failed' || status === 'canceled') {
+      logger.info('[UPLOAD_QUEUE_POLL]', 'poll response', {
+        photoId: photoId.slice(0, 8),
+        jobId: String(jobId).slice(0, 8),
+        attempt,
+        status: status ?? 'undefined',
+        stage: pollData.stage ?? null,
+        progress: pollData.progress ?? null,
+        ...(status === 'failed' ? { error: JSON.stringify(pollData.error ?? 'no error field').slice(0, 300) } : {}),
+      });
+    }
     if (status === 'completed') {
       const raw = jobId != null && typeof jobId === 'string' ? jobId.trim() : '';
       if (raw && raw.length >= 8) {
@@ -618,6 +675,8 @@ async function requestScanAndPoll(
         const fullId = toScanJobId(raw);
         if (fullId.length >= 40) onJobTerminalStatus?.(fullId, status as 'failed' | 'canceled');
       }
+      // Mark permanently done — server already failed/canceled this job, retrying upload won't help.
+      completedPhotoIds.add(photoId);
       const errMsg = `Job ${status}`;
       await updateItem(userId, photoId, { state: 'failed', errorMessage: errMsg });
       onPhotoUploadFailed?.(userId, photoId, errMsg);
@@ -625,6 +684,7 @@ async function requestScanAndPoll(
     }
   }
 
+  logger.warn('[UPLOAD_QUEUE_POLL]', 'poll timeout', { photoId: photoId.slice(0, 8), jobId: String(jobId).slice(0, 8), attempts: POLL_MAX_ATTEMPTS });
   const errMsg = 'Poll timeout';
   // Mark as completed to prevent infinite re-processing on next tick.
   completedPhotoIds.add(photoId);
@@ -642,6 +702,7 @@ async function processOneItem(item: UploadQueueItem): Promise<void> {
   const { userId, photoId, localUri } = item;
   // Skip if already completed in this session (zombie prevention).
   if (completedPhotoIds.has(photoId)) {
+    logger.info('[UPLOAD_QUEUE]', 'skip (completedPhotoIds)', { photoId: photoId.slice(0, 8) });
     // Force remove from queue to clean up the zombie entry.
     removeFromQueue(userId, photoId).catch(() => {});
     return;
@@ -651,10 +712,15 @@ async function processOneItem(item: UploadQueueItem): Promise<void> {
     return;
   }
   inFlightPhotoIds.add(photoId);
+  logger.info('[UPLOAD_QUEUE]', 'processOneItem start', { photoId: photoId.slice(0, 8), state: item.state, hasJobId: !!(item.jobId || item.scanJobId) });
   try {
     return await _processOneItemInner(item);
+  } catch (e) {
+    logger.error('[UPLOAD_QUEUE]', 'processOneItem threw', { photoId: photoId.slice(0, 8), error: String(e) });
+    throw e;
   } finally {
     inFlightPhotoIds.delete(photoId);
+    logger.info('[UPLOAD_QUEUE]', 'processOneItem done', { photoId: photoId.slice(0, 8) });
   }
 }
 
@@ -673,9 +739,11 @@ async function _processOneItemInner(item: UploadQueueItem): Promise<void> {
     return;
   }
 
-  // If already past upload, skip to scan request (resume after restart/re-process).
+  // If already past upload OR has a jobId from a previous scan job creation, skip to
+  // scan request (resume after restart/re-process/server failure).
   // This prevents zombie re-uploads for items that already have a scan job.
-  if (item.state === 'uploaded' || item.state === 'scan_requested' || item.state === 'processing') {
+  const hasExistingJobId = !!(item.jobId || item.scanJobId);
+  if (hasExistingJobId || item.state === 'uploaded' || item.state === 'scan_requested' || item.state === 'processing') {
     const fileInfoResume = await FileSystem.getInfoAsync(localUri);
     if (!fileInfoResume.exists) {
       const errMsg = 'Photo file missing, please re-select.';
@@ -748,51 +816,55 @@ async function workerTick(): Promise<void> {
   const userId = getCurrentUserId?.() ?? null;
   if (!userId) return;
 
-  let list = await getQueue(userId);
-  const now = Date.now();
+  // Read queue and do housekeeping (purge + retry marking) under the lock
+  // so concurrent processOneItem calls don't overwrite these changes.
+  const toProcess = await withQueueLock(userId, async () => {
+    let list = await getQueue(userId);
+    const now = Date.now();
 
-  // Purge stale items: remove entries older than 10 minutes that are stuck in
-  // 'scan_requested' or 'processing' state. These are zombies from previous sessions
-  // whose scan jobs may have been deleted (profile clear). Without this, they loop
-  // indefinitely, blocking new scans.
-  const STALE_MS = 2 * 60 * 1000; // 2 minutes — scan jobs complete in ~30s, anything older is stuck
-  const beforePurge = list.length;
-  list = list.filter((item) => {
-    const age = now - (item.createdAt ?? 0);
-    const isStuckState = item.state === 'scan_requested' || item.state === 'processing' || item.state === 'uploaded' || item.state === 'queued';
-    if (age > STALE_MS && isStuckState) {
-      logger.info('[UPLOAD_QUEUE]', 'purge stale item', { photoId: item.photoId?.slice(0, 8), state: item.state, ageMs: age });
-      completedPhotoIds.add(item.photoId);
-      return false; // remove from queue
+    // Purge stale items: remove entries older than 5 minutes that are stuck in
+    // 'scan_requested' or 'processing' state. These are zombies from previous sessions
+    // whose scan jobs may have been deleted (profile clear). Without this, they loop
+    // indefinitely, blocking new scans.
+    const STALE_MS = 5 * 60 * 1000; // 5 minutes — allows server processing + poll time
+    const beforePurge = list.length;
+    list = list.filter((item) => {
+      const age = now - (item.createdAt ?? 0);
+      const isStuckState = item.state === 'scan_requested' || item.state === 'processing' || item.state === 'uploaded' || item.state === 'queued';
+      if (age > STALE_MS && isStuckState) {
+        logger.info('[UPLOAD_QUEUE]', 'purge stale item', { photoId: item.photoId?.slice(0, 8), state: item.state, ageMs: age });
+        completedPhotoIds.add(item.photoId);
+        return false; // remove from queue
+      }
+      return true;
+    });
+    if (list.length < beforePurge) {
+      await persistQueue(userId, list);
+      logger.info('[UPLOAD_QUEUE]', 'purged stale items', { removed: beforePurge - list.length });
     }
-    return true;
+
+    // Mark items that exceeded MAX_RETRIES as permanently failed.
+    let mutated = false;
+    for (const item of list) {
+      if (item.state === 'failed' && item.retries >= MAX_RETRIES) {
+        item.state = 'failed';
+        item.errorMessage = `Permanently failed after ${MAX_RETRIES} retries`;
+        item.retryAfter = undefined;
+        mutated = true;
+        onPhotoUploadFailed?.(userId, item.photoId, item.errorMessage);
+        logger.warn('[UPLOAD_QUEUE]', 'max retries exceeded', { photoId: item.photoId.slice(0, 8), retries: item.retries });
+      }
+    }
+    if (mutated) await persistQueue(userId, list);
+
+    const runnable = list.filter(
+      (i) =>
+        (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
+         (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
+        i.state !== 'canceled'
+    );
+    return runnable.slice(0, MAX_CONCURRENT);
   });
-  if (list.length < beforePurge) {
-    await persistQueue(userId, list);
-    logger.info('[UPLOAD_QUEUE]', 'purged stale items', { removed: beforePurge - list.length });
-  }
-
-  // Mark items that exceeded MAX_RETRIES as permanently failed.
-  let mutated = false;
-  for (const item of list) {
-    if (item.state === 'failed' && item.retries >= MAX_RETRIES) {
-      item.state = 'failed';
-      item.errorMessage = `Permanently failed after ${MAX_RETRIES} retries`;
-      item.retryAfter = undefined;
-      mutated = true;
-      onPhotoUploadFailed?.(userId, item.photoId, item.errorMessage);
-      logger.warn('[UPLOAD_QUEUE]', 'max retries exceeded', { photoId: item.photoId.slice(0, 8), retries: item.retries });
-    }
-  }
-  if (mutated) await persistQueue(userId, list);
-
-  const runnable = list.filter(
-    (i) =>
-      (i.state === 'queued' || i.state === 'uploaded' || i.state === 'scan_requested' || i.state === 'processing' ||
-       (i.state === 'failed' && i.retries < MAX_RETRIES && (i.retryAfter ?? 0) <= now)) &&
-      i.state !== 'canceled'
-  );
-  const toProcess = runnable.slice(0, MAX_CONCURRENT);
 
   for (const item of toProcess) {
     if (item.state === 'canceled') continue;

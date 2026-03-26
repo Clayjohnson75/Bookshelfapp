@@ -3179,12 +3179,27 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  const repaired = await repairJSON(content, 'array of validation results');
  validated = repaired || [];
  }
+ // Build map keyed by canonical_key from Gemini response
  const validatedMap = new Map(validated.map((v: any) => [v.canonical_key, v]));
+ // Also build a positional fallback: if Gemini returns keys that don't match
+ // (common when Gemini normalizes differently), fall back to index-based matching
+ const validatedByIndex = new Map(validated.map((v: any, i: number) => [i, v]));
  const results: any[] = [];
- for (const book of batch) {
+ let matchedByKey = 0, matchedByIndex = 0, unmatched = 0;
+ for (let i = 0; i < batch.length; i++) {
+ const book = batch[i];
  const canonicalKey = buildCanonicalKey(book);
- const validation = validatedMap.get(canonicalKey);
- if (validation && validation.is_valid) {
+ let validation = validatedMap.get(canonicalKey);
+ if (!validation && validatedByIndex.has(i)) {
+   // Fallback: match by position when canonical keys diverge
+   validation = validatedByIndex.get(i);
+   if (validation) matchedByIndex++;
+ } else if (validation) {
+   matchedByKey++;
+ }
+ // Handle both boolean true and string "true" from Gemini, and both is_valid and isValid
+ const isBookValid = validation && (validation.is_valid === true || validation.is_valid === 'true' || validation.isValid === true || validation.isValid === 'true');
+ if (isBookValid) {
  results.push({
  ...book,
  title: validation.final_title || book.title,
@@ -3196,8 +3211,9 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  coverUrl: book.coverUrl,
  external_match: book.external_match,
  });
- } else {
- console.log(`[API] Gemini batch validation marked as INVALID: "${book.title}" by ${book.author || 'no author'}`);
+ } else if (validation) {
+ // Matched but Gemini said invalid
+ console.log(`[API] Gemini batch validation marked as INVALID: "${book.title}" by ${book.author || 'no author'}`, { matchType: 'matched_but_invalid', validationKeys: Object.keys(validation), is_valid_raw: validation.is_valid, isValid_raw: validation.isValid });
  results.push({
  ...book,
  isValid: false,
@@ -3205,8 +3221,14 @@ Return ONLY valid JSON array (no markdown, no code blocks):
  googleBooksId: book.googleBooksId || book.external_match?.googleBooksId,
  coverUrl: book.coverUrl,
  });
+ } else {
+ // No match at all — don't drop the book, keep it as-is (validation inconclusive)
+ unmatched++;
+ console.log(`[API] Gemini batch validation: no match for "${book.title}" by ${book.author || 'no author'} — keeping as-is`);
+ results.push(book);
  }
  }
+ console.log(`[API] Gemini batch validation matching: ${matchedByKey} by key, ${matchedByIndex} by index, ${unmatched} unmatched of ${batch.length} books. Gemini returned ${validated.length} items.`);
  return results;
  } catch (err: any) {
  console.error(`[API] Gemini batch validation error:`, err?.message || err);
