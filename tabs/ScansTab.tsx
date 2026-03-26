@@ -11255,6 +11255,33 @@ logger.error(` [BATCH ${batchId}] [${index}/${total}] Error polling job ${jobId}
  openScanModal(syntheticPhoto);
  };
 
+ /** Toggle-select all books in a scan group. If all are already selected, deselect them. */
+ const toggleSelectScanGroup = useCallback((group: PendingScanGroup) => {
+   const groupKeys = group.books
+     .filter(b => b.status !== 'incomplete')
+     .map(b => pendingBookStableKey(b));
+   if (groupKeys.length === 0) return;
+   const allSelected = groupKeys.every(k => stableIsBookSelected(k));
+   if (selectAllMode) {
+     // In select-all mode, toggle excluded IDs
+     setExcludedIds(prev => {
+       const next = new Set(prev);
+       groupKeys.forEach(k => allSelected ? next.add(k) : next.delete(k));
+       return next;
+     });
+   } else {
+     setSelectedBooks(prev => {
+       const next = new Set(prev);
+       if (allSelected) {
+         groupKeys.forEach(k => next.delete(k));
+       } else {
+         groupKeys.forEach(k => next.add(k));
+       }
+       return next;
+     });
+   }
+ }, [pendingBookStableKey, stableIsBookSelected, selectAllMode]);
+
 const closeScanModal = () => {
   const photo = selectedPhoto;
   if (photo?.id && user) {
@@ -13602,12 +13629,13 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
     return (
       <View style={pendingContentWrap}>
         <View style={styles.pendingGroupBlock}>
-          <TouchableOpacity
-            style={[styles.pendingGroupHeader, { borderBottomColor: t.colors.separator ?? t.colors.border }]}
-            onPress={() => openScanReview(group)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.pendingGroupHeaderLeft}>
+          <View style={[styles.pendingGroupHeader, { borderBottomColor: t.colors.separator ?? t.colors.border }]}>
+            <TouchableOpacity
+              style={styles.pendingGroupHeaderLeft}
+              onPress={() => toggleSelectScanGroup(group)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
               <Text style={[styles.pendingGroupTitle, { color: t.colors.text }]} numberOfLines={1}>
                 Scan {groupIndex + 1}
               </Text>
@@ -13619,8 +13647,12 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
                   })()})
                 </Text>
               </View>
-            </View>
-            <View style={[styles.pendingGroupThumb, { backgroundColor: t.colors.surface2 ?? t.colors.surface, borderColor: t.colors.border }]}>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => openScanReview(group)}
+              activeOpacity={0.7}
+              style={[styles.pendingGroupThumb, { backgroundColor: t.colors.surface2 ?? t.colors.surface, borderColor: t.colors.border }]}
+            >
               {group.storagePath || group.thumbUri ? (
                 <PhotoTile
                   photoId={group.photo?.id}
@@ -13640,8 +13672,8 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
                   <Text style={[styles.pendingGroupThumbPlaceholderText, { color: t.colors.textMuted }]} numberOfLines={1}>Photo</Text>
                 </View>
               )}
-            </View>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -13717,7 +13749,7 @@ const renderPendingRow = useCallback(({ item }: { item: PendingListRow }) => {
       </View>
     </View>
   );
-}, [t, openScanReview, stableIsBookSelected, pendingBookStableKey, getBookCoverUri, stableToggleBookSelection, pendingGridColumns, pendingGridItemWidth, pendingContentWrap, styles]);
+}, [t, openScanReview, toggleSelectScanGroup, stableIsBookSelected, pendingBookStableKey, getBookCoverUri, stableToggleBookSelection, pendingGridColumns, pendingGridItemWidth, pendingContentWrap, styles]);
 
 const keyExtractorPendingRow = useCallback((item: PendingListRow): string => {
   if (item.type === 'group_header') return `h-${item.group.scanJobId || item.group.photoId || item.groupIndex}`;
