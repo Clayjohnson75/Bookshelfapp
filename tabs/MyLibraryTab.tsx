@@ -985,7 +985,18 @@ setFolders([]);
  if (user) {
  const userApprovedKey = `approved_books_${user.uid}`;
  try {
- await AsyncStorage.setItem(userApprovedKey, JSON.stringify(finalBooks));
+ // Safety: never write fewer approved books than already stored.
+ // This prevents stale server snapshots from overwriting optimistic approve state.
+ let booksToWrite = finalBooks;
+ try {
+   const existingRaw = await AsyncStorage.getItem(userApprovedKey);
+   const existing = existingRaw ? JSON.parse(existingRaw) : [];
+   if (Array.isArray(existing) && existing.length > booksToWrite.length) {
+     logger.warn('[MYLIB_APPROVED_GUARD]', 'refusing to write fewer approved books', { existing: existing.length, proposed: booksToWrite.length });
+     booksToWrite = existing;
+   }
+ } catch {}
+ await AsyncStorage.setItem(userApprovedKey, JSON.stringify(booksToWrite));
  } catch (error) {
  logger.error(' Error saving merged books to AsyncStorage:', error);
  // If save fails and we have books, this is critical - log it

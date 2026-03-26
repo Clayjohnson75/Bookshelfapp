@@ -1793,7 +1793,7 @@ const isFreshInstallThisSessionRef = React.useRef<boolean>(false);
 const lastDestructiveActionRef = React.useRef<LastDestructiveAction | null>(null);
 /** Grace window after a destructive action where count-drops are accepted (server may not have settled). */
 const DESTRUCTIVE_ACTION_GRACE_MS = RECENT_DESTRUCTIVE_MS;
-const POST_APPROVE_LOCK_MS = 20_000; // 20 s window after approve where rehydrate can't overwrite
+const POST_APPROVE_LOCK_MS = 120_000; // 120s window — approve worker may take 30-60s to write to server; rehydrate must not overwrite during this time
 /** tempId -> canonicalId so we don't churn list when ids change; persist and load with user data. */
 const idAliasRef = React.useRef<Record<string, string>>({});
 /** localPhotoId -> canonicalPhotoId; persisted across sessions so every ingestion edge can canonicalize without re-deduping. */
@@ -3611,7 +3611,7 @@ supabasePhotos = null;
  const MERGE_WINDOW_MS = 60 * 1000;
  const hasRecentMutation = Date.now() - lastLocalMutationAtRef.current < MERGE_WINDOW_MS;
  /** Grace window after approval: merge local-first so we don't overwrite with stale remote until remote confirms. */
- const APPROVE_GRACE_MS = 15 * 1000;
+ const APPROVE_GRACE_MS = 120 * 1000; // Match POST_APPROVE_LOCK_MS — server writes may take 30-60s
  const hasApprovalGraceWindow =
    Date.now() - lastApprovedAtRef.current < APPROVE_GRACE_MS ||
    (approvalGraceUntilRef.current > 0 && Date.now() < approvalGraceUntilRef.current) ||
@@ -4414,9 +4414,19 @@ if (approvedNormalized.length === 0 && localApproved.length > 0 && !isRecentAuth
   });
   const mergedPending = [...pendingWithCovers, ...localOnlyPending];
   setBooksFromBuckets(localCanonical, mergedPending, rejectedNormalized);
+  // Safety: never write fewer approved books to AsyncStorage than already stored
+  let approvedToWriteEarly = localCanonical;
+  try {
+    const existingRaw = await AsyncStorage.getItem(userApprovedKey);
+    const existing = existingRaw ? JSON.parse(existingRaw) : [];
+    if (Array.isArray(existing) && existing.length > approvedToWriteEarly.length) {
+      logger.warn('[REHYDRATE_APPROVED_GUARD]', 'refusing to write fewer approved books (early path)', { existing: existing.length, proposed: approvedToWriteEarly.length });
+      approvedToWriteEarly = existing;
+    }
+  } catch {}
   await Promise.all([
     AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedPending)),
-    AsyncStorage.setItem(userApprovedKey, JSON.stringify(localCanonical)),
+    AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedToWriteEarly)),
     AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedNormalized)),
   ]);
   refreshProfileStats();
@@ -4477,10 +4487,21 @@ if (totalMerged > 50) {
  pendingSelector: 'books-status (pendingBooks.status===pending|incomplete, independent of photos)',
  });
  // Persist merged result so we never overwrite storage with server-only (avoids dropping just-accepted when remote lags).
+ // Safety: never write fewer approved books to AsyncStorage than already stored.
+ // This prevents stale server snapshots from overwriting optimistic approve state.
+ let approvedToWrite = approvedNormalized;
+ try {
+   const existingRaw = await AsyncStorage.getItem(userApprovedKey);
+   const existing = existingRaw ? JSON.parse(existingRaw) : [];
+   if (Array.isArray(existing) && existing.length > approvedToWrite.length) {
+     logger.warn('[REHYDRATE_APPROVED_GUARD]', 'refusing to write fewer approved books', { existing: existing.length, proposed: approvedToWrite.length });
+     approvedToWrite = existing; // keep the larger list
+   }
+ } catch {}
  // Use mergedP (not pendingNormalized) to preserve local-only books and their coverUrls.
  await Promise.all([
  AsyncStorage.setItem(userPendingKey, JSON.stringify(mergedP)),
- AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedNormalized)),
+ AsyncStorage.setItem(userApprovedKey, JSON.stringify(approvedToWrite)),
  AsyncStorage.setItem(userRejectedKey, JSON.stringify(rejectedNormalized)),
  ]);
  // Post-apply invariants: if missingInBooksByIdCount > 0, that's the exact reason for "0 books".
@@ -4951,7 +4972,7 @@ const photosForMerge = (adoptions.length > 0
  // are not overwritten by a stale or partial server snapshot ([PHOTO_MERGE_PARTIAL_SNAPSHOT]).
  // Without the grace window, "keep local" would still run on partial snapshots but the UI could
  // flicker between local and server truth; the grace window locks it down during mutations.
- const APPROVE_GRACE_MS_PHOTOS = 15 * 1000;
+ const APPROVE_GRACE_MS_PHOTOS = 120 * 1000;
  const hasApprovalGraceWindowPhotos =
    Date.now() - lastApprovedAtRef.current < APPROVE_GRACE_MS_PHOTOS ||
    (approvalGraceUntilRef.current > 0 && Date.now() < approvalGraceUntilRef.current) ||
