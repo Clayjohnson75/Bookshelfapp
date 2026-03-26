@@ -3543,11 +3543,11 @@ supabasePhotos = null;
  serverApproved.forEach(addApprovedKey);
 
  // Also build a set of approved book IDs from the server for direct ID matching
- const serverApprovedIds = new Set(serverApproved.map((b: any) => b.id).filter(Boolean));
+ const serverApprovedBookIds = new Set(serverApproved.map((b: any) => b.id).filter(Boolean));
 
  const serverPendingForMerge = serverPending.filter((b: Book) => {
    // Filter by ID: outbox tracking OR server already marked as approved
-   if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedIds.has(b.id))) return false;
+   if (b.id && (unconfirmedApproveBookIds.has(b.id) || serverApprovedBookIds.has(b.id))) return false;
    // Filter by title+author match against all known approved books (local + server)
    const key = `${(b.title || '').toLowerCase().trim()}|${(b.author || '').toLowerCase().trim()}`;
    if (key !== '|' && approvedTitleAuthorKeys.has(key)) return false;
