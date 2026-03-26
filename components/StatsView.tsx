@@ -106,18 +106,10 @@ export function StatsView({ books }: StatsViewProps) {
         : lang === 'ja' ? 'Japanese' : lang === 'zh' ? 'Chinese' : lang;
     }, 6);
 
-    // Enrichment coverage
-    const withDescription = approved.filter(b => (b as any).description && (b as any).description.length > 10).length;
-    const withCover = approved.filter(b => (b as any).coverUrl).length;
-    const withIsbn = approved.filter(b => (b as any).isbn13 || (b as any).isbn10).length;
-
     return {
       totalBooks, totalPages, avgPages, avgRating,
       readCount, distinctAuthors, distinctPhotos,
       topAuthors, topCategories, topPublishers, decades, languages,
-      withDescription, withCover, withIsbn,
-      booksWithRating: booksWithRating.length,
-      booksWithPages: booksWithPages.length,
     };
   }, [books]);
 
@@ -279,25 +271,6 @@ export function StatsView({ books }: StatsViewProps) {
         )}
       </View>
 
-      {/* Library Health */}
-      <View style={[s.section, { backgroundColor: c.surface }]}>
-        <Text style={[s.sectionTitle, { color: c.text }]}>Library Health</Text>
-        <View style={s.healthRow}>
-          <View style={s.healthItem}>
-            <Text style={[s.healthNumber, { color: accent }]}>{Math.round((stats.withCover / stats.totalBooks) * 100)}%</Text>
-            <Text style={[s.healthLabel, { color: c.textMuted }]}>Covers</Text>
-          </View>
-          <View style={s.healthItem}>
-            <Text style={[s.healthNumber, { color: accent }]}>{Math.round((stats.withDescription / stats.totalBooks) * 100)}%</Text>
-            <Text style={[s.healthLabel, { color: c.textMuted }]}>Descriptions</Text>
-          </View>
-          <View style={s.healthItem}>
-            <Text style={[s.healthNumber, { color: accent }]}>{Math.round((stats.withIsbn / stats.totalBooks) * 100)}%</Text>
-            <Text style={[s.healthLabel, { color: c.textMuted }]}>ISBN</Text>
-          </View>
-        </View>
-      </View>
-
       {/* Share Button */}
       <TouchableOpacity
         style={[s.shareButton, { backgroundColor: accent }]}
@@ -411,24 +384,6 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     marginLeft: 8,
-  },
-  healthRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  healthItem: {
-    alignItems: 'center',
-  },
-  healthNumber: {
-    fontSize: 22,
-    fontWeight: '800',
-  },
-  healthLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
   },
   shareButton: {
     height: 52,
