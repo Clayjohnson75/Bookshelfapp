@@ -4176,6 +4176,96 @@ export async function runApproveWrites(
  *
  * IMPORTANT: photoId must be the photo row id (photos.id). Never pass jobId or a composite id.
  */
+/**
+ * Clean up orphaned photos: photos in the `photos` table that have no books
+ * referencing them (via source_photo_id) and no active scan_jobs.
+ * This prevents stale test/failed photos from inflating the photo count.
+ * Safe to call on startup or after scan sessions complete.
+ */
+export async function cleanupOrphanedPhotos(userId: string): Promise<{ removed: number; error?: string }> {
+  if (!supabase) return { removed: 0, error: 'supabase not available' };
+  try {
+    // 1. Get all active photos for the user
+    const { data: photos, error: photosErr } = await supabase
+      .from('photos')
+      .select('id, created_at, status')
+      .eq('user_id', userId)
+      .is('deleted_at', null);
+
+    if (photosErr || !photos || photos.length === 0) {
+      return { removed: 0, error: photosErr?.message };
+    }
+
+    // 2. Get all photo IDs referenced by non-deleted books
+    const { data: bookRefs, error: bookErr } = await supabase
+      .from('books')
+      .select('source_photo_id')
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .not('source_photo_id', 'is', null);
+
+    if (bookErr) {
+      return { removed: 0, error: bookErr.message };
+    }
+
+    const referencedPhotoIds = new Set((bookRefs ?? []).map((b: any) => b.source_photo_id));
+
+    // 3. Get all photo IDs referenced by active scan_jobs (pending/processing)
+    const { data: jobRefs, error: jobErr } = await supabase
+      .from('scan_jobs')
+      .select('photo_id')
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .in('status', ['pending', 'processing'])
+      .not('photo_id', 'is', null);
+
+    if (jobErr) {
+      return { removed: 0, error: jobErr.message };
+    }
+
+    const activeJobPhotoIds = new Set((jobRefs ?? []).map((j: any) => j.photo_id));
+
+    // 4. Find orphaned photos: not referenced by any book or active job,
+    //    and older than 10 minutes (to avoid racing with in-progress scans)
+    const TEN_MINUTES_AGO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const orphanedIds = photos
+      .filter((p: any) =>
+        !referencedPhotoIds.has(p.id) &&
+        !activeJobPhotoIds.has(p.id) &&
+        p.created_at < TEN_MINUTES_AGO
+      )
+      .map((p: any) => p.id);
+
+    if (orphanedIds.length === 0) {
+      logger.info('[CLEANUP_PHOTOS]', 'no orphaned photos found', { totalPhotos: photos.length, referencedByBooks: referencedPhotoIds.size });
+      return { removed: 0 };
+    }
+
+    // 5. Soft-delete orphaned photos
+    const { error: deleteErr } = await supabase
+      .from('photos')
+      .update({ deleted_at: new Date().toISOString() })
+      .in('id', orphanedIds)
+      .eq('user_id', userId);
+
+    if (deleteErr) {
+      logger.error('[CLEANUP_PHOTOS]', 'soft-delete failed', { error: deleteErr.message, count: orphanedIds.length });
+      return { removed: 0, error: deleteErr.message };
+    }
+
+    logger.info('[CLEANUP_PHOTOS]', 'removed orphaned photos', {
+      removed: orphanedIds.length,
+      totalPhotos: photos.length,
+      referencedByBooks: referencedPhotoIds.size,
+      activeJobs: activeJobPhotoIds.size,
+    });
+    return { removed: orphanedIds.length };
+  } catch (err: any) {
+    logger.error('[CLEANUP_PHOTOS]', 'unexpected error', { error: err?.message ?? String(err) });
+    return { removed: 0, error: err?.message ?? String(err) };
+  }
+}
+
 export async function deleteLibraryPhotoAndBooks(
   userId: string,
   photoId: string,

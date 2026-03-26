@@ -108,6 +108,7 @@ import {
  addDeletedPendingStableKeysTombstone,
  syncCompletedScanJobs,
  syncPendingApprovedBooks,
+ cleanupOrphanedPhotos,
 } from '../services/supabaseSync';
 import { setOnPhotoUploaded, setOnPhotoComplete, setOnPhotoUploadFailed, setOnScanJobCreated, setOnJobTerminalStatusQueue, retryQueueItem, addToQueue } from '../lib/photoUploadQueue';
 import { emitLibraryInvalidate, subscribeLibraryInvalidate } from '../lib/libraryInvalidate';
@@ -1006,6 +1007,12 @@ React.useEffect(() => {
  const scanGraceMs = 5000;
  scanTerminalGraceUntilRef.current = Date.now() + scanGraceMs;
  emitLibraryInvalidate({ reason: 'scan_terminal', jobId: canonicalId });
+ // Clean up orphaned photos from previous sessions (fire-and-forget).
+ // Only run when no other scans are in progress to avoid racing.
+ const cleanupUid = user?.uid;
+ if (activeScanJobIdsRef.current.length === 0 && cleanupUid) {
+   cleanupOrphanedPhotos(cleanupUid).catch(() => {});
+ }
  // For failed/canceled: refresh from server — but only when no batch is in-flight.
  // Otherwise the refresh would overwrite locally-imported pending books from other jobs.
  if (status !== 'completed' && inFlightBatchIdsRef.current.size === 0 && serialScanQueueRef.current.length === 0 && !batchDrainingRef.current) {
