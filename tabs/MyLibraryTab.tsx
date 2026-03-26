@@ -38,6 +38,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Book, Photo, UserProfile, Folder, enforcePhotoStorageStatus } from '../types/BookTypes';
 import { useAuth, isGuestUser } from '../auth/SimpleAuthContext';
 import { useProfileStats, formatCountForDisplay } from '../contexts/ProfileStatsContext';
+import { StatsView } from '../components/StatsView';
 import { useBottomDock } from '../contexts/BottomDockContext';
 import SettingsModal from '../components/SettingsModal';
 import BookDetailModal from '../components/BookDetailModal';
@@ -3625,10 +3626,8 @@ onPress={() => {
  onRequestClose={() => setShowStatsView(false)}
  >
  <SafeAreaView style={styles.safeContainer} edges={['left', 'right', 'bottom']}>
- <AppHeader title="Stats" onBack={() => setShowStatsView(false)} />
- <ScrollView style={{ flex: 1, backgroundColor: t.colors.bg }} contentContainerStyle={styles.statsScrollContent}>
- <Text style={styles.statsComingSoon}>Coming soon</Text>
- </ScrollView>
+ <AppHeader title="Library Insights" onBack={() => setShowStatsView(false)} />
+ <StatsView books={books} />
  </SafeAreaView>
  </Modal>
 
